@@ -24,6 +24,7 @@ NON_YELLOW_OVERRIDE_LABELS = frozenset(label for label in VEHICLE_LABEL_CN.keys(
 NON_YELLOW_OVERRIDE_SECONDS = 2.0
 NON_YELLOW_HIGH_CONFIDENCE = 0.85
 NON_YELLOW_HIGH_CONF_STREAK = 3
+PLATE_RECOGNITION_ABNORMAL_REASONS = frozenset({"PLATE_MISSING", "PLATE_NOT_LOCKED", "PLATE_NOT_DETECTED"})
 
 class EventUploader:
     def __init__(self, url=None, token=None, timeout=8.0, queue_path=None,
@@ -475,10 +476,16 @@ class EventManager:
         normalized_plate = normalize_plate_text(plate_text)
         if normalized_plate:
             st['plate_text_latest'] = normalized_plate
-            self._add_shadow_candidate(track_id, normalized_plate, plate_conf, frame_idx)
+            self._add_shadow_candidate(
+                track_id,
+                normalized_plate,
+                plate_conf,
+                frame_idx,
+                trusted=not bool(plate_is_guess),
+            )
             self._update_locked_plate_text(track_id, st, frame_idx)
         elif plate_conf and plate_conf > 0.0:
-            self._add_shadow_candidate(track_id, plate_text, plate_conf, frame_idx)
+            self._add_shadow_candidate(track_id, plate_text, plate_conf, frame_idx, trusted=False)
             self._update_locked_plate_text(track_id, st, frame_idx)
         if plate_color:
             plate_color_latest = str(plate_color).strip()
@@ -888,13 +895,14 @@ class EventManager:
             'trackId': track_id,
             'type': event_type,
             'captureTime': capture_time,
-            'plateNumber': payload.get('plateNumber') or '',
+            'plateNumber': '',
             'vehicleType': vehicle_type,
             'washDuration': payload.get('washDuration', 0.0),
             'washStartTime': payload.get('washStartTime', ''),
             'captureImage': capture_path,
             'lane': self.lane_name,
             'anchorDwellFrames': anchor_dwell,
+            'plateRecognitionAbnormal': False,
         }
         reasons = track_state.get('abnormal_reasons') if track_state else None
         if reasons:
@@ -905,19 +913,15 @@ class EventManager:
             if reasons_list:
                 event['isAbnormal'] = True
                 event['abnormalReason'] = '|'.join(reasons_list)
-        plate_text, is_guess = self._resolve_plate_with_shadow(track_id, track_state, frame_idx)
-        if not event['plateNumber']:
-            event['plateNumber'] = plate_text
-        if not event['plateNumber']:
-            event['isAbnormal'] = True
-            reason = 'PLATE_MISSING'
-            if 'abnormalReason' in event and event['abnormalReason']:
-                parts = set(str(x).strip() for x in str(event['abnormalReason']).split('|') if x)
-                parts.add(reason)
-                event['abnormalReason'] = '|'.join(sorted(parts))
-            else:
-                event['abnormalReason'] = reason
+        plate_text, is_guess, plate_recognition_abnormal, plate_abnormal_reason = self._resolve_report_plate_fields(
+            track_id,
+            track_state,
+            frame_idx,
+        )
+        event['plateNumber'] = plate_text
         event['plateIsGuess'] = bool(is_guess and event['plateNumber'])
+        event['plateRecognitionAbnormal'] = bool(plate_recognition_abnormal)
+        self._apply_plate_recognition_flags(event, plate_abnormal_reason)
         dir_code = 0
         dir_label = ''
         if event_type == 5:
@@ -1006,6 +1010,7 @@ class EventManager:
                     buffer.append(api_payload)
                     self.upload_qualified.add(track_key)
                     for p in buffer:
+                        self._refresh_plate_fields_for_payload(p, track_id, track_state, frame_idx)
                         try:
                             self.uploader.enqueue(p)
                         except Exception:
@@ -1069,7 +1074,7 @@ class EventManager:
                 payload['vehicleType'] = vehicle_type
             self._emit_event_core(track_id, et, fi, fr, payload, track_state, vehicle_type)
 
-    def _add_shadow_candidate(self, track_id, text, conf, frame_idx):
+    def _add_shadow_candidate(self, track_id, text, conf, frame_idx, trusted=False):
         text = normalize_plate_text(text)
         if not text:
             return
@@ -1078,6 +1083,7 @@ class EventManager:
             'text': text,
             'conf': float(conf) if conf is not None else 0.5,
             'frame': frame_idx,
+            'trusted': bool(trusted),
         })
         while len(pool) > self.shadow_max:
             pool.popleft()
@@ -1112,25 +1118,45 @@ class EventManager:
             decay = max(0.35, 1.0 - age / max(self.plate_text_window_frames, 1))
             conf = float(entry.get('conf', 0.5) or 0.5)
             weight = max(conf, 0.05) * decay
-            info = stats.setdefault(text, {'hits': 0, 'weight': 0.0})
+            info = stats.setdefault(
+                text,
+                {
+                    'hits': 0,
+                    'weight': 0.0,
+                    'trusted_hits': 0,
+                    'trusted_weight': 0.0,
+                    'latest_frame': -1,
+                },
+            )
             info['hits'] += 1
             info['weight'] += weight
-        ranked = [(text, info['hits'], info['weight']) for text, info in stats.items() if info['hits'] > 0]
-        ranked.sort(key=lambda item: (item[2], item[1], item[0]), reverse=True)
+            info['latest_frame'] = max(int(info.get('latest_frame', -1)), hit_frame)
+            if bool(entry.get('trusted', False)):
+                info['trusted_hits'] += 1
+                info['trusted_weight'] += weight
+        ranked = [
+            (
+                text,
+                info['hits'],
+                info['weight'],
+                info['trusted_hits'],
+                info['trusted_weight'],
+                info['latest_frame'],
+            )
+            for text, info in stats.items()
+            if info['hits'] > 0
+        ]
+        ranked.sort(key=lambda item: (item[3], item[4], item[1], item[2], item[5], item[0]), reverse=True)
         return ranked
 
     def _update_locked_plate_text(self, track_id, track_state, frame_idx):
         ranked = self._rank_plate_shadow_candidates(track_id, frame_idx)
         if not ranked:
             return
-        best_text, best_hits, best_weight = ranked[0]
-        second_weight = ranked[1][2] if len(ranked) > 1 else 0.0
+        best_text, best_hits, best_weight, best_trusted_hits, best_trusted_weight, _best_frame = ranked[0]
         locked_text = (track_state.get('plate_text_locked') or '').strip()
         if not locked_text:
-            if (
-                best_hits >= self.plate_lock_frames
-                and self._plate_margin_ok(best_weight, second_weight, self.plate_text_margin_ratio)
-            ):
+            if best_trusted_hits > 0:
                 track_state['plate_text_locked'] = best_text
                 track_state['plate_text_locked_is_guess'] = False
                 track_state['plate_text_switch_candidate'] = ''
@@ -1140,17 +1166,28 @@ class EventManager:
             track_state['plate_text_switch_candidate'] = ''
             track_state['plate_text_switch_streak'] = 0
             return
+        if best_trusted_hits <= 0:
+            track_state['plate_text_switch_candidate'] = ''
+            track_state['plate_text_switch_streak'] = 0
+            return
         locked_weight = 0.0
-        for cand_text, _cand_hits, cand_weight in ranked:
+        for cand_text, _cand_hits, _cand_weight, _cand_trusted_hits, cand_trusted_weight, _cand_frame in ranked:
             if cand_text == locked_text:
-                locked_weight = cand_weight
+                locked_weight = cand_trusted_weight
                 break
-        stronger_than_locked = best_weight >= max(
+        stronger_than_locked = best_trusted_weight >= max(
             locked_weight * self.plate_text_switch_gain_ratio,
-            locked_weight + 0.1,
+            locked_weight + 0.05,
         )
-        margin_ok = self._plate_margin_ok(best_weight, second_weight, self.plate_text_switch_margin_ratio)
-        if stronger_than_locked and margin_ok and best_hits >= (self.plate_lock_frames + 1):
+        second_trusted_weight = 0.0
+        for item in ranked[1:]:
+            second_trusted_weight = max(second_trusted_weight, float(item[4]))
+        margin_ok = self._plate_margin_ok(
+            best_trusted_weight if best_trusted_weight > 0 else best_weight,
+            second_trusted_weight,
+            self.plate_text_switch_margin_ratio,
+        )
+        if stronger_than_locked and margin_ok:
             if track_state.get('plate_text_switch_candidate') == best_text:
                 track_state['plate_text_switch_streak'] = int(track_state.get('plate_text_switch_streak', 0)) + 1
             else:
@@ -1269,13 +1306,59 @@ class EventManager:
             track_state['plate_color_conf'] = 0.0
 
     def _resolve_plate_with_shadow(self, track_id, track_state, frame_idx):
-        locked_text = (track_state.get('plate_text_locked') or '').strip()
+        plate_text, plate_is_guess, _is_abnormal, _reason = self._resolve_report_plate_fields(
+            track_id,
+            track_state,
+            frame_idx,
+        )
+        return plate_text, plate_is_guess
+
+    def _resolve_report_plate_fields(self, track_id, track_state, frame_idx):
+        del frame_idx
+        track_state = track_state or {}
+        locked_text = normalize_plate_text((track_state.get('plate_text_locked') or '').strip())
         if locked_text:
-            return locked_text, bool(track_state.get('plate_text_locked_is_guess', False))
-        ranked = self._rank_plate_shadow_candidates(track_id, frame_idx)
-        if not ranked:
-            return '', False
-        return ranked[0][0], True
+            return locked_text, False, False, ''
+        latest_text = normalize_plate_text((track_state.get('plate_text_latest') or track_state.get('plate_text') or '').strip())
+        pool = self.shadow_pool.get(track_id) or ()
+        has_candidate = bool(latest_text) or any(normalize_plate_text(entry.get('text', '')) for entry in pool)
+        if has_candidate:
+            return '', False, True, 'PLATE_NOT_LOCKED'
+        return '', False, True, 'PLATE_NOT_DETECTED'
+
+    @staticmethod
+    def _reason_parts(reason_text):
+        if not reason_text:
+            return set()
+        return {str(item).strip() for item in str(reason_text).split('|') if str(item).strip()}
+
+    def _apply_plate_recognition_flags(self, payload, plate_abnormal_reason):
+        reasons = self._reason_parts(payload.get('abnormalReason'))
+        reasons -= PLATE_RECOGNITION_ABNORMAL_REASONS
+        has_plate_abnormal = bool(plate_abnormal_reason)
+        if has_plate_abnormal:
+            reasons.add(str(plate_abnormal_reason).strip())
+        payload['plateRecognitionAbnormal'] = has_plate_abnormal
+        if reasons:
+            payload['isAbnormal'] = True
+            payload['abnormalReason'] = '|'.join(sorted(reasons))
+        else:
+            payload.pop('abnormalReason', None)
+            payload['isAbnormal'] = False
+        return payload
+
+    def _refresh_plate_fields_for_payload(self, payload, track_id, track_state, frame_idx):
+        plate_text, plate_is_guess, _is_abnormal, plate_abnormal_reason = self._resolve_report_plate_fields(
+            track_id,
+            track_state,
+            frame_idx,
+        )
+        payload['plateNumber'] = plate_text
+        payload['plateIsGuess'] = bool(plate_is_guess and plate_text)
+        if 'plateConfidence' in payload and not plate_text:
+            payload['plateConfidence'] = 0.0
+        self._apply_plate_recognition_flags(payload, plate_abnormal_reason)
+        return payload
 
     def _compute_effective_wash_duration(self, track_state, frame_idx):
         frames = track_state.get('effective_wash_frames', 0)
@@ -1610,10 +1693,12 @@ class EventManager:
         capture_time = event['captureTime']
         capture_image = self._prepare_capture_image(event.get('captureImage'))
         lane = self.lane_name
+        track_id = event.get('trackId')
         plate_number = event.get('plateNumber', '')
         plate_color = event.get('plateColor', self.default_plate_color)
         plate_color_conf = event.get('plateColorConfidence', self.default_plate_color_conf)
         plate_is_guess = event.get('plateIsGuess', False)
+        plate_recognition_abnormal = bool(event.get('plateRecognitionAbnormal', False))
         reasons = track_state.get('abnormal_reasons') if track_state else None
         wash_start_time = track_state.get('wash_start_time') if track_state else None
         dir_code = 0
@@ -1644,6 +1729,7 @@ class EventManager:
             payload['vehicleType'] = vehicle_type_cn
             payload['vehicleTypeConfidence'] = vehicle_conf
             payload['plateIsGuess'] = plate_is_guess
+            payload['plateRecognitionAbnormal'] = plate_recognition_abnormal
             if wash_start_time:
                 payload['washStartTime'] = wash_start_time
         elif evt_type in (2, 3, 4):
@@ -1655,6 +1741,7 @@ class EventManager:
             payload['vehicleType'] = vehicle_type_cn
             payload['vehicleTypeConfidence'] = vehicle_conf
             payload['plateIsGuess'] = plate_is_guess
+            payload['plateRecognitionAbnormal'] = plate_recognition_abnormal
             if wash_start_time:
                 payload['washStartTime'] = wash_start_time
         elif evt_type == 5:
@@ -1671,6 +1758,7 @@ class EventManager:
             payload['vehicleTypeConfidence'] = vehicle_conf
             payload['lane'] = lane
             payload['plateIsGuess'] = plate_is_guess
+            payload['plateRecognitionAbnormal'] = plate_recognition_abnormal
             if wash_start_time:
                 payload['washStartTime'] = wash_start_time
             payload['direction'] = dir_code
@@ -1685,8 +1773,11 @@ class EventManager:
             payload['vehicleType'] = vehicle_type_cn
             payload['vehicleTypeConfidence'] = vehicle_conf
             payload['plateIsGuess'] = plate_is_guess
+            payload['plateRecognitionAbnormal'] = plate_recognition_abnormal
             if wash_start_time:
                 payload['washStartTime'] = wash_start_time
+        if not plate_number:
+            payload['plateConfidence'] = 0.0
         if reasons:
             if isinstance(reasons, set):
                 reasons_list = sorted(reasons)
@@ -1695,6 +1786,12 @@ class EventManager:
             if reasons_list:
                 payload['isAbnormal'] = True
                 payload['abnormalReason'] = '|'.join(reasons_list)
+        _plate_text, _plate_is_guess, _plate_is_abnormal, plate_abnormal_reason = self._resolve_report_plate_fields(
+            track_id,
+            track_state,
+            frame_idx,
+        )
+        self._apply_plate_recognition_flags(payload, plate_abnormal_reason)
         return payload
 
     def _attach_wheel_results(self, payload, track_state=None):

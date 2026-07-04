@@ -141,7 +141,7 @@
     "copy_track_last_frame": false,
     "copy_raw_frame_cache": false,
     "plate_core_mask": "0",
-    "plate_infer_stride": 2,
+    "plate_infer_stride": 3,
     "enable_event_disk": false,
     "vehicle_tracker_impl": "bytetrack"
   },

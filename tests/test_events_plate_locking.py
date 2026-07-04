@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 
@@ -48,8 +49,16 @@ class _WheelActivityProvider:
         )
 
 
+class _CollectingUploader:
+    def __init__(self):
+        self.payloads = []
+
+    def enqueue(self, payload):
+        self.payloads.append(dict(payload))
+
+
 class EventManagerPlateLockingTests(unittest.TestCase):
-    def _manager(self, plate_lock_frames=3):
+    def _manager(self, plate_lock_frames=3, uploader=None):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         config = {
@@ -77,7 +86,13 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             "event_output_dir": temp_dir.name,
             "lane_name": "lane-a",
         }
-        return EventManager(config, fps=25.0, frame_size=(128, 128), zone_manager=_DummyZoneManager())
+        return EventManager(
+            config,
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_DummyZoneManager(),
+            uploader=uploader,
+        )
 
     def _manager_with_zone(self, zone_manager, wheel_provider=None):
         temp_dir = tempfile.TemporaryDirectory()
@@ -135,18 +150,18 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             plate_type="single",
         )
 
-    def test_unlocked_uses_shadow_best_guess_instead_of_latest(self):
+    def test_unlocked_does_not_report_shadow_guess(self):
         manager = self._manager(plate_lock_frames=3)
 
         self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
         self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 3, plate_text="XYZ9999", plate_is_guess=False)
+        self._update(manager, 3, plate_text="XYZ9999", plate_is_guess=True)
 
         track_state = manager.tracks[1]
         text, is_guess = manager._resolve_plate_with_shadow(1, track_state, 3)
 
-        self.assertEqual(text, "ABC1234")
-        self.assertTrue(is_guess)
+        self.assertEqual(text, "")
+        self.assertFalse(is_guess)
         self.assertEqual(track_state.get("plate_text_latest"), "XYZ9999")
         self.assertEqual(track_state.get("plate_text_locked"), "")
 
@@ -187,6 +202,99 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(text, "XYZ9999")
         self.assertFalse(is_guess)
         self.assertEqual(track_state.get("plate_text_locked"), "XYZ9999")
+
+    def test_unlocked_event_marks_plate_recognition_abnormal_and_blank_plate(self):
+        manager = self._manager(plate_lock_frames=3)
+
+        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
+        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
+        track_state = manager.tracks[1]
+
+        manager._emit_event_core(
+            track_id=1,
+            event_type=1,
+            frame_idx=2,
+            frame=None,
+            payload={"captureTime": "2026-07-04 20:00:00"},
+            track_state=track_state,
+            vehicle_type="car",
+        )
+
+        saved = sorted(manager.events_dir.glob("*_t1_*.json"))
+        self.assertEqual(len(saved), 1)
+        with saved[0].open("r", encoding="utf-8") as fh:
+            event = json.load(fh)
+        self.assertEqual(event["plateNumber"], "")
+        self.assertFalse(event["plateIsGuess"])
+        self.assertTrue(event["plateRecognitionAbnormal"])
+        self.assertIn("PLATE_NOT_LOCKED", str(event.get("abnormalReason", "")))
+
+    def test_buffered_type1_payload_uses_locked_plate_when_type2_flushes(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=3, uploader=uploader)
+
+        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
+        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
+        track_state = manager.tracks[1]
+        manager._emit_event_core(
+            track_id=1,
+            event_type=1,
+            frame_idx=2,
+            frame=None,
+            payload={"captureTime": "2026-07-04 20:01:00"},
+            track_state=track_state,
+            vehicle_type="car",
+        )
+        self.assertEqual(len(uploader.payloads), 0)
+
+        self._update(manager, 3, plate_text="ABC1234", plate_is_guess=False)
+        track_state = manager.tracks[1]
+        manager._emit_event_core(
+            track_id=1,
+            event_type=2,
+            frame_idx=3,
+            frame=None,
+            payload={"captureTime": "2026-07-04 20:01:01"},
+            track_state=track_state,
+            vehicle_type="car",
+        )
+
+        self.assertEqual(len(uploader.payloads), 2)
+        first_payload = uploader.payloads[0]
+        self.assertEqual(first_payload["type"], 1)
+        self.assertEqual(first_payload["plateNumber"], "ABC1234")
+        self.assertFalse(first_payload["plateRecognitionAbnormal"])
+        self.assertFalse(first_payload["plateIsGuess"])
+
+    def test_build_api_payload_marks_plate_not_locked_abnormal_reason(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=3, uploader=uploader)
+
+        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
+        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
+        track_state = manager.tracks[1]
+
+        payload = manager._build_api_payload(
+            {
+                "id": "session-1",
+                "trackId": 1,
+                "type": 3,
+                "captureTime": "2026-07-04 20:02:00",
+                "captureImage": "",
+                "plateNumber": "",
+                "vehicleType": "car",
+                "plateRecognitionAbnormal": True,
+            },
+            track_state,
+            frame_idx=2,
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["plateNumber"], "")
+        self.assertEqual(payload["plateConfidence"], 0.0)
+        self.assertTrue(payload["plateRecognitionAbnormal"])
+        self.assertTrue(payload["isAbnormal"])
+        self.assertIn("PLATE_NOT_LOCKED", str(payload.get("abnormalReason", "")))
 
     def test_color_lock_on_majority_high_confidence(self):
         manager = self._manager(plate_lock_frames=3)
