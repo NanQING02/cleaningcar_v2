@@ -1,0 +1,1349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>CleaningCar 配置控制台</title>
+  <!-- <script>
+/** 
+* vue v3.5.26
+* (c) 2018-present Yuxi (Evan) You and Vue contributors
+* @license MIT
+**/var Vue=function(e){"use strict";var t,n,r;let i,l,s,o,a,c,u,d,p,h,f,m,g;function y(e){let t=Object.create(null);for(let n of e.split(","))t[n]=1;return e=>e in t}let b={},_=[],S=()=>{},x=()=>!1,C=e=>111===e.charCodeAt(0)&&110===e.charCodeAt(1)&&(e.charCodeAt(2)>122||97>e.charCodeAt(2)),k=e=>e.startsWith("onUpdate:"),T=Object.assign,w=(e,t)=>{let n=e.indexOf(t);n>-1&&e.splice(n,1)},N=Object.prototype.hasOwnProperty,A=(e,t)=>N.call(e,t),E=Array.isArray,I=e=>"function"==typeof e,R=e=>"string"==typeof e,O=e=>"symbol"==typeof e,M=e=>null!==e&&"object"==typeof e,P=e=>(M(e)||I(e))&&I(e.then)&&I(e.catch),L=Object.prototype.toString,$=e=>R(e)&&"NaN"!==e&&"-"!==e[0]&&""+parseInt(e,10)===e,D=y(",key,ref,ref_for,ref_key,onVnodeBeforeMount,onVnodeMounted,onVnodeBeforeUpdate,onVnodeUpdated,onVnodeBeforeUnmount,onVnodeUnmounted"),F=y("bind,cloak,else-if,else,for,html,if,model,on,once,pre,show,slot,text,memo"),V=e=>{let t=Object.create(null);return n=>t[n]||(t[n]=e(n))},j=/-\w/g,B=V(e=>e.replace(j,e=>e.slice(1).toUpperCase())),U=/\B([A-Z])/g,H=V(e=>e.replace(U,"-$1").toLowerCase()),q=V(e=>e.charAt(0).toUpperCase()+e.slice(1)),W=V(e=>e?`on${q(e)}`:""),K=(e,t)=>!Object.is(e,t),z=(e,...t)=>{for(let n=0;n<e.length;n++)e[n](...t)},J=(e,t,n,r=!1)=>{Object.defineProperty(e,t,{configurable:!0,enumerable:!1,writable:r,value:n})},G=e=>{let t=parseFloat(e);return isNaN(t)?e:t},X=e=>{let t=R(e)?Number(e):NaN;return isNaN(t)?e:t},Q=()=>i||(i="u">typeof globalThis?globalThis:"u">typeof self?self:"u">typeof window?window:"u">typeof global?global:{}),Z=y("Infinity,undefined,NaN,isFinite,isNaN,parseFloat,parseInt,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,Math,Number,Date,Array,Object,Boolean,String,RegExp,Map,Set,JSON,Intl,BigInt,console,Error,Symbol");function Y(e){if(E(e)){let t={};for(let n=0;n<e.length;n++){let r=e[n],i=R(r)?er(r):Y(r);if(i)for(let e in i)t[e]=i[e]}return t}if(R(e)||M(e))return e}let ee=/;(?![^(]*\))/g,et=/:([^]+)/,en=/\/\*[^]*?\*\//g;function er(e){let t={}[... 32505 chars omitted ...]
+`+"  ".repeat(e),0)}return h}(e,t);t.onContextCreated&&t.onContextCreated(n);let{mode:r,push:i,prefixIdentifiers:l,indent:s,deindent:o,newline:a,ssr:c}=n,u=Array.from(e.helpers),d=u.length>0,p=!l&&"module"!==r;!function(e,t){let{push:n,newline:r,runtimeGlobalName:i}=t,l=Array.from(e.helpers);if(l.length>0&&(n(`const _Vue = ${i}
+`,-1),e.hoists.length)){let e=[sn,sr,si,sl,ss].filter(e=>l.includes(e)).map(o0).join(", ");n(`const { ${e} } = _Vue
+`,-1)}(function(e,t){if(!e.length)return;t.pure=!0;let{push:n,newline:r}=t;r();for(let i=0;i<e.length;i++){let l=e[i];l&&(n(`const _hoisted_${i+1} = `),o3(l,t),r())}t.pure=!1})(e.hoists,t),r(),n("return ")}(e,n);let h=(c?["_ctx","_push","_parent","_attrs"]:["_ctx","_cache"]).join(", ");if(i(`function ${c?"ssrRender":"render"}(${h}) {`),s(),p&&(i("with (_ctx) {"),s(),d&&(i(`const { ${u.map(o0).join(", ")} } = _Vue
+`,-1),a())),e.components.length&&(o1(e.components,"component",n),(e.directives.length||e.temps>0)&&a()),e.directives.length&&(o1(e.directives,"directive",n),e.temps>0&&a()),e.temps>0){i("let ");for(let t=0;t<e.temps;t++)i(`${t>0?", ":""}_temp${t}`)}return(e.components.length||e.directives.length||e.temps)&&(i(`
+`,0),a()),c||i("return "),e.codegenNode?o3(e.codegenNode,n):i("null"),p&&(o(),i("}")),o(),i("}"),{ast:e,code:n.code,preamble:"",map:n.map?n.map.toJSON():void 0}}(o,s)}(e,T({},aP,t,{nodeTransforms:[aj,...aB,...t.nodeTransforms||[]],directiveTransforms:T({},aU,t.directiveTransforms||{}),transformHoist:null}))}(e,i),s=Function(l)();return s._rc=!0,aH[n]=s}return iR(aq),e.BaseTransition=nb,e.BaseTransitionPropsValidators=ng,e.Comment=r8,e.DeprecationTypes=null,e.EffectScope=eg,e.ErrorCodes={SETUP_FUNCTION:0,0:"SETUP_FUNCTION",RENDER_FUNCTION:1,1:"RENDER_FUNCTION",NATIVE_EVENT_HANDLER:5,5:"NATIVE_EVENT_HANDLER",COMPONENT_EVENT_HANDLER:6,6:"COMPONENT_EVENT_HANDLER",VNODE_HOOK:7,7:"VNODE_HOOK",DIRECTIVE_HOOK:8,8:"DIRECTIVE_HOOK",TRANSITION_HOOK:9,9:"TRANSITION_HOOK",APP_ERROR_HANDLER:10,10:"APP_ERROR_HANDLER",APP_WARN_HANDLER:11,11:"APP_WARN_HANDLER",FUNCTION_REF:12,12:"FUNCTION_REF",ASYNC_COMPONENT_LOADER:13,13:"ASYNC_COMPONENT_LOADER",SCHEDULER:14,14:"SCHEDULER",COMPONENT_UPDATE:15,15:"COMPONENT_UPDATE",APP_UNMOUNT_CLEANUP:16,16:"APP_UNMOUNT_CLEANUP"},e.ErrorTypeStrings=null,e.Fragment=r3,e.KeepAlive={name:"KeepAlive",__isKeepAlive:!0,props:{include:[String,RegExp,Array],exclude:[String,RegExp,Array],max:[String,Number]},setup(e,{slots:t}){let n=iT(),r=n.ctx,i=new Map,l=new Set,s=null,o=n.suspense,{renderer:{p:a,m:c,um:u,o:{createElement:d}}}=r,p=d("div");function h(e){nJ(e),u(e,n,o,!0)}function f(e){i.forEach((t,n)=>{let r=i$(nB(t)?t.type.__asyncResolved||{}:t.type);r&&!e(r)&&m(n)})}function m(e){let t=i.get(e);!t||s&&ia(t,s)?s&&nJ(s):h(t),i.delete(e),l.delete(e)}r.activate=(e,t,n,r,i)=>{let l=e.component;c(e,t,n,0,o),a(l.vnode,e,t,n,l,o,r,e.slotScopeIds,i),rH(()=>{l.isDeactivated=!1,l.a&&z(l.a);let t=e.props&&e.props.onVnodeMounted;t&&iS(t,l.parent,e)},o)},r.deactivate=e=>{let t=e.component;rX(t.m),rX(t.a),c(e,p,null,1,o),rH(()=>{t.da&&z(t.da);let n=e.props&&e.props.onVnodeUnmounted;n&&iS(n,t.parent,e),t.isDeactivated=!0},o)},t7(()=>[e.include,e.exclude],([e,t])=>{e&&f(e),t&&f(t,!0)},()=>{let e=iB(i.keys());return l&&e.push(...l),e}),nB&&(r.suspense=o,nB.registerDep=n=>{let[t,r]=n;e.unmount(t,r,1)});let g=e=>{let t=nU(e),n=i.get(t);n||i.set(t,n=f2(e,p,!1,o)),s&&ia(t,s)&&n.unmount();let r=t.type.__asyncResolved||t.type;return r.__vta&&(r.props.cacheKey=1,cN(n,v2,r.props,1,p,r)),n};return oA[0]={},{setup(e,{slots:t}){let n;return()=>{let i=t.default&&t.default();return n||(l=new Set,i&&i.forEach(oa),n=i&&i[0]),i}},__isKeepAlive:!0},oA[1]={c:g,a:h,m(e,t,n){let r=g(e);a(r.vnode,r.el,t,n)}}},e.KeepAliveProps=null,e.ReactiveEffect=br,e.Suspense=js,e.Teleport=n6,e.Text=r2,e.Transition=ns,e.TransitionGroup={name:"TransitionGroup",props:Xs,setup(e,{slots:t}){let n=iT(),{leaveGuards:r,moveCallbacks:i,vnode:l}=n,s=sC(e);let o,a,c=()=>{o=void 0},u=()=>{c(),i.clear()};return t7(()=>e,... 14120 chars omitted ...]
+;</script> -->
+  <script src="/static/vue.global.prod.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", "PingFang SC", sans-serif;
+    }
+    body { margin: 0; background: #121417; color: #e0e0e0; }
+    header { padding: 16px 28px; background: #191d23; border-bottom: 1px solid #242931; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    header h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px 28px 60px; display: flex; flex-direction: column; gap: 24px; }
+    .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .panel { background: #1c2129; border: 1px solid #2a313d; border-radius: 10px; padding: 16px; box-shadow: 0 6px 16px rgba(0,0,0,0.25); }
+    .panel h3 { margin-top: 0; font-size: 17px; }
+    label { display: block; font-size: 13px; margin-top: 8px; }
+    input, select { width: 100%; padding: 6px 8px; margin-top: 4px; background: #0f1115; border: 1px solid #2f3541; border-radius: 6px; color: #f3f3f3; }
+    button { border: none; border-radius: 6px; padding: 8px 14px; margin-right: 6px; margin-top: 8px; cursor: pointer; font-weight: 600; color: #fff; background: #2f7cf8; }
+    button.secondary { background: #3b3f45; }
+    button.danger { background: #d9534f; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .canvas-wrapper { background: #0f1115; border-radius: 12px; border: 1px solid #2a313d; padding: 16px; }
+    canvas { width: 100%; max-width: 1080px; height: auto; border: 1px solid #313844; border-radius: 8px; background-color: #050607; cursor: crosshair; }
+    .mode-buttons { margin-bottom: 12px; }
+    .mode-buttons button { margin-bottom: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    th, td { border: 1px solid #2f3541; padding: 4px 6px; text-align: left; }
+    .log-table { max-height: 220px; overflow-y: auto; margin-bottom: 12px; }
+    .log-section { margin-top: 12px; }
+    .debug-img { width: 100%; max-width: 100%; border: 1px solid #2a313d; border-radius: 8px; background: #000; }
+    .status-bar { position: fixed; bottom: 0; left: 0; right: 0; padding: 10px 28px; background: rgba(18,20,23,0.92); border-top: 1px solid #2a313d; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+    .hint { font-size: 12px; line-height: 1.4; color: #9aa3b5; }
+    .mode-label { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #2f3541; font-size: 12px; margin-left: 8px; }
+    .header-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 13px; }
+    .header-controls label { margin-top: 0; }
+    .header-select { min-width: 180px; }
+    .header-link { color: #8ab4ff; text-decoration: none; padding-top: 4px; }
+    .header-link:hover { text-decoration: underline; }
+    .subsection { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2a313d; }
+    .subsection h4 { margin: 0 0 8px; font-size: 14px; color: #d8deea; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>CleaningCar Web 控制台<span class="mode-label">{{ modeLabel }}</span></h1>
+      <div class="header-controls">
+        <label class="header-select">
+          场景配置
+          <select v-model="selectedConfig" @change="onConfigChange">
+            <option v-for="file in configFiles" :key="file" :value="file">
+              {{ file === activeConfig ? file + '（当前）' : file }}
+            </option>
+          </select>
+        </label>
+        <button @click="saveConfigAs" :disabled="busy">另存为配置</button>
+        <button class="secondary" @click="toggleLogicView">
+          {{ logicView ? '关闭开发者参数' : '打开开发者参数' }}
+        </button>
+        <button class="secondary" @click="openLogsPage">查看日志</button>
+      </div>
+    </header>
+    <main>
+      <div class="panels">
+        <section class="panel">
+          <h3>用户参数</h3>
+          <label>设备 ID
+            <input v-model="form.system.device_id" placeholder="RK3588-XXX" />
+          </label>
+          <p class="hint">多路运行时每份配置的 `device_id` 必须唯一；若留空，运行时命名空间会退回当前配置文件名。</p>
+          <label>API 地址
+            <input v-model="form.system.api.url" placeholder="https://example/api" />
+          </label>
+          <label>API Token
+            <input v-model="form.system.api.token" placeholder="token" />
+          </label>
+          <label>车道名称
+            <input v-model="form.logic.lane_name" placeholder="冲洗 / 绕行" />
+          </label>
+          <label>视频源（RTSP/本地文件）
+            <input v-model="form.video.source" placeholder="rtsp://... 或 /path/video.mp4" />
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.wheel.enabled" />
+            启用左右车轮旁路检测
+          </label>
+          <label>左车轮 RTSP
+            <input v-model="form.wheel.left_source" placeholder="rtsp://left-wheel" />
+          </label>
+          <label>右车轮 RTSP
+            <input v-model="form.wheel.right_source" placeholder="rtsp://right-wheel" />
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.video.hw_decode" />
+            启用硬件解码 (GStreamer+mpp)
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.enable_per_id_video" />
+            启用按车辆ID录像保存
+          </label>
+          <label>按车辆ID录像目录
+            <input v-model="form.logic.per_id_video_dir" placeholder="./video_result/per_id" />
+          </label>
+          <label>视频源模式
+            <select v-model="form.video.source_mode">
+              <option value="auto">auto</option>
+              <option value="camera">camera</option>
+              <option value="file">file</option>
+            </select>
+          </label>
+          <label>推理线程数
+            <input type="number" min="1" v-model.number="form.video.workers" />
+          </label>
+          <label>NPU Core Mask
+            <input v-model="form.video.core_mask" placeholder="0-2 / 0,1 / all" />
+          </label>
+          <label>截图上报方式
+            <select v-model="form.system.api.capture_mode">
+              <option value="path">path</option>
+              <option value="base64">base64</option>
+            </select>
+          </label>
+          <div>
+            <button @click="saveUserConfig" :disabled="busy">保存用户参数</button>
+            <button class="secondary" @click="reloadFrame" :disabled="busy">刷新背景帧</button>
+            <button class="secondary" @click="restartInference" :disabled="busy">重启推理</button>
+          </div>
+          <p class="hint">这里只放甲方可直接调整的基础参数。算法阈值、调试路径等请在“开发者参数”里修改。</p>
+        </section>
+        <section class="panel">
+          <h3>推理守护进程</h3>
+          <p class="hint">通过 Guardian 控制 run_zone_detect.py，无需接显示器即可远程维护推理进程。</p>
+          <p class="hint">当前面板绑定场景：<strong>{{ activeInferenceKey }}</strong>（随上方场景配置切换）</p>
+          <p>状态：<strong>{{ inferenceStatusText }}</strong>
+            <span v-if="inferenceStatus.pid">(PID {{ inferenceStatus.pid }})</span>
+          </p>
+          <p>上次启动：{{ formatTimestamp(inferenceStatus.last_start) }}</p>
+          <p>上次退出：{{ formatExit(inferenceStatus.last_exit) }}</p>
+          <p>累计重启：{{ inferenceStatus.restart_count || 0 }}</p>
+          <label>
+            <input type="checkbox" v-model="inferenceAutoRestart" @change="setAutoRestart" /> 自动重启
+          </label>
+          <p class="hint">本地文件视频默认单次跑完即停止。只有手动勾选“自动重启”后，才会循环重新开始检测；点击“停止”不会改写当前勾选状态。</p>
+          <div>
+            <button @click="startInference" :disabled="busy">启动</button>
+            <button class="secondary" @click="stopInference" :disabled="busy">停止</button>
+            <button class="secondary" @click="restartInference" :disabled="busy">重启</button>
+            <button class="secondary" @click="refreshInferenceLogs" :disabled="busy">刷新日志</button>
+          </div>
+          <div class="log-section">
+            <h4>推理日志</h4>
+            <div class="log-table" v-if="inferenceLogs.length">
+              <table>
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>内容</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="entry in inferenceLogs" :key="entry.timestamp">
+                    <td>{{ entry.timestamp }}</td>
+                    <td>{{ entry.line }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="hint" v-else>暂无推理日志，点击“刷新日志”获取最新输出。</p>
+          </div>
+        </section>
+        <section class="panel" v-if="logicView">
+          <h3>开发者参数</h3>
+          <p class="hint">这里集中放算法阈值、调试输出和运行时路径。基础业务参数请只在“用户参数”面板修改。</p>
+          <div class="subsection">
+            <h4>运行时与输出</h4>
+            <label>FP 输出模式
+              <select v-model="form.video.fp_output_mode">
+                <option value="6">6</option>
+                <option value="9">9</option>
+              </select>
+            </label>
+            <label>监控打印间隔（秒）
+              <input type="number" min="0" step="0.5" v-model.number="form.system.monitor_interval" />
+            </label>
+            <label>性能指标路径
+              <input v-model="form.system.metrics_path" placeholder="/dev/shm/cleaningcar_metrics.json" />
+            </label>
+            <label>检测 CSV 路径
+              <input v-model="form.video.csv" placeholder="./video_result/test.csv" />
+            </label>
+            <label>切片分钟数
+              <input type="number" min="0" v-model.number="form.video.segment_minutes" />
+            </label>
+            <label>事件目录
+              <input v-model="form.event_output_dir" placeholder="events/config" />
+            </label>
+            <label>事件截图目录
+              <input v-model="form.event_capture_dir" placeholder="captures/config" />
+            </label>
+            <label>事件截图质量
+              <input type="number" min="1" max="100" v-model.number="form.event_capture_quality" />
+            </label>
+          </div>
+          <div class="subsection">
+            <h4>车轮旁路</h4>
+            <label>车轮模型路径
+              <input v-model="form.wheel.model" placeholder="models/wheel/2026.4.28CRwheelfp.rknn" />
+            </label>
+            <label>车轮分类标签（逗号分隔）
+              <input v-model="form.wheel.classes_text" placeholder="0-25,25-50,50-75,75-100" />
+            </label>
+            <label>车轮目标 FPS
+              <input type="number" min="0.1" step="0.1" v-model.number="form.wheel.target_fps" />
+            </label>
+            <label>有车活动 FPS（0 表示不额外限速）
+              <input type="number" min="0" step="0.1" v-model.number="form.wheel.active_target_fps" />
+            </label>
+            <label>事件驱动车轮推理
+              <input type="checkbox" v-model="form.wheel.event_driven" />
+            </label>
+            <label>车轮绑定窗口秒数
+              <input type="number" min="1" step="0.5" v-model.number="form.wheel.bind_window_seconds" />
+            </label>
+            <label>绑定允许早于轨迹秒数
+              <input type="number" min="0" step="0.1" v-model.number="form.wheel.bind_pre_start_seconds" />
+            </label>
+            <label>绑定允许晚于轨迹秒数
+              <input type="number" min="0" step="0.1" v-model.number="form.wheel.bind_after_end_seconds" />
+            </label>
+            <label>只给活动轨迹绑定车轮
+              <input type="checkbox" v-model="form.wheel.bind_require_active" />
+            </label>
+            <label>Type5 等待车轮秒数
+              <input type="number" min="0" step="0.1" v-model.number="form.wheel.bind_wait_seconds" />
+            </label>
+            <label>Type5 等待轮询秒数
+              <input type="number" min="0.02" step="0.01" v-model.number="form.wheel.bind_wait_poll_seconds" />
+            </label>
+            <label>车轮照片分桶秒数
+              <input type="number" min="0.05" step="0.05" v-model.number="form.wheel.photo_bucket_seconds" />
+            </label>
+            <label>车轮照片最低分数
+              <input type="number" min="0" max="1" step="0.01" v-model.number="form.wheel.photo_min_score" />
+            </label>
+          </div>
+          <div class="subsection">
+            <h4>调试与心跳</h4>
+            <label>调试帧路径
+              <input v-model="form.video.debug_frame_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/debug.jpg" />
+            </label>
+            <label>调试帧间隔
+              <input type="number" min="1" v-model.number="form.video.debug_frame_interval" />
+            </label>
+            <label>调试帧最大宽度
+              <input type="number" min="64" v-model.number="form.video.debug_frame_max_width" />
+            </label>
+            <label>调试帧质量
+              <input type="number" min="1" max="100" v-model.number="form.video.debug_frame_quality" />
+            </label>
+            <label>命令目录
+              <input v-model="form.system.command_dir" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/cmd" />
+            </label>
+            <label>CPU Mask
+              <input v-model="form.system.cpu_mask" placeholder="0-3 / 4-7" />
+            </label>
+            <label>心跳文件
+              <input v-model="form.system.heartbeat_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/heartbeat.json" />
+            </label>
+            <label>心跳写入间隔（秒）
+              <input type="number" min="0.5" step="0.5" v-model.number="form.system.heartbeat_interval_seconds" />
+            </label>
+            <label>心跳超时（秒）
+              <input type="number" min="1" step="1" v-model.number="form.system.heartbeat_timeout_seconds" />
+            </label>
+            <label>进度超时（秒）
+              <input type="number" min="1" step="1" v-model.number="form.system.progress_timeout_seconds" />
+            </label>
+            <label>启动宽限（秒）
+              <input type="number" min="1" step="1" v-model.number="form.system.heartbeat_startup_grace_seconds" />
+            </label>
+            <label>启动标志文件
+              <input v-model="form.system.startup_flag_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/started.flag" />
+            </label>
+            <p class="hint">`debug_frame_path`、`command_dir`、`heartbeat_path`、`startup_flag_path` 留空时，会自动隔离到 `/dev/shm/cleaningcar_runtime/&lt;device_id或配置名&gt;/`。</p>
+            <label>启动截图目录
+              <input v-model="form.system.startup_capture_dir" placeholder="captures/startup" />
+            </label>
+            <label>手动截图目录
+              <input v-model="form.system.manual_capture_dir" placeholder="captures/manual" />
+            </label>
+          </div>
+          <div class="subsection">
+            <h4>逻辑阈值</h4>
+          <label>Zone A 掩膜开关
+            <select v-model="form.logic.zone_a_mask_enable">
+              <option :value="true">开启（推荐）</option>
+              <option :value="false">关闭</option>
+            </select>
+          </label>
+          <label>进入/退出 Zone B 防抖帧数
+            <input type="number" min="1" v-model.number="form.logic.zone_b_entry_hysteresis" />
+          </label>
+          <label>静止判断最小帧 (Type3)
+            <input type="number" min="0" v-model.number="form.logic.stationary_min_frames" />
+          </label>
+          <label>Type3/4 重复触发最小间隔帧
+            <input type="number" min="1" v-model.number="form.logic.type34_min_interval_frames" />
+          </label>
+          <label>Track 超时时间 (帧)
+            <input type="number" min="30" v-model.number="form.logic.track_timeout_frames" />
+          </label>
+          <label>车辆跟踪 IoU 阈值 (0-1)
+            <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_iou_threshold" />
+          </label>
+          <label>车辆中心门控比例 (0-1, 0关闭)
+            <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_center_gate_ratio" />
+          </label>
+          <label>Type1 最小 Zone A 停留帧数 (0关闭)
+            <input type="number" min="0" v-model.number="form.logic.min_track_frames_for_type1" />
+          </label>
+          <label>Type5 最小 Zone A 停留帧数 (0关闭)
+            <input type="number" min="0" v-model.number="form.logic.min_zone_a_dwell_frames_for_type5" />
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.require_vehicle_type_for_events" />
+            仅在已锁定车型时允许触发 Type1-5
+          </label>
+          <label>锚点上移比例 (0-0.9)
+            <input type="number" min="0" max="0.9" step="0.01" v-model.number="form.logic.anchor_offset_ratio" />
+          </label>
+          <label>Zone B 锚点延迟帧
+            <input type="number" min="0" v-model.number="form.logic.zone_b_anchor_min_frames" />
+          </label>
+          <label>影子车牌池大小
+            <input type="number" min="10" v-model.number="form.logic.shadow_plate_pool.max_candidates" />
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.no_draw" />
+            禁用所有绘制（仅原始画面，用于性能优化）
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.draw_plate_boxes" />
+            绘制车牌框与识别文字（关闭时事件截图保持原图优先）
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.debug_overlay" />
+            开启调试覆盖（Zone/水雾/锚点）
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.debug_track_state" />
+            绘制跟踪状态文本
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.debug_anchor_points" />
+            显示底部锚点
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.debug_water_boxes" />
+            显示水雾/人工清洗检测框
+          </label>
+          <div>
+            <button @click="saveDeveloperConfig" :disabled="busy">保存开发者参数</button>
+          </div>
+          <p class="hint">开发者参数独立保存到 <code>/config/developer</code>，基础用户面板不会覆盖这里的字段。</p>
+          </div>
+        </section>
+        <section class="panel">
+          <h3>绘制说明</h3>
+          <ul class="hint">
+            <li>单击画布添加顶点；拖动顶点可微调；按 Delete 键删除最近的一个顶点。</li>
+            <li>切换到“流向箭头”后，可拖动起点/终点，或在空白处单击重新定位。</li>
+            <li>点击“保存区域”后即写入 config.json，推理进程需重启一次生效。</li>
+            <li>可在任意电脑浏览器访问： http://设备IP:8000 </li>
+          </ul>
+          <div>
+            <button class="secondary" @click="undoVertex">撤销最近顶点</button>
+            <button class="secondary" @click="resetZone">重置当前区域</button>
+            <button @click="saveZones" :disabled="busy">保存区域</button>
+          </div>
+          <h3>实时调试画面</h3>
+          <p class="hint">推理脚本每隔固定帧写入带绘制的 <code>{{ form.video.debug_frame_path || './debug/latest.jpg' }}</code>；页面不会自动轮询，点击按钮才读取最新调试帧。</p>
+          <img v-if="debugImageUrl" :src="debugImageUrl" alt="调试画面" class="debug-img"/>
+          <p class="hint">{{ debugFrameStatus }}</p>
+          <div>
+            <button class="secondary" @click="refreshDebugImage" :disabled="busy">点击获取实时画面</button>
+          </div>
+        </section>
+      </div>
+      <section class="canvas-wrapper">
+        <div class="mode-buttons">
+          <button :class="{secondary: editMode!=='zone_a'}" @click="setMode('zone_a')">编辑 Zone A</button>
+          <button :class="{secondary: editMode!=='zone_b'}" @click="setMode('zone_b')">编辑 Zone B</button>
+          <button :class="{secondary: editMode!=='flow'}" @click="setMode('flow')">编辑流向箭头</button>
+        </div>
+        <canvas ref="canvas" width="960" height="540"
+          :style="canvasStyle"
+          @mousedown="onMouseDown"
+          @mousemove="onMouseMove"
+          @mouseup="onMouseUp"
+          @mouseleave="onMouseUp"
+          ></canvas>
+      </section>
+    </main>
+    <div class="status-bar">
+      <span>{{ status }}</span>
+      <span v-if="lastSave">上次保存：{{ lastSave }}</span>
+    </div>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+    createApp({
+      data() {
+        return {
+          form: {
+            system: {
+              device_id: '',
+              monitor_interval: 2.0,
+              metrics_path: '/dev/shm/cleaningcar_metrics.json',
+              command_dir: '',
+              startup_flag_path: '',
+              heartbeat_path: '',
+              heartbeat_interval_seconds: 1.0,
+              heartbeat_timeout_seconds: 30.0,
+              progress_timeout_seconds: 90.0,
+              heartbeat_startup_grace_seconds: 90.0,
+              startup_capture_dir: 'captures/startup',
+              manual_capture_dir: 'captures/manual',
+              cpu_mask: '',
+              api: { url: '', token: '', capture_mode: 'path' }
+            },
+            video: {
+              source: '',
+              source_mode: 'auto',
+              hw_decode: false,
+              workers: 2,
+              core_mask: '0-2',
+              fp_output_mode: '6',
+              csv: '',
+              debug_frame_path: '',
+              debug_frame_interval: 30,
+              debug_frame_max_width: 960,
+              debug_frame_quality: 80,
+              segment_minutes: 60
+            },
+            wheel: {
+              enabled: false,
+              event_driven: false,
+              left_source: '',
+              right_source: '',
+              model: 'models/wheel/2026.4.28CRwheelfp.rknn',
+              classes: ['0-25', '25-50', '50-75', '75-100'],
+              classes_text: '0-25,25-50,50-75,75-100',
+              target_fps: 5,
+              active_target_fps: 0,
+              bind_window_seconds: 30,
+              bind_pre_start_seconds: 3,
+              bind_after_end_seconds: 3,
+              bind_require_active: true,
+              bind_wait_seconds: 0.8,
+              bind_wait_poll_seconds: 0.08,
+              photo_bucket_seconds: 1,
+              photo_min_score: 0.3
+            },
+            logic: {
+              detection_anchor: 'bottom_center',
+              zone_a_mask_enable: true,
+              zone_b_entry_hysteresis: 3,
+              zone_b_exit_hysteresis: 3,
+              stationary_min_frames: 0,
+              stationary_speed_thresh: 8.0,
+              type34_min_interval_frames: 5,
+              track_timeout_frames: 90,
+              track_max_age: 120,
+              vehicle_iou_threshold: 0.3,
+              vehicle_center_gate_ratio: 0.0,
+              no_draw: false,
+              draw_plate_boxes: false,
+              enable_per_id_video: false,
+              lane_name: '冲洗',
+              vehicle_shrink_ratio: 0.35,
+              vehicle_lock_min_votes: 40,
+              vehicle_lock_on_confirm: true,
+              plate_lock_frames: 6,
+              default_plate_color: '',
+              default_plate_color_conf: 0.0,
+              default_cleanliness: 0,
+              car_plate_cache_ttl: 60,
+              allowed_event_types: [1, 2, 3, 4, 5, 6],
+              min_track_frames_for_type1: 5,
+              min_zone_a_dwell_frames_for_type5: 25,
+              disable_plate_only_events: true,
+              single_lifecycle_events: true,
+              require_vehicle_type_for_events: false,
+              anchor_offset_ratio: 0.0,
+              zone_b_anchor_min_frames: 0,
+              shadow_plate_pool: { max_candidates: 50, max_age_frames: 120 },
+              debug_overlay: false,
+              debug_track_state: false,
+              debug_anchor_points: false,
+              debug_water_boxes: false,
+              wash_duration_offset_seconds: 0.0,
+              min_zone_b_dwell_frames_for_type4: 60,
+              per_id_video_dir: './video_result/per_id',
+              enable_event_disk: false
+            },
+            zones: {
+              zone_a_detection: [],
+              zone_b_wash: [],
+              flow_vector: { start: [0.5, 0.2], end: [0.5, 0.8] }
+            },
+            event_output_dir: 'events/config',
+            event_capture_dir: 'captures/config',
+            event_capture_quality: 85
+          },
+          status: '初始化中…',
+          lastSave: '',
+          busy: false,
+          editMode: 'zone_a',
+          canvas: null,
+          ctx: null,
+          dragging: null,
+          backgroundUrl: '',
+          frameSize: { w: 960, h: 540 },
+          debugImageUrl: '',
+          debugFrameStatus: '点击获取实时画面以读取最新调试帧',
+          inferenceStatus: { running: false, pid: null, last_start: null, last_exit: null, restart_count: 0 },
+          inferenceAutoRestart: true,
+          inferenceLogs: [],
+          inferenceInstances: [],
+          inferenceStatusTimer: null,
+          inferenceLogTimer: null,
+          configFiles: [],
+          configDeviceIds: {},
+          selectedConfig: '',
+          activeConfig: '',
+          logicView: false
+        };
+      },
+      computed: {
+        modeLabel() {
+          if (this.editMode === 'zone_a') return 'Zone A';
+          if (this.editMode === 'zone_b') return 'Zone B';
+          return '流向箭头';
+        },
+        inferenceStatusText() {
+          return this.inferenceStatus.running ? '运行中' : '已停止';
+        },
+        activeInferenceKey() {
+          return this.activeConfig || this.selectedConfig || 'config.json';
+        },
+        canvasStyle() {
+          const bg = this.backgroundUrl ? `url(${this.backgroundUrl})` : 'none';
+          return {
+            backgroundImage: bg,
+            backgroundSize: 'contain',
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'center'
+          };
+        }
+      },
+      mounted() {
+        this.canvas = this.$refs.canvas;
+        this.ctx = this.canvas.getContext('2d');
+        this.bindKeyboard();
+        try {
+          const params = new URLSearchParams(window.location.search || '');
+          this.logicView = params.get('logic') === '1';
+        } catch (e) {
+          this.logicView = false;
+        }
+        this.loadConfigFiles();
+        this.loadFrame();
+        this.loadConfig();
+        this.fetchInferenceStatus();
+        this.refreshInferenceLogs();
+        this.inferenceStatusTimer = setInterval(() => this.fetchInferenceStatus(), 10000);
+        this.inferenceLogTimer = setInterval(() => this.refreshInferenceLogs(true), 15000);
+      },
+      beforeUnmount() {
+        if (this.inferenceStatusTimer) clearInterval(this.inferenceStatusTimer);
+        if (this.inferenceLogTimer) clearInterval(this.inferenceLogTimer);
+      },
+      methods: {
+        normalizeConfigName(name) {
+          const text = String(name || '').trim();
+          if (!text) return '';
+          return text.toLowerCase().endsWith('.json') ? text : `${text}.json`;
+        },
+        normalizeDeviceId(value) {
+          return String(value || '').trim();
+        },
+        buildKeyedUrl(path, params = {}) {
+          const url = new URL(path, window.location.origin);
+          const key = this.activeInferenceKey;
+          if (key) {
+            url.searchParams.set('key', key);
+          }
+          Object.entries(params || {}).forEach(([name, value]) => {
+            if (value === undefined || value === null || value === '') {
+              return;
+            }
+            url.searchParams.set(name, String(value));
+          });
+          return `${url.pathname}${url.search}`;
+        },
+        validateDeviceIdUnique(targetName = '', allowCurrentConfig = true) {
+          const deviceId = this.normalizeDeviceId(this.form.system.device_id);
+          if (!deviceId) {
+            return;
+          }
+          const normalizedTarget = this.normalizeConfigName(targetName || this.activeInferenceKey);
+          const currentName = this.normalizeConfigName(this.activeInferenceKey);
+          for (const [configName, configDeviceId] of Object.entries(this.configDeviceIds || {})) {
+            if (this.normalizeDeviceId(configDeviceId) !== deviceId) {
+              continue;
+            }
+            const normalizedName = this.normalizeConfigName(configName);
+            if (allowCurrentConfig && normalizedName === currentName) {
+              continue;
+            }
+            if (normalizedTarget && normalizedName === normalizedTarget) {
+              continue;
+            }
+            throw new Error(`device_id "${deviceId}" 已被 ${configName} 使用；多路运行时每份配置的 device_id 必须唯一。`);
+          }
+        },
+        async refreshConfigFileCache() {
+          await this.loadConfigFiles();
+        },
+        bindKeyboard() {
+          window.addEventListener('keydown', (e) => {
+            if (e.key === 'Delete') {
+              this.undoVertex();
+            }
+          });
+        },
+        async saveConfigAs() {
+          const base = this.selectedConfig || this.activeConfig || 'config_client.json';
+          const suggested = base.replace(/\.json$/i, '') || 'config_client';
+          const name = window.prompt('保存为配置文件名（不含路径）：', suggested);
+          if (!name) {
+            return;
+          }
+          this.busy = true;
+          this.status = '正在另存配置…';
+          try {
+            const targetName = this.normalizeConfigName(name);
+            this.validateDeviceIdUnique(targetName, false);
+            const configData = JSON.parse(JSON.stringify(this.form));
+            if (configData.wheel) {
+              delete configData.wheel.classes_text;
+            }
+            const payload = {
+              name,
+              data: configData
+            };
+            const res = await fetch('/config/save_as', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+              let msg = '保存失败';
+              try {
+                const data = await res.json();
+                if (data && data.detail) {
+                  msg = data.detail;
+                }
+              } catch (e) {}
+              throw new Error(msg);
+            }
+            const result = await res.json();
+            this.status = `已保存为 ${result.saved_as}`;
+            await this.loadConfigFiles();
+            this.selectedConfig = result.saved_as;
+            await this.onConfigChange();
+          } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async loadConfigFiles() {
+          try {
+            const res = await fetch('/config/files');
+            if (!res.ok) return;
+            const data = await res.json();
+            this.configFiles = data.files || [];
+            this.configDeviceIds = data.device_ids || {};
+            this.activeConfig = data.active || '';
+            if (!this.selectedConfig && this.activeConfig) {
+              this.selectedConfig = this.activeConfig;
+            }
+          } catch (err) {
+          }
+        },
+        async loadConfig() {
+          try {
+            const res = await fetch(this.buildKeyedUrl('/config'));
+            if (!res.ok) throw new Error('读取配置失败');
+            const data = await res.json();
+            this.form = JSON.parse(JSON.stringify(data));
+            this.ensureDefaults();
+            this.repaint();
+            this.status = '配置已加载';
+          } catch (err) {
+            this.status = err.message;
+          }
+        },
+        ensureDefaults() {
+          this.form.system = this.form.system || {};
+          this.form.system.api = this.form.system.api || {};
+          this.form.video = this.form.video || {};
+          this.form.wheel = this.form.wheel || {};
+          this.form.logic = this.form.logic || {};
+          const z = this.form.zones || {};
+          z.zone_a_detection = z.zone_a_detection || [];
+          z.zone_b_wash = z.zone_b_wash || [];
+          z.flow_vector = z.flow_vector || { start: [0.5, 0.2], end: [0.5, 0.8] };
+          this.form.zones = z;
+          this.form.system.device_id = this.form.system.device_id || '';
+          this.form.system.monitor_interval = Number(this.form.system.monitor_interval || 2.0);
+          this.form.system.metrics_path = this.form.system.metrics_path || '/dev/shm/cleaningcar_metrics.json';
+          this.form.system.command_dir = this.form.system.command_dir || '';
+          this.form.system.startup_flag_path = this.form.system.startup_flag_path || '';
+          this.form.system.heartbeat_path = this.form.system.heartbeat_path || '';
+          this.form.system.heartbeat_interval_seconds = Number(this.form.system.heartbeat_interval_seconds || 1.0);
+          this.form.system.heartbeat_timeout_seconds = Number(this.form.system.heartbeat_timeout_seconds || 30.0);
+          this.form.system.progress_timeout_seconds = Number(this.form.system.progress_timeout_seconds || 90.0);
+          this.form.system.heartbeat_startup_grace_seconds = Number(this.form.system.heartbeat_startup_grace_seconds || 90.0);
+          this.form.system.startup_capture_dir = this.form.system.startup_capture_dir || 'captures/startup';
+          this.form.system.manual_capture_dir = this.form.system.manual_capture_dir || 'captures/manual';
+          this.form.system.cpu_mask = this.form.system.cpu_mask || '';
+          this.form.system.api.url = this.form.system.api.url || '';
+          this.form.system.api.token = this.form.system.api.token || '';
+          this.form.system.api.capture_mode = this.form.system.api.capture_mode || 'path';
+          this.form.video.source = this.form.video.source || '';
+          this.form.video.source_mode = this.form.video.source_mode || 'auto';
+          this.form.video.hw_decode = !!this.form.video.hw_decode;
+          this.form.video.workers = Number(this.form.video.workers || 2);
+          this.form.video.core_mask = this.form.video.core_mask || '0-2';
+          this.form.video.fp_output_mode = String(this.form.video.fp_output_mode || '6');
+          this.form.video.csv = this.form.video.csv || '';
+          this.form.logic.shadow_plate_pool = this.form.logic.shadow_plate_pool || { max_candidates: 50, max_age_frames: 120 };
+          this.form.logic.shadow_plate_pool.max_candidates = Number(this.form.logic.shadow_plate_pool.max_candidates || 50);
+          this.form.logic.shadow_plate_pool.max_age_frames = Number(this.form.logic.shadow_plate_pool.max_age_frames || 120);
+          this.form.video.debug_frame_path = this.form.video.debug_frame_path || '';
+          this.form.video.debug_frame_interval = this.form.video.debug_frame_interval || 30;
+          this.form.video.debug_frame_max_width = this.form.video.debug_frame_max_width || 960;
+          this.form.video.debug_frame_quality = this.form.video.debug_frame_quality || 80;
+          this.form.video.segment_minutes = this.form.video.segment_minutes || 60;
+          this.form.wheel.enabled = !!this.form.wheel.enabled;
+          this.form.wheel.event_driven = !!this.form.wheel.event_driven;
+          this.form.wheel.left_source = this.form.wheel.left_source || '';
+          this.form.wheel.right_source = this.form.wheel.right_source || '';
+          this.form.wheel.model = this.form.wheel.model || 'models/wheel/2026.4.28CRwheelfp.rknn';
+          this.form.wheel.classes = Array.isArray(this.form.wheel.classes) ? this.form.wheel.classes : ['0-25', '25-50', '50-75', '75-100'];
+          this.form.wheel.classes = this.form.wheel.classes.map((item) => String(item || '').trim()).filter(Boolean);
+          if (!this.form.wheel.classes.length) {
+            this.form.wheel.classes = ['0-25', '25-50', '50-75', '75-100'];
+          }
+          this.form.wheel.classes_text = this.form.wheel.classes.join(',');
+          this.form.wheel.target_fps = Number(this.form.wheel.target_fps || 5);
+          const wheelValueOr = (value, fallback) => (
+            (typeof value === 'undefined' || value === null) ? fallback : value
+          );
+          this.form.wheel.active_target_fps = Number(wheelValueOr(this.form.wheel.active_target_fps, 0));
+          this.form.wheel.bind_window_seconds = Number(this.form.wheel.bind_window_seconds || 30);
+          this.form.wheel.bind_pre_start_seconds = Number(wheelValueOr(this.form.wheel.bind_pre_start_seconds, 3));
+          this.form.wheel.bind_after_end_seconds = Number(wheelValueOr(this.form.wheel.bind_after_end_seconds, 3));
+          if (typeof this.form.wheel.bind_require_active === 'undefined') {
+            this.form.wheel.bind_require_active = true;
+          } else {
+            this.form.wheel.bind_require_active = !!this.form.wheel.bind_require_active;
+          }
+          this.form.wheel.bind_wait_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_seconds, 0.8));
+          this.form.wheel.bind_wait_poll_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_poll_seconds, 0.08));
+          this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 1);
+          this.form.wheel.photo_min_score = Number(wheelValueOr(this.form.wheel.photo_min_score, 0.3));
+          this.form.logic.debug_overlay = !!this.form.logic.debug_overlay;
+          this.form.logic.debug_track_state = !!(this.form.logic.debug_track_state || this.form.logic.debug_overlay);
+          this.form.logic.debug_anchor_points = !!(this.form.logic.debug_anchor_points || this.form.logic.debug_overlay);
+          this.form.logic.draw_plate_boxes = !!this.form.logic.draw_plate_boxes;
+          if (typeof this.form.logic.require_vehicle_type_for_events === 'undefined') {
+            this.form.logic.require_vehicle_type_for_events = false;
+          }
+          if (typeof this.form.logic.enable_per_id_video === 'undefined') {
+            this.form.logic.enable_per_id_video = false;
+          }
+          this.form.logic.debug_water_boxes = !!(this.form.logic.debug_water_boxes || this.form.logic.debug_overlay);
+          if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
+            this.form.logic.anchor_offset_ratio = 0;
+          }
+          if (typeof this.form.logic.zone_b_anchor_min_frames !== 'number') {
+            this.form.logic.zone_b_anchor_min_frames = 0;
+          }
+          this.form.logic.stationary_speed_thresh = Number(this.form.logic.stationary_speed_thresh || 8.0);
+          this.form.logic.track_max_age = Number(this.form.logic.track_max_age || 120);
+          this.form.logic.vehicle_shrink_ratio = Number(this.form.logic.vehicle_shrink_ratio || 0.35);
+          this.form.logic.vehicle_lock_min_votes = Number(this.form.logic.vehicle_lock_min_votes || 40);
+          this.form.logic.vehicle_lock_on_confirm = !!this.form.logic.vehicle_lock_on_confirm;
+          this.form.logic.plate_lock_frames = Number(this.form.logic.plate_lock_frames || 6);
+          this.form.logic.default_plate_color = this.form.logic.default_plate_color || '';
+          this.form.logic.default_plate_color_conf = Number(this.form.logic.default_plate_color_conf || 0);
+          this.form.logic.default_cleanliness = Number(this.form.logic.default_cleanliness || 0);
+          this.form.logic.car_plate_cache_ttl = Number(this.form.logic.car_plate_cache_ttl || 60);
+          this.form.logic.allowed_event_types = Array.isArray(this.form.logic.allowed_event_types) ? this.form.logic.allowed_event_types : [1, 2, 3, 4, 5, 6];
+          this.form.logic.wash_duration_offset_seconds = Number(this.form.logic.wash_duration_offset_seconds || 0);
+          this.form.logic.min_zone_b_dwell_frames_for_type4 = Number(this.form.logic.min_zone_b_dwell_frames_for_type4 || 60);
+          this.form.logic.enable_event_disk = !!this.form.logic.enable_event_disk;
+          this.form.event_output_dir = this.form.event_output_dir || 'events/config';
+          this.form.event_capture_dir = this.form.event_capture_dir || 'captures/config';
+          this.form.event_capture_quality = Number(this.form.event_capture_quality || 85);
+        },
+        async postConfig(endpoint, payload, successText) {
+          this.busy = true;
+          this.status = '保存配置中…';
+          try {
+            const res = await fetch(this.buildKeyedUrl(endpoint), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+              let msg = '保存失败';
+              try {
+                const data = await res.json();
+                if (data && data.detail) {
+                  msg = data.detail;
+                }
+              } catch (e) {}
+              throw new Error(msg);
+            }
+            this.lastSave = new Date().toLocaleString();
+            await this.refreshConfigFileCache();
+            this.status = successText;
+          } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        buildUserConfigPayload() {
+          return {
+            system: {
+              device_id: this.form.system.device_id,
+              api: {
+                url: this.form.system.api.url,
+                token: this.form.system.api.token,
+                capture_mode: this.form.system.api.capture_mode
+              }
+            },
+            video: {
+              source: this.form.video.source,
+              source_mode: this.form.video.source_mode,
+              hw_decode: this.form.video.hw_decode,
+              workers: this.form.video.workers,
+              core_mask: this.form.video.core_mask
+            },
+            wheel: {
+              enabled: this.form.wheel.enabled,
+              left_source: this.form.wheel.left_source,
+              right_source: this.form.wheel.right_source
+            },
+            logic: {
+              lane_name: this.form.logic.lane_name,
+              enable_per_id_video: this.form.logic.enable_per_id_video,
+              per_id_video_dir: this.form.logic.per_id_video_dir
+            }
+          };
+        },
+        buildDeveloperConfigPayload() {
+          return {
+            system: {
+              monitor_interval: this.form.system.monitor_interval,
+              metrics_path: this.form.system.metrics_path,
+              command_dir: this.form.system.command_dir,
+              startup_flag_path: this.form.system.startup_flag_path,
+              heartbeat_path: this.form.system.heartbeat_path,
+              heartbeat_interval_seconds: this.form.system.heartbeat_interval_seconds,
+              heartbeat_timeout_seconds: this.form.system.heartbeat_timeout_seconds,
+              progress_timeout_seconds: this.form.system.progress_timeout_seconds,
+              heartbeat_startup_grace_seconds: this.form.system.heartbeat_startup_grace_seconds,
+              startup_capture_dir: this.form.system.startup_capture_dir,
+              manual_capture_dir: this.form.system.manual_capture_dir,
+              cpu_mask: this.form.system.cpu_mask
+            },
+            video: {
+              fp_output_mode: this.form.video.fp_output_mode,
+              csv: this.form.video.csv,
+              debug_frame_path: this.form.video.debug_frame_path,
+              debug_frame_interval: this.form.video.debug_frame_interval,
+              debug_frame_max_width: this.form.video.debug_frame_max_width,
+              debug_frame_quality: this.form.video.debug_frame_quality,
+              segment_minutes: this.form.video.segment_minutes
+            },
+            wheel: {
+              model: this.form.wheel.model,
+              classes: String(this.form.wheel.classes_text || '')
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean),
+              event_driven: this.form.wheel.event_driven,
+              target_fps: this.form.wheel.target_fps,
+              active_target_fps: this.form.wheel.active_target_fps,
+              bind_window_seconds: this.form.wheel.bind_window_seconds,
+              bind_pre_start_seconds: this.form.wheel.bind_pre_start_seconds,
+              bind_after_end_seconds: this.form.wheel.bind_after_end_seconds,
+              bind_require_active: this.form.wheel.bind_require_active,
+              bind_wait_seconds: this.form.wheel.bind_wait_seconds,
+              bind_wait_poll_seconds: this.form.wheel.bind_wait_poll_seconds,
+              photo_bucket_seconds: this.form.wheel.photo_bucket_seconds,
+              photo_min_score: this.form.wheel.photo_min_score
+            },
+            logic: {
+              detection_anchor: this.form.logic.detection_anchor,
+              zone_a_mask_enable: this.form.logic.zone_a_mask_enable,
+              zone_b_entry_hysteresis: this.form.logic.zone_b_entry_hysteresis,
+              zone_b_exit_hysteresis: this.form.logic.zone_b_exit_hysteresis,
+              stationary_min_frames: this.form.logic.stationary_min_frames,
+              stationary_speed_thresh: this.form.logic.stationary_speed_thresh,
+              type34_min_interval_frames: this.form.logic.type34_min_interval_frames,
+              track_timeout_frames: this.form.logic.track_timeout_frames,
+              track_max_age: this.form.logic.track_max_age,
+              vehicle_iou_threshold: this.form.logic.vehicle_iou_threshold,
+              vehicle_center_gate_ratio: this.form.logic.vehicle_center_gate_ratio,
+              no_draw: this.form.logic.no_draw,
+              draw_plate_boxes: this.form.logic.draw_plate_boxes,
+              vehicle_shrink_ratio: this.form.logic.vehicle_shrink_ratio,
+              vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
+              vehicle_lock_on_confirm: this.form.logic.vehicle_lock_on_confirm,
+              plate_lock_frames: this.form.logic.plate_lock_frames,
+              default_plate_color: this.form.logic.default_plate_color,
+              default_plate_color_conf: this.form.logic.default_plate_color_conf,
+              default_cleanliness: this.form.logic.default_cleanliness,
+              car_plate_cache_ttl: this.form.logic.car_plate_cache_ttl,
+              allowed_event_types: this.form.logic.allowed_event_types,
+              min_track_frames_for_type1: this.form.logic.min_track_frames_for_type1,
+              min_zone_a_dwell_frames_for_type5: this.form.logic.min_zone_a_dwell_frames_for_type5,
+              disable_plate_only_events: this.form.logic.disable_plate_only_events,
+              single_lifecycle_events: this.form.logic.single_lifecycle_events,
+              require_vehicle_type_for_events: this.form.logic.require_vehicle_type_for_events,
+              anchor_offset_ratio: this.form.logic.anchor_offset_ratio,
+              zone_b_anchor_min_frames: this.form.logic.zone_b_anchor_min_frames,
+              shadow_plate_pool: this.form.logic.shadow_plate_pool,
+              debug_overlay: this.form.logic.debug_overlay,
+              debug_track_state: this.form.logic.debug_track_state,
+              debug_anchor_points: this.form.logic.debug_anchor_points,
+              debug_water_boxes: this.form.logic.debug_water_boxes,
+              wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
+              min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4,
+              enable_event_disk: this.form.logic.enable_event_disk
+            },
+            event_output_dir: this.form.event_output_dir,
+            event_capture_dir: this.form.event_capture_dir,
+            event_capture_quality: this.form.event_capture_quality
+          };
+        },
+        async saveUserConfig() {
+          this.validateDeviceIdUnique(this.activeInferenceKey, true);
+          await this.postConfig('/config/user', this.buildUserConfigPayload(), '用户参数已保存');
+        },
+        async saveDeveloperConfig() {
+          await this.postConfig('/config/developer', this.buildDeveloperConfigPayload(), '开发者参数已保存');
+        },
+        async onConfigChange() {
+          if (!this.selectedConfig) {
+            return;
+          }
+          this.busy = true;
+          this.status = '切换配置中…';
+          try {
+            const res = await fetch('/config/select', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: this.selectedConfig })
+            });
+            if (!res.ok) throw new Error('切换配置失败');
+            const data = await res.json();
+            this.activeConfig = data.active || this.selectedConfig;
+            this.backgroundUrl = '';
+            this.debugImageUrl = '';
+            this.debugFrameStatus = '点击获取实时画面以读取最新调试帧';
+            await this.loadConfig();
+            this.fetchInferenceStatus();
+            this.refreshInferenceLogs(true);
+            this.status = '配置已切换；如需背景帧请点击“刷新背景帧”';
+          } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+       async saveZones() {
+          this.busy = true;
+          this.status = '保存区域中…';
+          try {
+            const payload = this.form.zones;
+            const res = await fetch(this.buildKeyedUrl('/zones'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('保存区域失败');
+            this.lastSave = new Date().toLocaleString();
+            this.status = '区域已保存';
+          } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+       async reloadFrame() {
+          this.busy = true;
+          this.status = '刷新背景帧…';
+          try {
+            await fetch(this.buildKeyedUrl('/frame/reload'), { method: 'POST' });
+            await this.loadFrame();
+            this.status = '背景帧已刷新';
+          } catch (err) {
+            this.status = '刷新失败';
+          } finally {
+            this.busy = false;
+          }
+        },
+        async inferenceAction(endpoint, actionLabel, successLabel) {
+          this.busy = true;
+          this.status = `${actionLabel}…`;
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const sep = endpoint.includes('?') ? '&' : '?';
+            const url = `${endpoint}${sep}key=${key}`;
+            const res = await fetch(url, { method: 'POST' });
+            if (!res.ok) throw new Error(`${actionLabel}失败`);
+            const data = await res.json();
+            this.inferenceStatus = data;
+            this.inferenceAutoRestart = !!data.auto_restart;
+            this.status = successLabel || `${actionLabel}完成`;
+            this.refreshInferenceLogs(true);
+          } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async startInference() {
+          await this.inferenceAction('/inference/start', '启动推理', '推理已启动');
+        },
+        async stopInference() {
+          await this.inferenceAction('/inference/stop', '停止推理', '推理已停止');
+        },
+        async restartInference() {
+          await this.inferenceAction('/inference/restart', '重启推理', '推理已重启');
+        },
+        async fetchInferenceStatus() {
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const res = await fetch(`/inference/status?key=${key}`);
+            if (!res.ok) throw new Error('获取推理状态失败');
+            const data = await res.json();
+            this.inferenceStatus = data;
+            this.inferenceAutoRestart = !!data.auto_restart;
+          } catch (err) {
+            this.status = err.message;
+          }
+        },
+        async setAutoRestart(evt) {
+          const prev = this.inferenceAutoRestart;
+          if (evt && evt.target) {
+            this.inferenceAutoRestart = evt.target.checked;
+          }
+          try {
+            const enabled = this.inferenceAutoRestart ? 'true' : 'false';
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const res = await fetch(`/inference/auto_restart?enable=${enabled}&key=${key}`, { method: 'POST' });
+            if (!res.ok) throw new Error('设置自动重启失败');
+            const data = await res.json();
+            this.inferenceStatus = data;
+            this.inferenceAutoRestart = !!data.auto_restart;
+            this.status = `自动重启 ${this.inferenceAutoRestart ? '已开启' : '已关闭'}`;
+          } catch (err) {
+            this.inferenceAutoRestart = prev;
+            this.status = err.message;
+          }
+        },
+        async refreshInferenceLogs(silent = false) {
+          if (!silent) {
+            this.status = '加载推理日志…';
+          }
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const res = await fetch(`/logs/inference?lines=200&key=${key}`);
+            if (!res.ok) throw new Error('读取推理日志失败');
+            const data = await res.json();
+            this.inferenceLogs = data.lines || [];
+            if (!silent) {
+              this.status = '推理日志已刷新';
+            }
+          } catch (err) {
+            this.inferenceLogs = [];
+            this.status = err.message;
+          }
+        },
+        formatTimestamp(ts) {
+          if (!ts && ts !== 0) return '—';
+          const date = new Date(ts * 1000);
+          if (Number.isNaN(date.getTime())) return '—';
+          return date.toLocaleString();
+        },
+        formatExit(info) {
+          if (!info || !info.time) return '—';
+          const base = this.formatTimestamp(info.time);
+          if (typeof info.code === 'number') {
+            return `${base} (code ${info.code})`;
+          }
+          return base;
+        },
+       async loadFrame() {
+          const metaRes = await fetch(this.buildKeyedUrl('/frame_meta'));
+          const meta = await metaRes.json();
+          if (!meta.available) {
+            this.status = '背景帧不可用，请先配置视频源';
+            return;
+          }
+          this.canvas.width = meta.width;
+          this.canvas.height = meta.height;
+          this.frameSize = { w: meta.width, h: meta.height };
+          this.backgroundUrl = this.buildKeyedUrl('/frame', { ts: Date.now() });
+          this.repaint();
+        },
+       setMode(mode) {
+          this.editMode = mode;
+          this.status = `当前编辑：${this.modeLabel}`;
+        },
+        getActivePolygon() {
+          return this.editMode === 'zone_a'
+            ? this.form.zones.zone_a_detection
+            : this.form.zones.zone_b_wash;
+        },
+        toNorm(pt) {
+          return [+(pt.x / this.canvas.width).toFixed(4), +(pt.y / this.canvas.height).toFixed(4)];
+        },
+        toPx(norm) {
+          return { x: norm[0] * this.canvas.width, y: norm[1] * this.canvas.height };
+        },
+        onMouseDown(evt) {
+          const pt = this.eventPoint(evt);
+          if (this.editMode === 'flow') {
+            const handle = this.hitFlowHandle(pt);
+            if (handle) {
+              this.dragging = { type: 'flow', handle };
+            } else {
+              this.setFlowHandle('end', pt);
+            }
+            return;
+          }
+          const hit = this.hitVertex(pt);
+          if (hit) {
+            this.dragging = { type: 'vertex', poly: hit.poly, index: hit.index };
+          } else {
+            this.addVertex(pt);
+          }
+        },
+        onMouseMove(evt) {
+          if (!this.dragging) return;
+          const pt = this.eventPoint(evt);
+          if (this.dragging.type === 'vertex') {
+            const poly = this.dragging.poly;
+            poly[this.dragging.index] = this.toNorm(pt);
+            this.repaint();
+          } else if (this.dragging.type === 'flow') {
+            this.setFlowHandle(this.dragging.handle, pt);
+          }
+        },
+        onMouseUp() {
+          this.dragging = null;
+        },
+        eventPoint(evt) {
+          const rect = this.canvas.getBoundingClientRect();
+          const scaleX = this.canvas.width / rect.width;
+          const scaleY = this.canvas.height / rect.height;
+          return {
+            x: (evt.clientX - rect.left) * scaleX,
+            y: (evt.clientY - rect.top) * scaleY
+          };
+        },
+        hitVertex(pt) {
+          const threshold = 12;
+          const poly = this.getActivePolygon();
+          for (let i = 0; i < poly.length; i++) {
+            const px = this.toPx(poly[i]);
+            if (this.dist(px, pt) < threshold) {
+              return { poly, index: i };
+            }
+          }
+          return null;
+        },
+        hitFlowHandle(pt) {
+          const start = this.toPx(this.form.zones.flow_vector.start);
+          const end = this.toPx(this.form.zones.flow_vector.end);
+          if (this.dist(start, pt) < 18) return 'start';
+          if (this.dist(end, pt) < 18) return 'end';
+          return null;
+        },
+        setFlowHandle(handle, pt) {
+          const norm = this.toNorm(pt);
+          this.form.zones.flow_vector[handle] = norm;
+          this.repaint();
+        },
+        addVertex(pt) {
+          const poly = this.getActivePolygon();
+          poly.push(this.toNorm(pt));
+          this.repaint();
+        },
+        undoVertex() {
+          if (this.editMode === 'flow') return;
+          const poly = this.getActivePolygon();
+          if (poly.length > 0) {
+            poly.pop();
+            this.repaint();
+          }
+        },
+       resetZone() {
+          if (this.editMode === 'flow') {
+            this.form.zones.flow_vector = { start: [0.5, 0.2], end: [0.5, 0.8] };
+          } else if (this.editMode === 'zone_a') {
+            this.form.zones.zone_a_detection = [];
+          } else {
+            this.form.zones.zone_b_wash = [];
+          }
+          this.repaint();
+        },
+        dist(a, b) {
+          return Math.hypot(a.x - b.x, a.y - b.y);
+        },
+        drawPolygon(poly, color) {
+          if (!poly || poly.length < 3) return;
+          this.ctx.fillStyle = color;
+          this.ctx.strokeStyle = color;
+          this.ctx.beginPath();
+          poly.forEach((norm, idx) => {
+            const pt = this.toPx(norm);
+            if (idx === 0) this.ctx.moveTo(pt.x, pt.y);
+            else this.ctx.lineTo(pt.x, pt.y);
+          });
+          this.ctx.closePath();
+          this.ctx.globalAlpha = 0.3;
+          this.ctx.fill();
+          this.ctx.globalAlpha = 1;
+          this.ctx.stroke();
+          poly.forEach(norm => {
+            const pt = this.toPx(norm);
+            this.ctx.beginPath();
+            this.ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+            this.ctx.fill();
+          });
+        },
+        drawFlow() {
+          const start = this.toPx(this.form.zones.flow_vector.start);
+          const end = this.toPx(this.form.zones.flow_vector.end);
+          this.ctx.strokeStyle = '#00bfff';
+          this.ctx.fillStyle = '#00bfff';
+          this.ctx.lineWidth = 2;
+          this.ctx.beginPath();
+          this.ctx.moveTo(start.x, start.y);
+          this.ctx.lineTo(end.x, end.y);
+          this.ctx.stroke();
+          const angle = Math.atan2(end.y - start.y, end.x - start.x);
+          this.ctx.beginPath();
+          this.ctx.moveTo(end.x, end.y);
+          this.ctx.lineTo(end.x - 12 * Math.cos(angle - Math.PI / 6), end.y - 12 * Math.sin(angle - Math.PI / 6));
+          this.ctx.lineTo(end.x - 12 * Math.cos(angle + Math.PI / 6), end.y - 12 * Math.sin(angle + Math.PI / 6));
+          this.ctx.closePath();
+          this.ctx.fill();
+          [start, end].forEach(pt => {
+            this.ctx.beginPath();
+            this.ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+            this.ctx.fill();
+          });
+          this.ctx.lineWidth = 1;
+        },
+       repaint() {
+          if (!this.ctx) return;
+          this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+          this.drawPolygon(this.form.zones.zone_a_detection, 'rgba(0,200,0,0.9)');
+          this.drawPolygon(this.form.zones.zone_b_wash, 'rgba(220,80,80,0.9)');
+          this.drawFlow();
+        },
+        async refreshDebugImage() {
+          this.debugFrameStatus = '加载中…';
+          try {
+            const res = await fetch(this.buildKeyedUrl('/debug_frame_meta', { ts: Date.now() }));
+            if (!res.ok) throw new Error('请求失败');
+            const data = await res.json();
+            if (!data.available) {
+              this.debugImageUrl = '';
+              if (data.enabled === false) {
+                this.debugFrameStatus = '调试帧已禁用；清空 debug_frame_path 可恢复为默认 /dev/shm 运行时路径';
+              } else {
+                const resolvedPath = data.path || '默认运行时路径';
+                this.debugFrameStatus = `尚无调试帧，请确认推理已运行并等待输出：${resolvedPath}`;
+              }
+              return;
+            }
+            const updated = data.updated ? new Date(data.updated * 1000) : new Date();
+            this.debugFrameStatus = `最新时间：${updated.toLocaleString()} (${data.path || ''})`;
+            this.debugImageUrl = this.buildKeyedUrl('/debug_frame', { ts: Date.now() });
+          } catch (err) {
+            this.debugImageUrl = '';
+            this.debugFrameStatus = err.message;
+          }
+        },
+        toggleLogicView() {
+          this.logicView = !this.logicView;
+          try {
+            const url = new URL(window.location.href);
+            if (this.logicView) {
+              url.searchParams.set('logic', '1');
+            } else {
+              url.searchParams.delete('logic');
+            }
+            window.history.replaceState(null, '', url.toString());
+          } catch (e) {
+          }
+        },
+        openLogsPage() {
+          window.open('/logs', '_blank');
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
