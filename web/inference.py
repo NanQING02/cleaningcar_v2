@@ -8,8 +8,6 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
-from urllib.parse import urlparse
-import urllib.request
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -24,7 +22,6 @@ class InferenceManager:
         self.script_path = Path(script_path)
         self.config_path = Path(config_path)
         self.process: Optional[subprocess.Popen] = None
-        self.wheel_process: Optional[subprocess.Popen] = None
         self.file_source = False
         self.single_shot = False
         self.lock = threading.Lock()
@@ -34,8 +31,6 @@ class InferenceManager:
         self.restart_count = 0
         self.last_start: Optional[float] = None
         self.last_exit: Optional[Dict[str, float]] = None
-        self.wheel_last_start: Optional[float] = None
-        self.wheel_last_exit: Optional[Dict[str, float]] = None
         self.heartbeat_path: Optional[Path] = None
         self.startup_flag_path: Optional[Path] = None
         self.command_dir: Optional[Path] = None
@@ -64,7 +59,7 @@ class InferenceManager:
         with self.log_lock:
             self.log_buffer.append((ts, message))
 
-    def _capture_output(self, proc: subprocess.Popen, log_path: Optional[Path] = None, prefix: str = '[infer]'):
+    def _capture_output(self, proc: subprocess.Popen, log_path: Optional[Path] = None):
         if not proc.stdout:
             return
         f = None
@@ -79,7 +74,7 @@ class InferenceManager:
                 if not raw:
                     break
                 line = raw.rstrip()
-                self._append_log(f'{prefix} {line}')
+                self._append_log(f'[infer] {line}')
                 if f is not None:
                     try:
                         f.write(line + "\n")
@@ -109,25 +104,20 @@ class InferenceManager:
                 self._append_log('[guardian] file source detected，自动重启已开启，跑完整个文件后会重新开始')
             else:
                 self._append_log('[guardian] file source detected，自动重启默认关闭，本次推理完成后将停止')
-        self._ensure_wheel_sidechain_locked()
         cmd = [sys.executable, str(self.script_path), "--config", str(self.config_path)]
         self.launch_id = uuid4().hex[:12]
         env = os.environ.copy()
         env['CLEANINGCAR_LAUNCH_ID'] = self.launch_id
         env['CLEANINGCAR_RUNTIME_NAMESPACE_KEY'] = self.runtime_namespace_key
         env['CLEANINGCAR_DEVICE_ID'] = self.device_id
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
-            )
-        except Exception:
-            self._terminate_wheel_sidechain_locked()
-            raise
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
         self.process = proc
         self.restart_count += 1
         self.last_start = time.time()
@@ -150,7 +140,6 @@ class InferenceManager:
 
     def _terminate_locked(self):
         if not self.process:
-            self._terminate_wheel_sidechain_locked()
             return
         proc = self.process
         self._append_log(f'[guardian] stopping pid={proc.pid}')
@@ -163,7 +152,6 @@ class InferenceManager:
             code = proc.poll()
             self.last_exit = {'time': time.time(), 'code': code if code is not None else -1}
             self.process = None
-            self._terminate_wheel_sidechain_locked()
 
     def start(self):
         with self.lock:
@@ -224,19 +212,8 @@ class InferenceManager:
             'device_id': device_id,
             'launch_id': launch_id,
             'heartbeat_path': heartbeat_path,
-            'wheel_sidechain': self._wheel_sidechain_status(),
         }
         return status
-
-    def _wheel_sidechain_status(self):
-        proc = self.wheel_process
-        running = bool(proc and proc.poll() is None)
-        return {
-            'running': running,
-            'pid': proc.pid if running else None,
-            'last_start': self.wheel_last_start,
-            'last_exit': self.wheel_last_exit,
-        }
 
     def logs(self, limit: int = 200):
         limit = max(1, min(1000, int(limit)))
@@ -301,167 +278,6 @@ class InferenceManager:
         except OSError:
             return False
         return True
-
-    @staticmethod
-    def _read_cmdline(pid: int) -> str:
-        try:
-            raw = Path(f'/proc/{int(pid)}/cmdline').read_bytes()
-        except Exception:
-            return ''
-        return raw.replace(b'\x00', b' ').decode('utf-8', errors='replace').strip()
-
-    @staticmethod
-    def _local_service_host(host: str) -> bool:
-        host = str(host or '').strip().lower()
-        return host in {'', '127.0.0.1', 'localhost', '::1'}
-
-    def _resolve_wheel_sidechain_settings_locked(self) -> Dict[str, object]:
-        try:
-            cfg = ConfigManager(self.config_path)
-        except ConfigError as exc:
-            return {'enabled': False, 'reason': f'config_error:{exc}'}
-        wheel = cfg.data.get('wheel', {}) or {}
-        if not bool(wheel.get('enabled', False)):
-            return {'enabled': False, 'reason': 'wheel_disabled'}
-        run_mode = str(wheel.get('run_mode', '') or '').strip().lower()
-        service_url = str(wheel.get('service_url', '') or '').strip()
-        if run_mode != 'remote' and not service_url:
-            return {'enabled': False, 'reason': f'run_mode={run_mode or "embedded"}'}
-        if not service_url:
-            return {'enabled': False, 'reason': 'service_url_empty'}
-        parsed = urlparse(service_url)
-        host = parsed.hostname or '127.0.0.1'
-        if not self._local_service_host(host):
-            return {'enabled': False, 'reason': f'external_service:{host}'}
-        port = int(parsed.port or 28015)
-        script = state.ROOT / 'tools' / 'wheel_sidechain_server.py'
-        if not script.exists():
-            return {'enabled': False, 'reason': f'script_missing:{script}'}
-        return {
-            'enabled': True,
-            'host': host,
-            'port': port,
-            'script': script,
-            'hw_decode': bool(cfg.video.get('hw_decode', False)),
-        }
-
-    def _terminate_stale_wheel_sidechain_locked(self, port: int):
-        current_pid = self.wheel_process.pid if self.wheel_process and self.wheel_process.poll() is None else None
-        for proc_dir in Path('/proc').iterdir():
-            if not proc_dir.name.isdigit():
-                continue
-            pid = int(proc_dir.name)
-            if pid in {os.getpid(), current_pid}:
-                continue
-            cmdline = self._read_cmdline(pid)
-            if 'wheel_sidechain_server.py' not in cmdline:
-                continue
-            if f'--port {int(port)}' not in cmdline and f'--port={int(port)}' not in cmdline:
-                continue
-            self._append_log(f'[guardian] terminating stale wheel sidechain pid={pid} port={port}')
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError as exc:
-                self._append_log(f'[guardian] failed to terminate stale wheel sidechain pid={pid}: {exc}')
-                continue
-            deadline = time.time() + 5.0
-            while time.time() < deadline and self._pid_exists(pid):
-                time.sleep(0.1)
-            if self._pid_exists(pid):
-                try:
-                    os.kill(pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
-                except OSError:
-                    pass
-
-    def _ensure_wheel_sidechain_locked(self):
-        settings = self._resolve_wheel_sidechain_settings_locked()
-        if not bool(settings.get('enabled')):
-            if self.wheel_process and self.wheel_process.poll() is None:
-                self._append_log(f'[guardian] stopping wheel sidechain: {settings.get("reason", "disabled")}')
-                self._terminate_wheel_sidechain_locked()
-            return
-        if self.wheel_process and self.wheel_process.poll() is None:
-            return
-        if self.wheel_process and self.wheel_process.poll() is not None:
-            code = self.wheel_process.poll()
-            self.wheel_last_exit = {'time': time.time(), 'code': code if code is not None else -1}
-            self.wheel_process = None
-        port = int(settings['port'])
-        self._terminate_stale_wheel_sidechain_locked(port)
-        cmd = [
-            sys.executable,
-            str(settings['script']),
-            '--project-root',
-            str(state.ROOT),
-            '--config',
-            str(self.config_path),
-            '--host',
-            str(settings['host']),
-            '--port',
-            str(port),
-        ]
-        if bool(settings.get('hw_decode')):
-            cmd.append('--hw-decode')
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            cwd=str(state.ROOT),
-        )
-        self.wheel_process = proc
-        self.wheel_last_start = time.time()
-        log_dir = state.ROOT / 'logs' / 'inference'
-        log_name = datetime.fromtimestamp(self.wheel_last_start).strftime('wheel_%Y%m%d_%H%M%S.log')
-        log_path = log_dir / log_name
-        threading.Thread(
-            target=self._capture_output,
-            args=(proc, log_path, '[wheel-sidechain]'),
-            daemon=True,
-        ).start()
-        self._append_log(f'[guardian] started wheel sidechain pid={proc.pid} port={port} log={log_path}')
-        self._wait_wheel_sidechain_ready_locked(str(settings['host']), port)
-
-    def _wait_wheel_sidechain_ready_locked(self, host: str, port: int, timeout_seconds: float = 8.0):
-        url = f'http://{host}:{int(port)}/health'
-        deadline = time.time() + max(0.1, float(timeout_seconds))
-        last_error = ''
-        while time.time() < deadline:
-            if not self.wheel_process or self.wheel_process.poll() is not None:
-                code = self.wheel_process.poll() if self.wheel_process else -1
-                self.wheel_last_exit = {'time': time.time(), 'code': code if code is not None else -1}
-                self.wheel_process = None
-                self._append_log(f'[guardian] wheel sidechain exited before ready code={code}')
-                return
-            try:
-                with urllib.request.urlopen(url, timeout=0.5) as resp:
-                    resp.read()
-                self._append_log(f'[guardian] wheel sidechain ready url={url}')
-                return
-            except Exception as exc:
-                last_error = str(exc)
-                time.sleep(0.2)
-        self._append_log(f'[guardian] wheel sidechain not ready after {timeout_seconds:.1f}s url={url} last_error={last_error}')
-
-    def _terminate_wheel_sidechain_locked(self):
-        if not self.wheel_process:
-            return
-        proc = self.wheel_process
-        if proc.poll() is not None:
-            self.wheel_last_exit = {'time': time.time(), 'code': proc.poll()}
-            self.wheel_process = None
-            return
-        self._append_log(f'[guardian] stopping wheel sidechain pid={proc.pid}')
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        finally:
-            code = proc.poll()
-            self.wheel_last_exit = {'time': time.time(), 'code': code if code is not None else -1}
-            self.wheel_process = None
 
     def _terminate_pid_locked(self, pid: int, reason: str) -> bool:
         tracked_pid = self.process.pid if self.process and self.process.poll() is None else None
@@ -667,14 +483,9 @@ class InferenceManager:
                                 self.desired = False
                                 self._append_log('[guardian] 本地文件源已跑完一遍，自动重启未开启，等待手动启动')
                                 self.single_shot = False
-                                self._terminate_wheel_sidechain_locked()
                             else:
                                 should_launch = auto_restart
                         else:
-                            try:
-                                self._ensure_wheel_sidechain_locked()
-                            except Exception as exc:
-                                self._append_log(f'[guardian] failed to ensure wheel sidechain: {exc}')
                             heartbeat = self._check_heartbeat_locked()
                             self.last_heartbeat_status = heartbeat
                             if not heartbeat.get('healthy', True):
