@@ -71,6 +71,18 @@ def parse_args():
     parser.add_argument("--hw-decode", action="store_true", help="Prefer hardware decode for wheel RTSP readers.")
     parser.add_argument("--force-event-driven", choices=["keep", "true", "false"], default="keep")
     parser.add_argument("--target-fps", type=float, default=0.0, help="Override wheel.target_fps when > 0.")
+    parser.add_argument(
+        "--active-target-fps",
+        type=float,
+        default=-1.0,
+        help="Override wheel.active_target_fps when >= 0. Use 0 for full-speed active inference.",
+    )
+    parser.add_argument(
+        "--fake-active",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep a fake active main-camera track so event-driven wheel inference runs.",
+    )
     parser.add_argument("--photo-bucket-seconds", type=float, default=0.0, help="Override wheel.photo_bucket_seconds when > 0.")
     parser.add_argument("--photo-min-score", type=float, default=-1.0, help="Override wheel.photo_min_score when >= 0.")
     parser.add_argument("--dry-run", action="store_true", help="Load config and print resolved settings without starting RTSP/RKNN.")
@@ -173,6 +185,8 @@ def main():
         wheel_cfg["right_source"] = args.right_source
     if args.target_fps > 0:
         wheel_cfg["target_fps"] = args.target_fps
+    if args.active_target_fps >= 0:
+        wheel_cfg["active_target_fps"] = args.active_target_fps
     if args.photo_bucket_seconds > 0:
         wheel_cfg["photo_bucket_seconds"] = args.photo_bucket_seconds
     if args.photo_min_score >= 0:
@@ -196,7 +210,9 @@ def main():
         "model": settings.get("model"),
         "classes": settings.get("classes"),
         "target_fps": settings.get("target_fps"),
+        "active_target_fps": settings.get("active_target_fps"),
         "event_driven": settings.get("event_driven"),
+        "fake_active": bool(args.fake_active),
         "bind_window_seconds": settings.get("bind_window_seconds"),
         "wheel_photo_url": wheel_photo_url,
         "photo_base_dir": photo_base_dir,
@@ -256,12 +272,15 @@ def main():
         if not started:
             print("failed to start wheel sidechain; check sources/model/runtime", file=sys.stderr)
             return 3
-        service.update_track_activity(args.track_id, track_state, frame_ts=time.time(), active=True)
+        if args.fake_active:
+            service.update_track_activity(args.track_id, track_state, frame_ts=time.time(), active=True)
         deadline = time.time() + max(1.0, float(args.duration))
         next_status = 0.0
         print("wheel probe started; press Ctrl+C to stop early", flush=True)
         while time.time() < deadline:
             now = time.time()
+            if args.fake_active:
+                service.update_track_activity(args.track_id, track_state, frame_ts=now, active=True)
             event_manager._update_track_wheel_results(args.track_id, track_state, frame_ts=now)
             if now >= next_status:
                 stats = service.snapshot_stats()

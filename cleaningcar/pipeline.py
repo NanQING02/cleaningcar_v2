@@ -55,6 +55,7 @@ from .video_io import (
 )
 from .vision import box_iou, get_anchor_point, point_in_box, scale_point, scale_polygon
 from .wheel import WheelDetectionService
+from .wheel_remote import RemoteWheelResultProvider
 from .worker import DetectWorker
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -100,6 +101,34 @@ def _resolve_per_id_recording_params(width, height, source_fps, logic_cfg=None):
         'fps': resolved_fps,
         'frame_stride': 1,
     }
+
+
+def _resolve_per_id_video_source(logic_cfg=None, no_draw=False):
+    logic_cfg = logic_cfg or {}
+    raw_value = str(logic_cfg.get('per_id_video_source', 'auto') or 'auto').strip().lower()
+    if raw_value in {'raw', 'source', 'original', 'origin'}:
+        return 'raw'
+    if raw_value in {'annotated', 'draw', 'debug'}:
+        return 'annotated'
+    return 'raw' if bool(no_draw) else 'annotated'
+
+
+def _resolve_raw_per_id_prebuffer_frames(source_fps, logic_cfg=None):
+    logic_cfg = logic_cfg or {}
+    try:
+        seconds = float(logic_cfg.get('per_id_raw_prebuffer_seconds', 3.0))
+    except (TypeError, ValueError):
+        seconds = 3.0
+    seconds = max(0.0, seconds)
+    try:
+        fps = float(source_fps or 0.0)
+    except (TypeError, ValueError):
+        fps = 0.0
+    if fps <= 0.0:
+        fps = 20.0
+    if seconds <= 0.0:
+        return 0
+    return max(1, int(round(fps * seconds)))
 
 
 def _ensure_plate_binding_state(frame_idx, state=None):
@@ -484,24 +513,44 @@ def process_video(path, args):
                                  wheel_photo_min_score=float(wheel_cfg.get('photo_min_score', 0.3)))
     wheel_service = None
     candidate_wheel_service = None
-    try:
-        candidate_wheel_service = WheelDetectionService(
-            config=config,
-            base_dir=base_dir,
-            hw_decode=bool(getattr(args, 'hw_decode', False)),
-            imgsz=int(getattr(args, 'imgsz', 640) or 640),
-            image_quality=int(config.get('event_capture_quality', 85) or 85),
-        )
-        if candidate_wheel_service.start():
-            wheel_service = candidate_wheel_service
-            event_manager.wheel_result_provider = wheel_service
-    except Exception as exc:
+    wheel_run_mode = str(wheel_cfg.get('run_mode', '') or '').strip().lower()
+    wheel_service_url = str(wheel_cfg.get('service_url', '') or '').strip().rstrip('/')
+    wheel_enabled = bool(wheel_cfg.get('enabled', False))
+    if not wheel_enabled:
+        print('[wheel] disabled by config')
+    elif wheel_service_url or wheel_run_mode == 'remote':
+        if wheel_service_url:
+            try:
+                wheel_service = RemoteWheelResultProvider(
+                    wheel_service_url,
+                    camera_id=config.get('camera_id', 'RK3588'),
+                    timeout=float(wheel_cfg.get('service_timeout_seconds', 0.5) or 0.5),
+                )
+                event_manager.wheel_result_provider = wheel_service
+                print(f'[wheel] remote sidechain provider enabled url={wheel_service_url}')
+            except Exception as exc:
+                print(f'[wheel] remote sidechain provider init failed, continue without wheel binding: {exc}')
+        else:
+            print('[wheel] run_mode=remote but wheel.service_url is empty, continue without wheel binding')
+    else:
         try:
-            if candidate_wheel_service is not None:
-                candidate_wheel_service.stop()
-        except Exception:
-            pass
-        print(f'[wheel] sidechain init failed, continue without wheel binding: {exc}')
+            candidate_wheel_service = WheelDetectionService(
+                config=config,
+                base_dir=base_dir,
+                hw_decode=bool(getattr(args, 'hw_decode', False)),
+                imgsz=int(getattr(args, 'imgsz', 640) or 640),
+                image_quality=int(config.get('event_capture_quality', 85) or 85),
+            )
+            if candidate_wheel_service.start():
+                wheel_service = candidate_wheel_service
+                event_manager.wheel_result_provider = wheel_service
+        except Exception as exc:
+            try:
+                if candidate_wheel_service is not None:
+                    candidate_wheel_service.stop()
+            except Exception:
+                pass
+            print(f'[wheel] sidechain init failed, continue without wheel binding: {exc}')
     if args.csv or output_dir:
         csv_path = args.csv
         if csv_path and os.path.isdir(csv_path):
@@ -571,16 +620,26 @@ def process_video(path, args):
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
+    per_id_video_source = _resolve_per_id_video_source(logic_cfg, no_draw=getattr(args, 'no_draw', False))
+    per_id_use_raw_frames = per_id_video_source == 'raw'
     benchmark_force_recording_track_id = int(logic_cfg.get('benchmark_force_recording_track_id', 0) or 0)
     benchmark_force_capture_stride = max(0, int(logic_cfg.get('benchmark_force_capture_stride', 0) or 0))
     per_id_video_dir = None
     per_id_writers = {}
+    per_id_raw_frame_buffer = deque()
+    per_id_raw_prebuffer_frames = _resolve_raw_per_id_prebuffer_frames(fps, logic_cfg)
     per_id_params = _resolve_per_id_recording_params(width, height, fps, logic_cfg=logic_cfg)
     per_id_target_width = per_id_params['width']
     per_id_target_height = per_id_params['height']
     per_id_output_fps = per_id_params['fps']
     per_id_record_stride = per_id_params['frame_stride']
     per_id_video_queue_size = max(1, int(logic_cfg.get('per_id_video_queue_size', 8) or 8))
+    per_id_writer_queue_size = per_id_video_queue_size
+    if per_id_use_raw_frames:
+        per_id_writer_queue_size = max(
+            per_id_writer_queue_size,
+            per_id_raw_prebuffer_frames + max(8, int(round(per_id_output_fps))),
+        )
     resize_backend_label = (
         'passthrough'
         if per_id_target_width == width and per_id_target_height == height
@@ -710,7 +769,7 @@ def process_video(path, args):
                 return AsyncPerIdVideoWriter(
                     writer_obj,
                     resize_fn=resize_per_id_frame,
-                    queue_size=per_id_video_queue_size,
+                    queue_size=per_id_writer_queue_size,
                     log_interval=reader_log_interval,
                 )
 
@@ -730,7 +789,9 @@ def process_video(path, args):
             print(
                 f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
                 f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} '
-                f'queue={per_id_video_queue_size} resize_backend={resize_backend_label}'
+                f'queue={per_id_writer_queue_size} source={per_id_video_source} '
+                f'raw_prebuffer_frames={per_id_raw_prebuffer_frames if per_id_use_raw_frames else 0} '
+                f'resize_backend={resize_backend_label}'
             )
 
     def collect_per_id_cleanup_roots():
@@ -1058,16 +1119,39 @@ def process_video(path, args):
 
     core_mask = parse_core_mask(args.core_mask)
     plate_core_mask = parse_core_mask(getattr(args, 'plate_core_mask', None))
+    wheel_core_mask = parse_core_mask((wheel_cfg or {}).get('core_mask')) if wheel_cfg else None
     worker_core_strategy = str(video_cfg.get('worker_core_strategy', 'auto') or 'auto').strip().lower()
     worker_core_masks = resolve_worker_core_masks(core_mask, args.workers, strategy=worker_core_strategy)
-    plate_core_mask = resolve_auto_plate_core_mask(plate_core_mask, core_mask, worker_core_masks)
+    plate_core_mask = resolve_auto_plate_core_mask(
+        plate_core_mask,
+        core_mask,
+        worker_core_masks,
+        reserved_masks=[wheel_core_mask] if wheel_core_mask is not None else None,
+    )
     print(
         f'[npu] main_core_mask={core_mask} '
         f'worker_core_masks={worker_core_masks} '
         f'plate_core_mask={plate_core_mask} '
+        f'wheel_core_mask={wheel_core_mask} '
         f'worker_core_strategy={worker_core_strategy} '
         f'main_core_indices={core_mask_to_indices(core_mask)}'
     )
+    if wheel_core_mask is not None:
+        wheel_indices = set(core_mask_to_indices(wheel_core_mask))
+        for i, mask in enumerate(worker_core_masks):
+            overlap = sorted(wheel_indices & set(core_mask_to_indices(mask)))
+            if overlap:
+                print(
+                    f'[npu-warning] wheel core overlaps detect worker idx={i} '
+                    f'cores={overlap} worker_mask={mask} wheel_mask={wheel_core_mask}'
+                )
+        if plate_core_mask is not None:
+            overlap = sorted(wheel_indices & set(core_mask_to_indices(plate_core_mask)))
+            if overlap:
+                print(
+                    f'[npu-warning] wheel core overlaps plate core '
+                    f'cores={overlap} plate_mask={plate_core_mask} wheel_mask={wheel_core_mask}'
+                )
     print(f'[npu-status] {format_npu_status(snapshot_npu_status())}')
     write_startup_heartbeat(stage='before_worker_init')
     startup_heartbeat_thread = threading.Thread(target=startup_heartbeat_loop, daemon=True)
@@ -1106,6 +1190,10 @@ def process_video(path, args):
     def _snapshot_per_id_video_metrics():
         stats = {
             'enabled': bool(enable_per_id_video),
+            'source': per_id_video_source,
+            'raw_prebuffer_frames': per_id_raw_prebuffer_frames if per_id_use_raw_frames else 0,
+            'raw_prebuffer_size': len(per_id_raw_frame_buffer) if per_id_use_raw_frames else 0,
+            'writer_queue_size': per_id_writer_queue_size,
             'active_writers': len(per_id_writers),
             'queued': 0,
             'queue_size_total': 0,
@@ -1212,6 +1300,136 @@ def process_video(path, args):
 
     def finalize_per_id_for_track(track_id, track_state):
         close_per_id_writer(track_id, track_state)
+
+    def append_raw_per_id_frame(frame_idx, frame_capture_ts, frame_img):
+        if not (enable_per_id_video and per_id_use_raw_frames):
+            return
+        if frame_img is None or per_id_raw_prebuffer_frames <= 0:
+            return
+        per_id_raw_frame_buffer.append((int(frame_idx), frame_capture_ts, frame_img))
+        while len(per_id_raw_frame_buffer) > per_id_raw_prebuffer_frames:
+            per_id_raw_frame_buffer.popleft()
+
+    def ensure_per_id_writer(track_id, track_state):
+        writer = per_id_writers.get(track_id)
+        if writer is not None:
+            return writer
+
+        st_capture_time = track_state.get('type1_capture_time')
+        if not st_capture_time:
+            for ev_type in (5, 4, 3, 2, 1):
+                ev_key = f'last_event_t{ev_type}_capture_time'
+                val = track_state.get(ev_key)
+                if val:
+                    st_capture_time = val
+                    break
+        if not st_capture_time:
+            st_capture_time = event_manager.frame_timestamp(track_state.get('record_start_frame', 0))
+        try:
+            dt = datetime.strptime(st_capture_time, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            dt = datetime.now()
+
+        session_id_for_track = track_state.get('session_id')
+        if not session_id_for_track:
+            ts_str = dt.strftime("%Y%m%d%H%M")
+            device_name = config.get('system', {}).get('device_id') or event_manager.camera_id
+            session_id_for_track = f"{device_name}-{ts_str}-{track_id}"
+            track_state['session_id'] = session_id_for_track
+
+        writer_obj = build_per_id_writer(track_id, track_state, dt, session_id_for_track)
+        if writer_obj is not None:
+            per_id_writers[track_id] = writer_obj
+            track_state['per_id_video_source'] = per_id_video_source
+            return writer_obj
+        return None
+
+    def write_per_id_frame(track_id, track_state, frame_idx, frame_img):
+        if frame_img is None:
+            return False
+        try:
+            frame_idx = int(frame_idx)
+        except (TypeError, ValueError):
+            return False
+        last_written = int(track_state.get('per_id_last_written_frame_idx', -1) or -1)
+        if frame_idx <= last_written:
+            return True
+        writer = ensure_per_id_writer(track_id, track_state)
+        if writer is None:
+            return False
+        writer.write(frame_img)
+        track_state['per_id_last_written_frame_idx'] = frame_idx
+        return True
+
+    def write_per_id_recordings_for_frame(frame_idx, frame_img):
+        if not enable_per_id_video or frame_img is None:
+            return
+        for tid, st in list(event_manager.tracks.items()):
+            start_f = st.get('record_start_frame')
+            stop_f = st.get('record_stop_frame')
+            if start_f is None:
+                continue
+            if stop_f is not None and frame_idx > stop_f:
+                close_per_id_writer(tid, st)
+                continue
+            if frame_idx < start_f:
+                continue
+            write_per_id_frame(tid, st, frame_idx, frame_img)
+
+    def sync_raw_per_id_recordings(up_to_frame_idx=None, current_frame_idx=None, current_frame=None):
+        if not (enable_per_id_video and per_id_use_raw_frames):
+            return
+        if up_to_frame_idx is not None:
+            try:
+                up_to_frame_idx = int(up_to_frame_idx)
+            except (TypeError, ValueError):
+                up_to_frame_idx = None
+        for tid, st in list(event_manager.tracks.items()):
+            start_f = st.get('record_start_frame')
+            stop_f = st.get('record_stop_frame')
+            if start_f is None:
+                continue
+            try:
+                start_f = int(start_f)
+            except (TypeError, ValueError):
+                continue
+            if stop_f is not None:
+                try:
+                    stop_f = int(stop_f)
+                except (TypeError, ValueError):
+                    stop_f = None
+            write_until = up_to_frame_idx
+            if stop_f is not None and write_until is not None:
+                write_until = min(write_until, stop_f)
+            writer = ensure_per_id_writer(tid, st)
+            if writer is None:
+                continue
+            if per_id_raw_frame_buffer:
+                earliest_idx = per_id_raw_frame_buffer[0][0]
+                if start_f < earliest_idx and not st.get('_per_id_raw_prebuffer_miss_logged'):
+                    print(
+                        f'[per-id-video] raw prebuffer missed start frames '
+                        f'track={tid} start={start_f} earliest={earliest_idx} '
+                        f'prebuffer_frames={per_id_raw_prebuffer_frames}'
+                    )
+                    st['_per_id_raw_prebuffer_miss_logged'] = True
+            for buffered_idx, _buffered_ts, buffered_frame in list(per_id_raw_frame_buffer):
+                if buffered_idx < start_f:
+                    continue
+                if write_until is not None and buffered_idx > write_until:
+                    break
+                if stop_f is not None and buffered_idx > stop_f:
+                    break
+                write_per_id_frame(tid, st, buffered_idx, buffered_frame)
+            if current_frame_idx is not None and current_frame is not None:
+                if (
+                    current_frame_idx >= start_f
+                    and (write_until is None or current_frame_idx <= write_until)
+                    and (stop_f is None or current_frame_idx <= stop_f)
+                ):
+                    write_per_id_frame(tid, st, current_frame_idx, current_frame)
+            if stop_f is not None and up_to_frame_idx is not None and up_to_frame_idx >= stop_f:
+                close_per_id_writer(tid, st)
 
     def mark_alias_confirm(alias_id, has_plate_text, frame_idx, require_text):
         if alias_id <= 0:
@@ -1775,49 +1993,14 @@ def process_video(path, args):
                     save_debug_frame(debug_frame_source, det_payload, vehicle_payload_refs, capture_ts)
                 ensure_benchmark_recording_track(next_frame_to_write, capture_ts)
                 maybe_force_benchmark_capture(next_frame_to_write, event_frame_for_idx)
-                if enable_per_id_video and frame_out is not None:
-                    for tid, st in event_manager.tracks.items():
-                        start_f = st.get('record_start_frame')
-                        stop_f = st.get('record_stop_frame')
-                        if start_f is None:
-                            continue
-                        if stop_f is not None and next_frame_to_write > stop_f:
-                            close_per_id_writer(tid, st)
-                            continue
-                        if next_frame_to_write < start_f:
-                            continue
-                        writer = per_id_writers.get(tid)
-                        if writer is None:
-                            st_capture_time = st.get('type1_capture_time')
-                            if not st_capture_time:
-                                for ev_type in (5, 4, 3, 2, 1):
-                                    ev_key = f'last_event_t{ev_type}_capture_time'
-                                    val = st.get(ev_key)
-                                    if val:
-                                        st_capture_time = val
-                                        break
-                            if not st_capture_time:
-                                st_capture_time = event_manager.frame_timestamp(start_f)
-                            try:
-                                dt = datetime.strptime(st_capture_time, "%Y-%m-%d %H:%M:%S")
-                            except Exception:
-                                dt = datetime.now()
-                            session_id = st.get('session_id')
-                            if not session_id:
-                                ts_str = dt.strftime("%Y%m%d%H%M")
-                                device_name = config.get('system', {}).get('device_id') or event_manager.camera_id
-                                session_id = f"{device_name}-{ts_str}-{tid}"
-                            writer_obj = build_per_id_writer(tid, st, dt, session_id)
-                            if writer_obj is not None:
-                                per_id_writers[tid] = writer_obj
-                                writer = writer_obj
-                            else:
-                                writer = None
-                                break
-                        if writer is not None:
-                            frame_to_write = frame_out
-                            if frame_to_write is not None:
-                                writer.write(frame_to_write)
+                if per_id_use_raw_frames:
+                    sync_raw_per_id_recordings(
+                        up_to_frame_idx=next_frame_to_write,
+                        current_frame_idx=next_frame_to_write,
+                        current_frame=raw_frame_for_idx,
+                    )
+                elif enable_per_id_video and frame_out is not None:
+                    write_per_id_recordings_for_frame(next_frame_to_write, frame_out)
                 t_after_perid = time.perf_counter()
                 if raw_frame_for_idx is not None:
                     latest_raw_frame = raw_frame_for_idx
@@ -1932,6 +2115,8 @@ def process_video(path, args):
         last_progress_ts = capture_ts
         frame_idx = total_frames
         raw_frame_cache[frame_idx] = latest_raw_frame
+        if per_id_use_raw_frames:
+            append_raw_per_id_frame(frame_idx, capture_ts, latest_raw_frame)
         while True:
             try:
                 task_q.put_nowait((frame_idx, frame, capture_ts))
@@ -1989,7 +2174,18 @@ def process_video(path, args):
             wheel_perf = {}
             wheel_stats_now = {}
             if wheel_service is not None:
-                stats_now = wheel_service.snapshot_stats()
+                try:
+                    stats_now = wheel_service.snapshot_stats()
+                except Exception as exc:
+                    stats_now = {}
+                    diag_flags.append('wheel_stats_error')
+                    for line in log_throttle.record(
+                        key='wheel.snapshot_stats_error',
+                        message=f'[wheel] snapshot stats failed: {exc}',
+                        now=time.time(),
+                        window_seconds=10.0,
+                    ):
+                        print(line)
                 wheel_stats_now = stats_now
                 for side in ('left', 'right'):
                     side_stats = stats_now.get(side)
@@ -2134,6 +2330,9 @@ def process_video(path, args):
             poll_runtime_commands(force=True)
             write_heartbeat(status='draining', force=True)
 
+    if per_id_use_raw_frames:
+        sync_raw_per_id_recordings(up_to_frame_idx=total_frames)
+
     if enable_per_id_video and per_id_writers:
         for tid in list(per_id_writers.keys()):
             track_state = event_manager.tracks.get(tid) or {}
@@ -2141,7 +2340,7 @@ def process_video(path, args):
 
     if csv_f:
         csv_f.close()
-    if wheel_service is not None:
+    if wheel_service is not None and hasattr(wheel_service, 'stop'):
         wheel_service.stop()
     cap.release()
     monitor_stop.set()

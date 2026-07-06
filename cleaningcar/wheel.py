@@ -89,6 +89,10 @@ def resolve_wheel_settings(config, base_dir=None):
     if active_target_fps < 0.0:
         active_target_fps = 0.0
 
+    reader_idle_fps = _safe_float(raw.get("reader_idle_fps", 0.0), 0.0)
+    if reader_idle_fps < 0.0:
+        reader_idle_fps = 0.0
+
     bind_window_seconds = _safe_float(raw.get("bind_window_seconds", 30.0), 30.0)
     if bind_window_seconds <= 0.0:
         bind_window_seconds = 30.0
@@ -110,6 +114,10 @@ def resolve_wheel_settings(config, base_dir=None):
     return {
         "enabled": _safe_bool(raw.get("enabled", False)),
         "event_driven": _safe_bool(raw.get("event_driven", True), True),
+        "reader_event_driven": _safe_bool(
+            raw.get("reader_event_driven", False),
+            False,
+        ),
         "left_source": str(raw.get("left_source", "") or "").strip(),
         "right_source": str(raw.get("right_source", "") or "").strip(),
         "model": str(model_path),
@@ -117,6 +125,7 @@ def resolve_wheel_settings(config, base_dir=None):
         "classes": class_names,
         "target_fps": target_fps,
         "active_target_fps": active_target_fps,
+        "reader_idle_fps": reader_idle_fps,
         "bind_window_seconds": bind_window_seconds,
         "conf_thresh": conf_thresh,
         "nms_thresh": nms_thresh,
@@ -488,6 +497,9 @@ class WheelReaderThread(threading.Thread):
         reader_args,
         frame_slot,
         stop_event,
+        active_event=None,
+        close_when_inactive=False,
+        idle_fps=0.0,
         reader_fail_threshold=5,
         reconnect_delay=2.0,
     ):
@@ -497,6 +509,15 @@ class WheelReaderThread(threading.Thread):
         self.reader_args = reader_args
         self.frame_slot = frame_slot
         self.stop_event = stop_event
+        self.active_event = active_event
+        self.close_when_inactive = bool(close_when_inactive)
+        self.idle_interval = 0.0
+        try:
+            idle_fps = float(idle_fps or 0.0)
+        except (TypeError, ValueError):
+            idle_fps = 0.0
+        if idle_fps > 0.0:
+            self.idle_interval = 1.0 / idle_fps
         self.reader_fail_threshold = max(1, int(reader_fail_threshold))
         self.reconnect_delay = max(0.2, float(reconnect_delay))
         self.frames = 0
@@ -522,8 +543,28 @@ class WheelReaderThread(threading.Thread):
         last_open_reason = "initial"
         last_open_started_ts = 0.0
         frames_since_open = 0
+        next_idle_read_ts = 0.0
         try:
             while not self.stop_event.is_set():
+                active = self.active_event is None or self.active_event.is_set()
+                if self.active_event is not None and not active and self.close_when_inactive:
+                    if cap is not None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                        cap = None
+                        self.last_reconnect_reason = "inactive"
+                        self.last_frame_gap = time.time() - last_frame_ts if last_frame_ts > 0.0 else -1.0
+                        self.last_open_age = -1.0
+                        self.frames_since_open = frames_since_open
+                        last_open_reason = "inactive"
+                        self.last_open_reason = last_open_reason
+                    consecutive_fails = 0
+                    if self.stop_event.wait(0.2):
+                        break
+                    continue
+
                 cap_is_open = bool(cap is not None and hasattr(cap, "isOpened") and cap.isOpened())
                 if cap is not None and not cap_is_open:
                     now = time.time()
@@ -597,6 +638,16 @@ class WheelReaderThread(threading.Thread):
                         f"last_frame_gap={last_gap:.2f}s source={self.source}"
                     )
                     consecutive_fails = 0
+
+                if not active and self.idle_interval > 0.0:
+                    now = time.time()
+                    if next_idle_read_ts > now:
+                        if self.stop_event.wait(min(next_idle_read_ts - now, 0.2)):
+                            break
+                        continue
+                    next_idle_read_ts = now + self.idle_interval
+                elif active:
+                    next_idle_read_ts = 0.0
 
                 ok, frame = cap.read()
                 if not ok or frame is None:
@@ -838,6 +889,7 @@ class WheelDetectionService:
         configured_imgsz = self.settings.get("imgsz")
         self.imgsz = max(64, int(configured_imgsz if configured_imgsz else imgsz))
         self.core_mask = parse_core_mask(self.settings.get("core_mask"))
+        self.reader_event_driven = bool(self.settings.get("reader_event_driven", self.event_driven))
         self.streams = {}
         self.active_sides = []
         self._activity_lock = threading.Lock()
@@ -912,6 +964,9 @@ class WheelDetectionService:
                 reader_args=self.reader_args,
                 frame_slot=frame_slot,
                 stop_event=self.stop_event,
+                active_event=self.inference_active_event,
+                close_when_inactive=self.reader_event_driven,
+                idle_fps=self.settings.get("reader_idle_fps", 0.0),
                 reader_fail_threshold=self.reader_fail_threshold,
                 reconnect_delay=self.reader_reconnect_delay,
             )
@@ -949,6 +1004,8 @@ class WheelDetectionService:
         print(
             f"[wheel] enabled sides={','.join(self.active_sides)} "
             f"event_driven={self.event_driven} "
+            f"reader_event_driven={self.reader_event_driven} "
+            f"reader_idle_fps={self.settings['reader_idle_fps']:.2f} "
             f"target_fps={self.settings['target_fps']:.2f} "
             f"active_target_fps={self.settings['active_target_fps']:.2f} "
             f"imgsz={self.imgsz} core_mask={self.core_mask}"
@@ -1044,6 +1101,7 @@ class WheelDetectionService:
             "boost_active": boost_active,
             "target_fps": float(self.settings.get("target_fps", 0.0) or 0.0),
             "active_target_fps": float(self.settings.get("active_target_fps", 0.0) or 0.0),
+            "reader_idle_fps": float(self.settings.get("reader_idle_fps", 0.0) or 0.0),
             "active_track_count": len(active_track_ids),
             "active_track_ids": active_track_ids,
         }

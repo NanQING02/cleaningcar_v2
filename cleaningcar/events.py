@@ -282,9 +282,9 @@ class EventManager:
             self.wheel_bind_after_end_seconds = 3.0
         self.wheel_bind_require_active = bool(wheel_cfg.get('bind_require_active', True))
         try:
-            self.wheel_bind_wait_seconds = max(0.0, float(wheel_cfg.get('bind_wait_seconds', 0.8)))
+            self.wheel_bind_wait_seconds = max(0.0, float(wheel_cfg.get('bind_wait_seconds', 2.0)))
         except (TypeError, ValueError):
-            self.wheel_bind_wait_seconds = 0.8
+            self.wheel_bind_wait_seconds = 2.0
         try:
             self.wheel_bind_wait_poll_seconds = max(0.02, float(wheel_cfg.get('bind_wait_poll_seconds', 0.08)))
         except (TypeError, ValueError):
