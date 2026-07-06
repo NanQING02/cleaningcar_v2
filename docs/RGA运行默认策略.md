@@ -1,24 +1,19 @@
 # RGA 运行默认策略
 
-## 当前默认值
+## 现场结论
 
-- `video.rga_enable=false`
-- `run_zone_detect.py` 启动时会在导入推理管线前把它映射成环境变量 `CLEANINGCAR_RGA_DISABLE=1`
-- 这意味着默认运行路径会使用 `cv2.resize`
+- RGA 不适用于本项目当前实时多路高负载链路。
+- 现场压测已确认：高负载开启 RGA resize 存在严重稳定性问题，可导致板端死机。
+- 项目运行链路固定使用 `cv2.resize`，不再提供配置或环境变量开启 RGA 的入口。
 
-## 为什么这样改
+## 当前实现
 
-- 双路多 worker 场景下，RGA resize 已经复现过不稳定调用
-- 小尺寸车牌 ROI 走 CPU resize 的性能损失很小，但稳定性收益明显
-- 默认关闭比默认开启更符合当前已验证的稳定工作点
+- `run_zone_detect.py` 启动时强制设置 `CLEANINGCAR_RGA_DISABLE=1`，并清理 `CLEANINGCAR_RGA_ENABLE`。
+- `config_manager.py` 会清理历史 `video.rga_enable` 字段。
+- `cleaningcar.resize_accel` 不加载 RGA backend，`resize_backend_name()` 固定返回 `cv2`。
 
-## 仍然保留的能力
+## 维护约束
 
-- 如需验证或重新启用 RGA，可在配置中显式设置 `video.rga_enable=true`
-- 即使启用后，过小的 source/destination 尺寸仍会直接回退到 `cv2.resize`
-- RGA 调用现在会串行化，并在回退或失败时打印更完整的诊断信息
-
-## 建议使用方式
-
-- 生产或准生产双路任务：保持 `video.rga_enable=false`
-- 重新验证 RGA 时：只在压测环境开启，并结合双路、多 worker、录像开启三种条件一起回归
+- 不要在现场配置中添加 `video.rga_enable`。
+- 不要通过 `CLEANINGCAR_RGA_ENABLE=1` 绕过禁用策略。
+- `future_modules/acceleration/rga_resize_plugin.py` 仅保留为历史实验/问题复现代码，不接入主流程。

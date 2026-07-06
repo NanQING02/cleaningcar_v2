@@ -1,8 +1,5 @@
 import cv2
 
-_rga_resize = None
-_RGA_READY = False
-
 
 def resize_backend_name():
     return "cv2"

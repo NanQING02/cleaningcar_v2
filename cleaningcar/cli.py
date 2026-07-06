@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 
+from .perf_lock import maybe_apply_perf_lock, maybe_restore_perf_lock
 from .runtime_config import (
     DEFAULT_CONFIG_PATH,
     LEGACY_CONFIG_PATH,
@@ -13,16 +14,10 @@ from .runtime_config import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _parse_bool_like(value):
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _configure_rga_environment(config):
+    del config
     os.environ["CLEANINGCAR_RGA_DISABLE"] = "1"
+    os.environ.pop("CLEANINGCAR_RGA_ENABLE", None)
 
 def parse_args():
     ap = argparse.ArgumentParser(description='Multithread RKNN detector demo.')
@@ -99,16 +94,20 @@ def main():
         print(exc)
         return
     _configure_rga_environment(config)
-    from .pipeline import process_video
-    apply_cli_overrides(args, config)
-    apply_class_thresholds_from_config(config)
-    setattr(args, 'config', str(resolved_config_path))
-    setattr(args, '_config', config)
-    setattr(args, '_config_path', resolved_config_path)
-    setattr(args, '_config_dir', resolved_config_path.parent)
-    videos = list(iter_videos(args))
-    if not videos:
-        print('No videos specified.')
-        return
-    for path in videos:
-        process_video(path, args)
+    try:
+        maybe_apply_perf_lock(config, logger=print)
+        from .pipeline import process_video
+        apply_cli_overrides(args, config)
+        apply_class_thresholds_from_config(config)
+        setattr(args, 'config', str(resolved_config_path))
+        setattr(args, '_config', config)
+        setattr(args, '_config_path', resolved_config_path)
+        setattr(args, '_config_dir', resolved_config_path.parent)
+        videos = list(iter_videos(args))
+        if not videos:
+            print('No videos specified.')
+            return
+        for path in videos:
+            process_video(path, args)
+    finally:
+        maybe_restore_perf_lock(config, logger=print)

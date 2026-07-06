@@ -9,6 +9,11 @@ import numpy as np
 RK_FORMAT_BGR_888 = 0x7 << 8
 IM_INTER_LINEAR = 1
 IM_STATUS_SUCCESS = 1
+IM_CONFIG_SCHEDULER_CORE = 0
+IM_SCHEDULER_RGA3_CORE0 = 1 << 0
+IM_SCHEDULER_RGA3_CORE1 = 1 << 1
+IM_SCHEDULER_RGA2_CORE0 = 1 << 2
+IM_SCHEDULER_RGA2_CORE1 = 1 << 3
 
 
 class _ImColorKeyRange(ctypes.Structure):
@@ -50,6 +55,14 @@ class _RgaBuffer(ctypes.Structure):
     ]
 
 
+class _ImHandleParam(ctypes.Structure):
+    _fields_ = [
+        ("width", ctypes.c_uint32),
+        ("height", ctypes.c_uint32),
+        ("format", ctypes.c_uint32),
+    ]
+
+
 def _is_true_env(name):
     value = os.environ.get(name, "")
     return str(value).strip().lower() in ("1", "true", "yes", "on")
@@ -70,6 +83,34 @@ def _align_up(value, align):
 
 def _align_bgr888_stride(width):
     return _align_up(width, 16)
+
+
+def _read_text_env(name, default=""):
+    value = os.environ.get(name, "")
+    value = str(value).strip()
+    if not value:
+        return str(default)
+    return value
+
+
+def _parse_scheduler_core(value):
+    text = str(value or "").strip().lower()
+    mapping = {
+        "": 0,
+        "auto": 0,
+        "default": 0,
+        "rga3": IM_SCHEDULER_RGA3_CORE0,
+        "rga3-0": IM_SCHEDULER_RGA3_CORE0,
+        "rga3-core0": IM_SCHEDULER_RGA3_CORE0,
+        "rga3-1": IM_SCHEDULER_RGA3_CORE1,
+        "rga3-core1": IM_SCHEDULER_RGA3_CORE1,
+        "rga2": IM_SCHEDULER_RGA2_CORE0,
+        "rga2-0": IM_SCHEDULER_RGA2_CORE0,
+        "rga2-core0": IM_SCHEDULER_RGA2_CORE0,
+        "rga2-1": IM_SCHEDULER_RGA2_CORE1,
+        "rga2-core1": IM_SCHEDULER_RGA2_CORE1,
+    }
+    return mapping.get(text, 0)
 
 
 def _iter_librga_candidates():
@@ -101,6 +142,27 @@ def _bind_symbols(lib):
     ]
     wrapbuffer_virtualaddr_t.restype = _RgaBuffer
 
+    wrapbuffer_handle_t = lib.wrapbuffer_handle_t
+    wrapbuffer_handle_t.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    wrapbuffer_handle_t.restype = _RgaBuffer
+
+    importbuffer_virtualaddr = getattr(lib, "importbuffer_virtualaddr", None)
+    if importbuffer_virtualaddr is not None:
+        importbuffer_virtualaddr.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ImHandleParam)]
+        importbuffer_virtualaddr.restype = ctypes.c_uint32
+
+    releasebuffer_handle = getattr(lib, "releasebuffer_handle", None)
+    if releasebuffer_handle is not None:
+        releasebuffer_handle.argtypes = [ctypes.c_uint32]
+        releasebuffer_handle.restype = ctypes.c_int
+
     imresize_t = lib.imresize_t
     imresize_t.argtypes = [
         _RgaBuffer,
@@ -117,7 +179,26 @@ def _bind_symbols(lib):
         imStrError_t.argtypes = [ctypes.c_int]
         imStrError_t.restype = ctypes.c_char_p
 
-    return wrapbuffer_virtualaddr_t, imresize_t, imStrError_t
+    imconfig = getattr(lib, "imconfig", None)
+    if imconfig is not None:
+        imconfig.argtypes = [ctypes.c_int, ctypes.c_uint64]
+        imconfig.restype = ctypes.c_int
+
+    querystring = getattr(lib, "querystring", None)
+    if querystring is not None:
+        querystring.argtypes = [ctypes.c_int]
+        querystring.restype = ctypes.c_char_p
+
+    return (
+        wrapbuffer_virtualaddr_t,
+        wrapbuffer_handle_t,
+        importbuffer_virtualaddr,
+        releasebuffer_handle,
+        imresize_t,
+        imStrError_t,
+        imconfig,
+        querystring,
+    )
 
 
 def _load_librga():
@@ -127,18 +208,44 @@ def _load_librga():
             if os.path.isabs(so_path) and not os.path.exists(so_path):
                 continue
             lib = ctypes.CDLL(so_path)
-            wrapbuffer_virtualaddr_t, imresize_t, imStrError_t = _bind_symbols(lib)
-            return lib, so_path, wrapbuffer_virtualaddr_t, imresize_t, imStrError_t, None
+            (
+                wrapbuffer_virtualaddr_t,
+                wrapbuffer_handle_t,
+                importbuffer_virtualaddr,
+                releasebuffer_handle,
+                imresize_t,
+                imStrError_t,
+                imconfig,
+                querystring,
+            ) = _bind_symbols(lib)
+            return (
+                lib,
+                so_path,
+                wrapbuffer_virtualaddr_t,
+                wrapbuffer_handle_t,
+                importbuffer_virtualaddr,
+                releasebuffer_handle,
+                imresize_t,
+                imStrError_t,
+                imconfig,
+                querystring,
+                None,
+            )
         except Exception as exc:
             last_error = exc
-    return None, "", None, None, None, last_error
+    return None, "", None, None, None, None, None, None, None, None, last_error
 
 
 if _is_true_env("CLEANINGCAR_RGA_DISABLE"):
     _lib = None
     _wrapbuffer_virtualaddr_t = None
+    _wrapbuffer_handle_t = None
+    _importbuffer_virtualaddr = None
+    _releasebuffer_handle = None
     _imresize_t = None
     _imStrError_t = None
+    _imconfig = None
+    _querystring = None
     _load_error = None
     SO_PATH = ""
     RGA_OK = False
@@ -148,8 +255,13 @@ else:
         _lib,
         SO_PATH,
         _wrapbuffer_virtualaddr_t,
+        _wrapbuffer_handle_t,
+        _importbuffer_virtualaddr,
+        _releasebuffer_handle,
         _imresize_t,
         _imStrError_t,
+        _imconfig,
+        _querystring,
         _load_error,
     ) = _load_librga()
     RGA_OK = _lib is not None
@@ -165,6 +277,44 @@ _RGA_CALL_FAIL_COUNT = 0
 _RGA_SKIP_COUNT = 0
 _RGA_CALL_LOCK = threading.Lock()
 _RGA_MIN_DIM = _read_positive_int_env("CLEANINGCAR_RGA_MIN_DIM", 64)
+_RGA_BUFFER_MODE = _read_text_env("CLEANINGCAR_RGA_BUFFER_MODE", "handle").lower()
+if _RGA_BUFFER_MODE not in {"handle", "virtual"}:
+    _RGA_BUFFER_MODE = "handle"
+_RGA_SCHEDULER_CORE = _parse_scheduler_core(_read_text_env("CLEANINGCAR_RGA_CORE", ""))
+_RGA_SCHEDULER_LABEL = _read_text_env("CLEANINGCAR_RGA_CORE", "auto") or "auto"
+_RGA_SCHEDULER_LOGGED = False
+
+
+def _handle_is_valid(handle):
+    value = int(handle or 0)
+    return value not in (0, 0xFFFFFFFF)
+
+
+def _apply_scheduler_core():
+    global _RGA_SCHEDULER_LOGGED
+    if _imconfig is None or _RGA_SCHEDULER_CORE == 0:
+        return
+    ret = int(_imconfig(IM_CONFIG_SCHEDULER_CORE, int(_RGA_SCHEDULER_CORE)))
+    if ret < IM_STATUS_SUCCESS:
+        if not _RGA_SCHEDULER_LOGGED:
+            print(
+                f"[rga-resize-plugin] imconfig scheduler core failed: ret={ret} "
+                f"core={_RGA_SCHEDULER_LABEL}"
+            )
+            _RGA_SCHEDULER_LOGGED = True
+        return
+    if not _RGA_SCHEDULER_LOGGED:
+        print(f"[rga-resize-plugin] scheduler core set to { _RGA_SCHEDULER_LABEL }")
+        _RGA_SCHEDULER_LOGGED = True
+
+
+def backend_name():
+    if not RGA_OK or _lib is None:
+        return "cv2"
+    suffix = f"{_RGA_BUFFER_MODE}"
+    if _RGA_SCHEDULER_CORE:
+        suffix = f"{suffix},{_RGA_SCHEDULER_LABEL}"
+    return f"rga({suffix})"
 
 
 def _resize_with_librga(src, dst):
@@ -172,6 +322,41 @@ def _resize_with_librga(src, dst):
     dst_h, dst_w = dst.shape[:2]
     src_wstride = src.shape[1]
     dst_wstride = dst.shape[1]
+
+    if _RGA_BUFFER_MODE == "handle" and _importbuffer_virtualaddr is not None and _wrapbuffer_handle_t is not None:
+        src_param = _ImHandleParam(width=int(src_wstride), height=int(src_h), format=int(RK_FORMAT_BGR_888))
+        dst_param = _ImHandleParam(width=int(dst_wstride), height=int(dst_h), format=int(RK_FORMAT_BGR_888))
+        src_handle = _importbuffer_virtualaddr(ctypes.c_void_p(int(src.ctypes.data)), ctypes.byref(src_param))
+        dst_handle = _importbuffer_virtualaddr(ctypes.c_void_p(int(dst.ctypes.data)), ctypes.byref(dst_param))
+        if not _handle_is_valid(src_handle) or not _handle_is_valid(dst_handle):
+            if _handle_is_valid(src_handle) and _releasebuffer_handle is not None:
+                _releasebuffer_handle(int(src_handle))
+            if _handle_is_valid(dst_handle) and _releasebuffer_handle is not None:
+                _releasebuffer_handle(int(dst_handle))
+            return 0
+        try:
+            src_buf = _wrapbuffer_handle_t(
+                int(src_handle),
+                int(src_w),
+                int(src_h),
+                int(src_wstride),
+                int(src_h),
+                int(RK_FORMAT_BGR_888),
+            )
+            dst_buf = _wrapbuffer_handle_t(
+                int(dst_handle),
+                int(dst_w),
+                int(dst_h),
+                int(dst_wstride),
+                int(dst_h),
+                int(RK_FORMAT_BGR_888),
+            )
+            _apply_scheduler_core()
+            return int(_imresize_t(src_buf, dst_buf, 0.0, 0.0, int(IM_INTER_LINEAR), 1))
+        finally:
+            if _releasebuffer_handle is not None:
+                _releasebuffer_handle(int(src_handle))
+                _releasebuffer_handle(int(dst_handle))
 
     src_buf = _wrapbuffer_virtualaddr_t(
         ctypes.c_void_p(int(src.ctypes.data)),
@@ -189,6 +374,7 @@ def _resize_with_librga(src, dst):
         int(dst_h),
         int(RK_FORMAT_BGR_888),
     )
+    _apply_scheduler_core()
     return int(_imresize_t(src_buf, dst_buf, 0.0, 0.0, int(IM_INTER_LINEAR), 1))
 
 

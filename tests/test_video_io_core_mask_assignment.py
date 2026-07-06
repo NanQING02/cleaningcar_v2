@@ -27,6 +27,10 @@ class VideoIoCoreMaskAssignmentTests(unittest.TestCase):
         worker_masks = resolve_worker_core_masks(0b111, 2, strategy='auto')
         self.assertEqual(resolve_auto_plate_core_mask(0b010, 0b111, worker_masks), 0b010)
 
+    def test_resolve_auto_plate_core_mask_avoids_reserved_masks(self):
+        worker_masks = resolve_worker_core_masks(0b111, 2, strategy='auto')
+        self.assertIsNone(resolve_auto_plate_core_mask(None, 0b111, worker_masks, reserved_masks=[0b100]))
+
 
 if __name__ == "__main__":
     unittest.main()
