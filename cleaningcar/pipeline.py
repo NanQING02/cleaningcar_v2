@@ -1244,12 +1244,6 @@ def process_video(path, args):
     def _write_metrics(status='running', perf_snapshot=None):
         if not metrics_path:
             return
-        wheel_stats_snapshot = {}
-        if wheel_service is not None:
-            try:
-                wheel_stats_snapshot = wheel_service.snapshot_stats()
-            except Exception:
-                wheel_stats_snapshot = {}
         payload = {
             'timestamp': time.time(),
             'pid': os.getpid(),
@@ -1282,7 +1276,7 @@ def process_video(path, args):
             'perf': perf_snapshot or last_perf_snapshot,
             'per_id_video': _snapshot_per_id_video_metrics(),
             'events': event_manager.snapshot_metrics() if hasattr(event_manager, 'snapshot_metrics') else {},
-            'wheel': wheel_stats_snapshot,
+            'wheel': wheel_service.snapshot_stats() if wheel_service is not None else {},
             'process': {
                 'rss_kb': _process_rss_kb(),
             },
@@ -2176,7 +2170,6 @@ def process_video(path, args):
                     'infer_ms': infer_ms,
                     'frames_delta': frames_delta,
                 })
-            diag_flags = []
             wheel_msgs = []
             wheel_perf = {}
             wheel_stats_now = {}
@@ -2246,6 +2239,7 @@ def process_video(path, args):
             wheel_upload_pending = _upload_pending_count(wheel_photo_uploader)
             npu_status = snapshot_npu_status()
             npu_flags = npu_status_flags(npu_status)
+            diag_flags = []
             if dropped_delta > 0 or task_q_size > max(1, args.queue_size // 2) or result_q_size > max(1, args.queue_size // 2):
                 diag_flags.append('pipeline_backpressure')
             if main_reconnect_delta > 0:

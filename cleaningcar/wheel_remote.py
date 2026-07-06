@@ -7,8 +7,6 @@ import time
 import urllib.parse
 import urllib.request
 
-from .log_throttle import WindowedLogThrottler
-
 
 def _camera_namespace(camera_id):
     raw = str(camera_id or "default").encode("utf-8", errors="ignore")
@@ -35,16 +33,6 @@ class RemoteWheelResultProvider:
         self.timeout = max(0.1, float(timeout or 0.5))
         self.namespace = _camera_namespace(camera_id)
         self.active_sides = ("left", "right")
-        self._log_throttler = WindowedLogThrottler()
-
-    def _record_error(self, key, message):
-        for line in self._log_throttler.record(
-            key=key,
-            message=f"[wheel-remote] {message}",
-            now=time.time(),
-            window_seconds=10.0,
-        ):
-            print(line)
 
     def _remote_track_id(self, track_id):
         try:
@@ -77,92 +65,69 @@ class RemoteWheelResultProvider:
         remote_id = self._remote_track_id(track_id)
         if remote_id <= 0:
             return
-        try:
-            self._request_json(
-                "POST",
-                "/activity",
-                {
-                    "track_id": remote_id,
-                    "active": bool(active),
-                    "frame_ts": time.time() if frame_ts is None else float(frame_ts),
-                },
-            )
-        except Exception as exc:
-            self._record_error("activity", f"activity update failed: {exc}")
+        self._request_json(
+            "POST",
+            "/activity",
+            {
+                "track_id": remote_id,
+                "active": bool(active),
+                "frame_ts": time.time() if frame_ts is None else float(frame_ts),
+            },
+        )
 
     def forget_track(self, track_id):
         self.update_track_activity(track_id, active=False)
 
     def get_recent_result_entries(self, now_ts=None, reference_ts=None, track_id=None):
         remote_id = self._remote_track_id(track_id)
-        try:
-            payload = self._request_json(
-                "GET",
-                "/recent",
-                query={
-                    "track_id": remote_id,
-                    "now_ts": time.time() if now_ts is None else float(now_ts),
-                    "reference_ts": time.time() if reference_ts is None else float(reference_ts),
-                },
-            )
-        except Exception as exc:
-            self._record_error("recent", f"recent results request failed: {exc}")
-            return []
+        payload = self._request_json(
+            "GET",
+            "/recent",
+            query={
+                "track_id": remote_id,
+                "now_ts": time.time() if now_ts is None else float(now_ts),
+                "reference_ts": time.time() if reference_ts is None else float(reference_ts),
+            },
+        )
         return [_decode_entry(item) for item in (payload or {}).get("items", [])]
 
     def claim_result_entry(self, track_id, entry_id):
         remote_id = self._remote_track_id(track_id)
-        try:
-            payload = self._request_json(
-                "POST",
-                "/claim",
-                {"track_id": remote_id, "entry_id": int(entry_id or 0)},
-            )
-        except Exception as exc:
-            self._record_error("claim", f"claim request failed: {exc}")
-            return False
+        payload = self._request_json(
+            "POST",
+            "/claim",
+            {"track_id": remote_id, "entry_id": int(entry_id or 0)},
+        )
         return bool((payload or {}).get("ok"))
 
     def get_photo_candidate_entries(self, track_id, now_ts=None, reference_ts=None):
         remote_id = self._remote_track_id(track_id)
-        try:
-            payload = self._request_json(
-                "GET",
-                "/photo-candidates",
-                query={
-                    "track_id": remote_id,
-                    "now_ts": time.time() if now_ts is None else float(now_ts),
-                    "reference_ts": time.time() if reference_ts is None else float(reference_ts),
-                },
-            )
-        except Exception as exc:
-            self._record_error("photo-candidates", f"photo candidates request failed: {exc}")
-            return []
+        payload = self._request_json(
+            "GET",
+            "/photo-candidates",
+            query={
+                "track_id": remote_id,
+                "now_ts": time.time() if now_ts is None else float(now_ts),
+                "reference_ts": time.time() if reference_ts is None else float(reference_ts),
+            },
+        )
         return [_decode_entry(item) for item in (payload or {}).get("items", [])]
 
     def get_claimed_result_entries(self, track_id, now_ts=None, reference_ts=None):
         remote_id = self._remote_track_id(track_id)
-        try:
-            payload = self._request_json(
-                "GET",
-                "/claimed",
-                query={
-                    "track_id": remote_id,
-                    "now_ts": time.time() if now_ts is None else float(now_ts),
-                    "reference_ts": time.time() if reference_ts is None else float(reference_ts),
-                },
-            )
-        except Exception as exc:
-            self._record_error("claimed", f"claimed results request failed: {exc}")
-            return []
+        payload = self._request_json(
+            "GET",
+            "/claimed",
+            query={
+                "track_id": remote_id,
+                "now_ts": time.time() if now_ts is None else float(now_ts),
+                "reference_ts": time.time() if reference_ts is None else float(reference_ts),
+            },
+        )
         return [_decode_entry(item) for item in (payload or {}).get("items", [])]
 
     def snapshot_stats(self):
-        try:
-            payload = self._request_json("GET", "/stats")
-        except Exception as exc:
-            self._record_error("stats", f"stats request failed: {exc}")
-            return {}
+        payload = self._request_json("GET", "/stats")
         sides = (payload or {}).get("active_sides")
         if isinstance(sides, list):
             self.active_sides = tuple(str(side) for side in sides)
