@@ -374,6 +374,39 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(locked.get("className"), "0-25")
         self.assertEqual(locked.get("imageJpegBytes"), b"first")
 
+    def test_lifecycle_locked_wheel_results_ignore_late_tiny_score_gain(self):
+        provider = _StaticWheelProvider([
+            {
+                "entryId": 1,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"early",
+                "className": "25-50",
+                "score": 0.90,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state = self._track_state()
+
+        manager._update_track_wheel_results(1, track_state, frame_ts=1000.0)
+        provider.items = [
+            {
+                "entryId": 2,
+                "side": "left",
+                "captureTime": "2026-04-28 12:01:00",
+                "imageJpegBytes": b"late",
+                "className": "0-25",
+                "score": 0.91,
+                "capture_ts": 1080.0,
+            }
+        ]
+        manager._update_track_wheel_results(1, track_state, frame_ts=1080.0)
+
+        locked = track_state.get("wheel_results_locked", {}).get("left", {})
+        self.assertEqual(locked.get("imageJpegBytes"), b"early")
+        self.assertEqual(locked.get("capture_ts"), 1000.0)
+
     def test_type5_payload_omits_wheel_results_when_provider_absent(self):
         manager = self._manager(wheel_provider=None)
 
