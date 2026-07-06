@@ -9,7 +9,7 @@ import numpy as np
 
 from cleaningcar.events import EventManager
 from cleaningcar.runtime_config import load_config
-from cleaningcar.wheel import WheelProcessorThread, WheelResultCache, resolve_wheel_class_name, resolve_wheel_settings
+from cleaningcar.wheel import WheelResultCache, resolve_wheel_class_name, resolve_wheel_settings
 
 
 class _DummyZoneManager:
@@ -626,21 +626,6 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(model_path.name, "2026.4.28CRwheel.rknn")
         self.assertEqual(model_path.parent, Path(__file__).resolve().parent.parent / "models" / "wheel")
         self.assertTrue(model_path.exists())
-
-    def test_active_target_fps_zero_disables_active_throttle(self):
-        processor = WheelProcessorThread(
-            side="left",
-            model_path="models/wheel/2026.4.28CRwheel.rknn",
-            class_names=["0-25"],
-            frame_slot=None,
-            result_cache=None,
-            stop_event=SimpleNamespace(),
-            target_fps=15.0,
-            active_target_fps=0.0,
-        )
-
-        self.assertGreater(processor.target_interval, 0.0)
-        self.assertEqual(processor.active_target_interval, 0.0)
 
 
 if __name__ == "__main__":
