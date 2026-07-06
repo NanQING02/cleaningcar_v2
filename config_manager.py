@@ -142,21 +142,6 @@ class ConfigManager:
             service_timeout = 0.5
         wheel['service_timeout_seconds'] = max(0.1, service_timeout)
         try:
-            activity_update_interval = float(wheel.get('activity_update_interval_seconds', 0.5))
-        except (TypeError, ValueError):
-            activity_update_interval = 0.5
-        wheel['activity_update_interval_seconds'] = max(0.05, activity_update_interval)
-        try:
-            result_poll_interval = float(wheel.get('result_poll_interval_seconds', 0.5))
-        except (TypeError, ValueError):
-            result_poll_interval = 0.5
-        wheel['result_poll_interval_seconds'] = max(0.05, result_poll_interval)
-        try:
-            bind_upgrade_min_score_gain = float(wheel.get('bind_upgrade_min_score_gain', 0.05))
-        except (TypeError, ValueError):
-            bind_upgrade_min_score_gain = 0.05
-        wheel['bind_upgrade_min_score_gain'] = max(0.0, bind_upgrade_min_score_gain)
-        try:
             reader_idle_fps = float(wheel.get('reader_idle_fps', 0.0))
         except (TypeError, ValueError):
             reader_idle_fps = 0.0

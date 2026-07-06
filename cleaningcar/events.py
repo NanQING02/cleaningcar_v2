@@ -289,27 +289,6 @@ class EventManager:
             self.wheel_bind_wait_poll_seconds = max(0.02, float(wheel_cfg.get('bind_wait_poll_seconds', 0.08)))
         except (TypeError, ValueError):
             self.wheel_bind_wait_poll_seconds = 0.08
-        try:
-            self.wheel_activity_update_interval_seconds = max(
-                0.05,
-                float(wheel_cfg.get('activity_update_interval_seconds', 0.5)),
-            )
-        except (TypeError, ValueError):
-            self.wheel_activity_update_interval_seconds = 0.5
-        try:
-            self.wheel_result_poll_interval_seconds = max(
-                0.05,
-                float(wheel_cfg.get('result_poll_interval_seconds', 0.5)),
-            )
-        except (TypeError, ValueError):
-            self.wheel_result_poll_interval_seconds = 0.5
-        try:
-            self.wheel_bind_upgrade_min_score_gain = max(
-                0.0,
-                float(wheel_cfg.get('bind_upgrade_min_score_gain', 0.05)),
-            )
-        except (TypeError, ValueError):
-            self.wheel_bind_upgrade_min_score_gain = 0.05
         self.lane_name = config.get('lane_name', '冲洗')
         self.default_plate_color = config.get('default_plate_color', '')
         self.default_plate_color_conf = float(config.get('default_plate_color_conf', 0.0))
@@ -450,9 +429,6 @@ class EventManager:
             'wheel_activity_start_ts': None,
             'wheel_activity_last_ts': None,
             'wheel_activity_end_ts': None,
-            'wheel_activity_last_sent_ts': 0.0,
-            'wheel_activity_last_sent_active': None,
-            'wheel_result_last_poll_ts': 0.0,
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -1895,19 +1871,6 @@ class EventManager:
             track_state['wheel_active'] = active
         if provider is None:
             return
-        last_sent_ts = 0.0
-        last_sent_active = None
-        if isinstance(track_state, dict):
-            try:
-                last_sent_ts = float(track_state.get('wheel_activity_last_sent_ts', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                last_sent_ts = 0.0
-            last_sent_active = track_state.get('wheel_activity_last_sent_active')
-        if (
-            last_sent_active is active
-            and ref_ts - last_sent_ts < self.wheel_activity_update_interval_seconds
-        ):
-            return
         updater = getattr(provider, 'update_track_activity', None)
         if not callable(updater):
             return
@@ -1920,9 +1883,6 @@ class EventManager:
                 return
         except Exception:
             return
-        if isinstance(track_state, dict):
-            track_state['wheel_activity_last_sent_ts'] = ref_ts
-            track_state['wheel_activity_last_sent_active'] = active
 
     def _save_wheel_photo(self, side, track_id, seq, image_bytes, capture_ts, class_name):
         if not image_bytes:
@@ -2090,7 +2050,7 @@ class EventManager:
             if now >= deadline:
                 break
             self._update_wheel_track_activity(track_id, track_state, frame_ts=now, active=True)
-            self._update_track_wheel_results(track_id, track_state, frame_ts=now, force=True)
+            self._update_track_wheel_results(track_id, track_state, frame_ts=now)
             locked_count = self._locked_wheel_side_count(track_state)
             if locked_count >= expected:
                 break
@@ -2112,7 +2072,7 @@ class EventManager:
             f"{stats_part}"
         )
 
-    def _update_track_wheel_results(self, track_id, track_state, frame_ts=None, force=False):
+    def _update_track_wheel_results(self, track_id, track_state, frame_ts=None):
         if not isinstance(track_state, dict):
             return
         if self.wheel_bind_require_active and not bool(track_state.get('wheel_active', False)):
@@ -2125,14 +2085,6 @@ class EventManager:
             return
         claimer = getattr(provider, 'claim_result_entry', None)
         ref_ts = time.time() if frame_ts is None else float(frame_ts)
-        if not force:
-            try:
-                last_poll_ts = float(track_state.get('wheel_result_last_poll_ts', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                last_poll_ts = 0.0
-            if ref_ts - last_poll_ts < self.wheel_result_poll_interval_seconds:
-                return
-        track_state['wheel_result_last_poll_ts'] = ref_ts
         try:
             items = getter(now_ts=ref_ts, reference_ts=ref_ts, track_id=track_id)
         except TypeError:
@@ -2200,8 +2152,15 @@ class EventManager:
                 )
                 photo_seed_candidates.append(candidate)
                 continue
-            current_score = float(current.get('score', 0.0) or 0.0)
-            if candidate['score'] >= current_score + self.wheel_bind_upgrade_min_score_gain:
+            current_key = (
+                -float(current.get('score', 0.0) or 0.0),
+                -float(current.get('capture_ts', 0.0) or 0.0),
+            )
+            candidate_key = (
+                -candidate['score'],
+                -candidate['capture_ts'],
+            )
+            if candidate_key < current_key:
                 if callable(claimer) and not claimer(track_id, candidate.get('entryId')):
                     continue
                 locked[side] = candidate

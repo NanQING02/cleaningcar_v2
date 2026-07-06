@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import errno
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -103,25 +102,15 @@ def main():
         server_version = "CleaningCarWheelSidechain/1.0"
 
         def log_message(self, fmt, *values):
-            # 高频本机 IPC 请求不逐条打印，避免日志 I/O 反过来拖慢推理。
-            if self.path.startswith(("/health", "/stats", "/activity")):
-                return
             print("[wheel-server] " + (fmt % values), flush=True)
 
         def _send_json(self, payload, status=200):
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            try:
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            except BrokenPipeError:
-                return
-            except OSError as exc:
-                if getattr(exc, "errno", None) == errno.EPIPE:
-                    return
-                raise
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _read_json(self):
             try:
