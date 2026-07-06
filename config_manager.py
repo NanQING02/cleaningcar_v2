@@ -90,6 +90,9 @@ class ConfigManager:
         system.setdefault('startup_capture_dir', 'captures/startup')
         system.setdefault('manual_capture_dir', 'captures/manual')
         system.setdefault('cpu_mask', '')
+        system.setdefault('performance_lock_enabled', True)
+        system.setdefault('performance_lock_restore_on_stop', False)
+        system.setdefault('performance_lock_script', '')
 
         video = self.data.setdefault('video', {})
         if 'source' not in video:
@@ -123,6 +126,26 @@ class ConfigManager:
             wheel['event_driven'] = event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['event_driven'] = bool(event_driven)
+        reader_event_driven = wheel.get('reader_event_driven', False)
+        if isinstance(reader_event_driven, str):
+            wheel['reader_event_driven'] = reader_event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            wheel['reader_event_driven'] = bool(reader_event_driven)
+        run_mode = str(wheel.get('run_mode', 'embedded') or 'embedded').strip().lower()
+        if run_mode not in {'embedded', 'remote'}:
+            run_mode = 'embedded'
+        wheel['run_mode'] = run_mode
+        wheel['service_url'] = str(wheel.get('service_url', '') or '').strip()
+        try:
+            service_timeout = float(wheel.get('service_timeout_seconds', 0.5))
+        except (TypeError, ValueError):
+            service_timeout = 0.5
+        wheel['service_timeout_seconds'] = max(0.1, service_timeout)
+        try:
+            reader_idle_fps = float(wheel.get('reader_idle_fps', 0.0))
+        except (TypeError, ValueError):
+            reader_idle_fps = 0.0
+        wheel['reader_idle_fps'] = max(0.0, reader_idle_fps)
         wheel['left_source'] = str(wheel.get('left_source', '') or '').strip()
         wheel['right_source'] = str(wheel.get('right_source', '') or '').strip()
         wheel['model'] = str(wheel.get('model', DEFAULT_WHEEL_MODEL) or DEFAULT_WHEEL_MODEL).strip()
@@ -169,9 +192,9 @@ class ConfigManager:
         else:
             wheel['bind_require_active'] = bool(bind_require_active)
         try:
-            bind_wait = float(wheel.get('bind_wait_seconds', 0.8))
+            bind_wait = float(wheel.get('bind_wait_seconds', 2.0))
         except (TypeError, ValueError):
-            bind_wait = 0.8
+            bind_wait = 2.0
         wheel['bind_wait_seconds'] = max(0.0, bind_wait)
         try:
             bind_wait_poll = float(wheel.get('bind_wait_poll_seconds', 0.08))
@@ -252,6 +275,15 @@ class ConfigManager:
         logic.setdefault('enable_per_id_video', True)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         logic.setdefault('per_id_video_queue_size', 8)
+        per_id_video_source = str(logic.get('per_id_video_source', 'auto') or 'auto').strip().lower()
+        if per_id_video_source not in {'auto', 'raw', 'source', 'original', 'origin', 'annotated', 'draw', 'debug'}:
+            per_id_video_source = 'auto'
+        logic['per_id_video_source'] = per_id_video_source
+        try:
+            per_id_raw_prebuffer = float(logic.get('per_id_raw_prebuffer_seconds', 3.0))
+        except (TypeError, ValueError):
+            per_id_raw_prebuffer = 3.0
+        logic['per_id_raw_prebuffer_seconds'] = max(0.0, per_id_raw_prebuffer)
         logic.setdefault('copy_track_last_frame', False)
         logic.setdefault('copy_raw_frame_cache', False)
         logic.setdefault('plate_core_mask', '')

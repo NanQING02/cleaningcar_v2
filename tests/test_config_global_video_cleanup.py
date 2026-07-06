@@ -79,6 +79,31 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertNotIn("logic.per_id_auto_cpu_low", field_paths)
         self.assertNotIn("logic.per_id_max_frame_stride", field_paths)
 
+    def test_config_manager_defaults_raw_per_id_video_policy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertEqual(manager.logic["per_id_video_source"], "auto")
+            self.assertEqual(manager.logic["per_id_raw_prebuffer_seconds"], 3.0)
+
+    def test_web_config_registry_exposes_raw_per_id_video_policy(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertIn("logic.per_id_video_source", field_paths)
+        self.assertIn("logic.per_id_raw_prebuffer_seconds", field_paths)
+
     def test_config_manager_strips_obsolete_rga_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
@@ -101,6 +126,24 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertNotIn("video.rga_enable", field_paths)
+
+    def test_config_manager_enables_performance_lock_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertTrue(manager.system["performance_lock_enabled"])
 
     def test_web_config_registry_hides_storage_cleanup_fields(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}

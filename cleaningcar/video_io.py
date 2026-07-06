@@ -730,7 +730,7 @@ def resolve_worker_core_masks(core_mask, workers, strategy='auto'):
     return [indices_to_core_mask([core_indices[i % len(core_indices)]]) for i in range(worker_count)]
 
 
-def resolve_auto_plate_core_mask(requested_plate_mask, main_core_mask, worker_core_masks):
+def resolve_auto_plate_core_mask(requested_plate_mask, main_core_mask, worker_core_masks, reserved_masks=None):
     if requested_plate_mask is not None:
         return requested_plate_mask
     main_indices = set(core_mask_to_indices(main_core_mask))
@@ -738,6 +738,8 @@ def resolve_auto_plate_core_mask(requested_plate_mask, main_core_mask, worker_co
         return None
     used_indices = set()
     for mask in worker_core_masks or []:
+        used_indices.update(core_mask_to_indices(mask))
+    for mask in reserved_masks or []:
         used_indices.update(core_mask_to_indices(mask))
     spare = sorted(main_indices - used_indices)
     if not spare:

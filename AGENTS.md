@@ -109,14 +109,17 @@ run_zone_detect.py
 
 - `video.source_mode=camera`
 - `video.hw_decode=true`
-- `video.workers=2`
-- `video.core_mask=all`
+- `video.workers=1`
+- `video.core_mask=0`
 - `video.worker_core_strategy=auto`
 - `video.fp_output_mode=6`
 - `video.debug_frame_path=""`，运行时映射到 `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
+- `system.performance_lock_enabled=true`
+- RGA 禁用；项目高负载场景已复现死机风险，不允许开启
+- NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - `logic.no_draw=false`
 - `logic.draw_plate_boxes=true`
-- `logic.plate_infer_stride=2`
+- `logic.plate_infer_stride=3`
 - `logic.enable_per_id_video=true`
 - `logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - `wheel.enabled=true`

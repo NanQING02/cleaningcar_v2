@@ -49,6 +49,7 @@ run_zone_detect.py
 - 同一侧短时间连续命中的车轮结果会按连续簇整串归属给同一辆车，避免同一波旁路结果拆给后车
 - 上传给接口的车轮图片为原图，不带调试标注
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
+- `logic.per_id_video_source=auto` 时，关闭绘制默认按主路原始解码帧写单车录像；开启绘制时按绘制帧写
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存
 - 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
@@ -61,15 +62,19 @@ run_zone_detect.py
 - 设备 ID：`system.device_id=RK3588-DEV`
 - 视频源：RTSP，`video.source_mode=camera`
 - 解码：`video.hw_decode=true`
-- 推理并发：`video.workers=2`，`video.core_mask=all`，`video.worker_core_strategy=auto`
+- 推理并发：`video.workers=1`，`video.core_mask=0`，`video.worker_core_strategy=auto`
+- NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
+- 板端定频：`system.performance_lock_enabled=true`，推理启动前默认尝试定频
+- RGA：禁用；项目高负载场景已复现死机风险，不允许开启
 - FP 后处理：`video.fp_output_mode=6`
-- 画面叠加：`logic.no_draw=false`
-- 车牌框绘制：`logic.draw_plate_boxes=true`
-- 调试帧：`video.debug_frame_path=""`，运行时自动映射到 `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
-- 车牌副链路降频：`logic.plate_infer_stride=2`
+- 画面叠加：`logic.no_draw=true`
+- 车牌框绘制：`logic.draw_plate_boxes=false`
+- 调试帧：`video.debug_frame_path=off`
+- 车牌副链路降频：`logic.plate_infer_stride=3`
 - 单车视频：`logic.enable_per_id_video=true`
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
-- 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=false`，`wheel.target_fps=15.0`
+- 单车视频帧源：`logic.per_id_video_source=auto`，关闭绘制时走原始解码帧，`logic.per_id_raw_prebuffer_seconds=3.0`
+- 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
 - 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=1.0`
 - 检测 CSV：`video.csv=./video_result/test.csv`
 - 事件截图上报格式：`system.api.capture_mode=base64`
@@ -101,6 +106,8 @@ run_zone_detect.py
 chmod +x start_web_server.sh
 ./start_web_server.sh start
 ```
+
+推理启动前默认会尝试板端定频；如需临时关闭，可设置 `CLEANINGCAR_PERF_LOCK=0`。
 
 `start_web_server.sh` 首次执行 `start` 或 `restart` 时会自动安装或修复 `venv-gst/`；环境已就绪时直接拉起 Web。常用动作：
 

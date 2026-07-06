@@ -60,6 +60,8 @@ FP 检测模型后处理模式：
 
 - 当前只保留单车视频留存开关 `logic.enable_per_id_video`
 - 单车视频写出顺序为 `FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
+- `logic.per_id_video_source=auto` 时，关闭绘制（`logic.no_draw=true`）默认写主路原始解码帧；开启绘制时写绘制后的调试帧
+- `logic.per_id_raw_prebuffer_seconds` 控制原始帧录像在 type1 触发前/触发延迟期间的短预缓存，默认 `3.0s`
 - Web 端不再浏览这些单车录像，但后台仍会继续保存
 - 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效
 
@@ -75,7 +77,7 @@ FP 检测模型后处理模式：
 - `wheel.left_source` / `wheel.right_source`
   - 左右车轮视频源
 - `wheel.target_fps`
-  - 每路节流推理频率，默认低于主链路
+  - 每路非活动状态节流推理频率；`wheel.event_driven=true` 且无 Zone A 活跃轨迹时，车轮 processor 暂停推理，reader 仍持续拉流
 - `wheel.active_target_fps`
   - 主轨迹进入/经过 Zone A 后的车轮推理频率；`0` 表示活动窗口内不额外节流，只受模型推理耗时限制
 - `wheel.classes`
@@ -87,7 +89,7 @@ FP 检测模型后处理模式：
   - `bind_pre_start_seconds` 默认 `3.0`：拒绝早于该轨迹 wheel 激活时间太多的候选，避免上一辆车晚到结果绑定到下一辆车
   - `bind_after_end_seconds` 默认 `3.0`：拒绝轨迹结束后太晚的候选
 - `wheel.bind_wait_seconds` / `wheel.bind_wait_poll_seconds`
-  - `type=5` 事件生成前短暂等待车轮旁支补齐结果，默认最多 `0.8s`
+  - `type=5` 事件生成前短暂等待车轮旁支补齐结果，默认最多 `2.0s`
   - 只在最终事件触发时等待，不影响常规帧处理
 - `wheel.photo_bucket_seconds` / `wheel.photo_min_score`
   - 车轮照片批量上报（`POST /api/vehicle/wheel-photo`）的桶式参数
