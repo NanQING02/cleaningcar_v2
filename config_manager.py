@@ -110,6 +110,11 @@ class ConfigManager:
         video.setdefault('debug_frame_max_width', 960)
         video.setdefault('debug_frame_quality', 80)
         try:
+            reader_frame_timeout = float(video.get('reader_frame_timeout_seconds', 5.0))
+        except (TypeError, ValueError):
+            reader_frame_timeout = 5.0
+        video['reader_frame_timeout_seconds'] = max(0.0, reader_frame_timeout)
+        try:
             segment_minutes = int(video.get('segment_minutes', 60))
         except (TypeError, ValueError):
             segment_minutes = 0

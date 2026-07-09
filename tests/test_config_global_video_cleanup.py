@@ -104,6 +104,29 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("logic.per_id_video_source", field_paths)
         self.assertIn("logic.per_id_raw_prebuffer_seconds", field_paths)
 
+    def test_config_manager_defaults_reader_frame_timeout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
+
+    def test_web_config_registry_exposes_reader_frame_timeout(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertIn("video.reader_frame_timeout_seconds", field_paths)
+
     def test_config_manager_strips_obsolete_rga_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"

@@ -514,6 +514,26 @@ class WheelReaderThread(threading.Thread):
     def _log(self, key, message, window_seconds=10.0):
         self._log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
 
+    @staticmethod
+    def _capture_failure_summary(cap):
+        if cap is None or not hasattr(cap, "diagnostics"):
+            return ""
+        try:
+            diag = cap.diagnostics() or {}
+        except Exception:
+            return ""
+        parts = []
+        last_error = str(diag.get("last_read_error") or "").strip()
+        if last_error:
+            parts.append(f"last_error={last_error}")
+        recent_error_count = int(diag.get("recent_error_match_count") or 0)
+        if recent_error_count:
+            parts.append(f"recent_decode_errors={recent_error_count}")
+        recent_error_lines = diag.get("recent_error_lines") or []
+        if recent_error_lines:
+            parts.append(f"error_tail={recent_error_lines[-4:]}")
+        return " ".join(parts)
+
     def run(self):
         cap = None
         consecutive_fails = 0
@@ -600,6 +620,7 @@ class WheelReaderThread(threading.Thread):
 
                 ok, frame = cap.read()
                 if not ok or frame is None:
+                    failure_summary = self._capture_failure_summary(cap)
                     consecutive_fails += 1
                     if consecutive_fails < self.reader_fail_threshold:
                         if self.stop_event.wait(0.05):
@@ -620,6 +641,7 @@ class WheelReaderThread(threading.Thread):
                             f"reason=read_fail_threshold consecutive_fails={consecutive_fails} "
                             f"threshold={self.reader_fail_threshold} frames_since_open={frames_since_open} "
                             f"last_frame_gap={last_gap:.2f}s open_age={open_age:.2f}s source={self.source}"
+                            f"{(' ' + failure_summary) if failure_summary else ''}"
                         ),
                         window_seconds=10.0,
                     )

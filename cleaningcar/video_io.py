@@ -1,7 +1,9 @@
 import os
+import select
 import subprocess
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Empty, Full, Queue
@@ -105,7 +107,9 @@ def _probe_ffmpeg_stream(src):
 
 
 class FfmpegRawVideoCapture:
-    def __init__(self, src, decoder, stream_info, rtsp_latency_ms=200):
+    STDERR_HISTORY_LIMIT = 80
+
+    def __init__(self, src, decoder, stream_info, rtsp_latency_ms=200, read_timeout_seconds=5.0):
         self.src = str(src)
         self.decoder = str(decoder or '').strip()
         self.width = int((stream_info or {}).get('width') or 0)
@@ -113,16 +117,24 @@ class FfmpegRawVideoCapture:
         self.fps = float((stream_info or {}).get('fps') or 0.0)
         self.codec_name = str((stream_info or {}).get('codec_name') or '').strip().lower()
         self.frame_bytes = max(0, self.width * self.height * 3)
+        self.read_timeout_seconds = max(0.0, float(read_timeout_seconds or 0.0))
         self.proc = None
         self.backend = 'ffmpeg_rawvideo'
         self._opened = False
+        self._stderr_thread = None
+        self._stderr_stop = threading.Event()
+        self._stderr_lines = deque(maxlen=self.STDERR_HISTORY_LIMIT)
+        self._recent_error_lines = deque(maxlen=12)
+        self._recent_error_match_count = 0
+        self._last_read_error = ''
+        self._last_read_error_ts = 0.0
         if self.width <= 0 or self.height <= 0 or self.frame_bytes <= 0 or not self.decoder:
             return
         cmd = [
             'ffmpeg',
             '-hide_banner',
             '-loglevel',
-            'error',
+            'warning',
         ]
         if self.src.startswith(('rtsp://', 'rtsps://')):
             cmd.extend([
@@ -151,10 +163,13 @@ class FfmpegRawVideoCapture:
             self.proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 bufsize=max(self.frame_bytes * 4, 1024 * 1024),
             )
             self._opened = bool(self.proc.stdout is not None)
+            if self._opened and self.proc.stderr is not None:
+                self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+                self._stderr_thread.start()
         except Exception:
             self.proc = None
             self._opened = False
@@ -162,19 +177,108 @@ class FfmpegRawVideoCapture:
     def isOpened(self):
         return bool(self._opened and self.proc is not None and self.proc.poll() is None and self.proc.stdout is not None)
 
+    @staticmethod
+    def _is_error_stderr_line(line):
+        text = str(line or '').strip().lower()
+        if not text:
+            return False
+        markers = (
+            'error',
+            'failed',
+            'invalid',
+            'timeout',
+            'pps',
+            'slice_header',
+            'mpp',
+            'nal unit',
+            'decode',
+            'broken',
+            'mismatch',
+        )
+        return any(marker in text for marker in markers)
+
+    def _remember_read_error(self, message):
+        self._last_read_error = str(message or '').strip()
+        self._last_read_error_ts = time.time()
+
+    def _drain_stderr(self):
+        proc = self.proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            while not self._stderr_stop.is_set():
+                line = proc.stderr.readline()
+                if not line:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                text = line.decode('utf-8', errors='replace').strip()
+                if not text:
+                    continue
+                self._stderr_lines.append(text)
+                if self._is_error_stderr_line(text):
+                    self._recent_error_lines.append(text)
+                    self._recent_error_match_count += 1
+        except Exception:
+            return
+
+    def diagnostics(self):
+        return {
+            'backend': self.backend,
+            'decoder': self.decoder,
+            'codec_name': self.codec_name,
+            'read_timeout_seconds': self.read_timeout_seconds,
+            'last_read_error': self._last_read_error,
+            'last_read_error_ts': self._last_read_error_ts,
+            'recent_stderr_lines': list(self._stderr_lines)[-8:],
+            'recent_error_lines': list(self._recent_error_lines),
+            'recent_error_match_count': int(self._recent_error_match_count),
+        }
+
     def read(self):
         if not self.isOpened():
             return False, None
         try:
-            buf = self.proc.stdout.read(self.frame_bytes)
-        except Exception:
+            if self.read_timeout_seconds <= 0.0:
+                buf = self.proc.stdout.read(self.frame_bytes)
+            else:
+                buf = self._read_exact_with_timeout(self.frame_bytes, self.read_timeout_seconds)
+        except TimeoutError as exc:
+            self._remember_read_error(str(exc))
+            self.release()
+            return False, None
+        except Exception as exc:
+            self._remember_read_error(f'read_exception: {exc}')
             self.release()
             return False, None
         if len(buf) != self.frame_bytes:
+            self._remember_read_error(f'short_read: got={len(buf)} expected={self.frame_bytes}')
             self.release()
             return False, None
         frame = np.frombuffer(buf, dtype=np.uint8).reshape((self.height, self.width, 3))
         return True, frame
+
+    def _read_exact_with_timeout(self, size, timeout_seconds):
+        if self.proc is None or self.proc.stdout is None:
+            raise TimeoutError('capture_closed')
+        fd = self.proc.stdout.fileno()
+        chunks = bytearray()
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while len(chunks) < size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError(
+                    f'ffmpeg_rawvideo_read_timeout after {timeout_seconds:.2f}s '
+                    f'bytes={len(chunks)}/{size} decoder={self.decoder}'
+                )
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(fd, size - len(chunks))
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        return bytes(chunks)
 
     def release(self):
         proc = self.proc
@@ -182,9 +286,15 @@ class FfmpegRawVideoCapture:
         self._opened = False
         if proc is None:
             return
+        self._stderr_stop.set()
         try:
             if proc.stdout:
                 proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            if proc.stderr:
+                proc.stderr.close()
         except Exception:
             pass
         try:
@@ -195,6 +305,8 @@ class FfmpegRawVideoCapture:
                 proc.kill()
             except Exception:
                 pass
+        if self._stderr_thread is not None and self._stderr_thread.is_alive():
+            self._stderr_thread.join(timeout=0.2)
 
     def get(self, prop_id):
         if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
@@ -798,13 +910,19 @@ def _ordered_ffmpeg_hw_decoders(src):
     return FFMPEG_HW_DECODER_CANDIDATES
 
 
-def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
+def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1, read_timeout_seconds=5.0):
     if not isinstance(src, str):
         return None
     stream_info = _probe_ffmpeg_stream(src)
     decoder_name = FFMPEG_CODEC_TO_RKMPP_DECODER.get(str((stream_info or {}).get('codec_name') or '').strip().lower(), '')
     if decoder_name:
-        cap = FfmpegRawVideoCapture(src, decoder_name, stream_info, rtsp_latency_ms=rtsp_latency_ms)
+        cap = FfmpegRawVideoCapture(
+            src,
+            decoder_name,
+            stream_info,
+            rtsp_latency_ms=rtsp_latency_ms,
+            read_timeout_seconds=read_timeout_seconds,
+        )
         if _is_capture_opened(cap):
             print(f'[reader] Using FFmpeg rawvideo hardware decoder {decoder_name} for {src}')
             return cap
@@ -949,6 +1067,11 @@ def create_video_reader(path, args):
     video_cfg = config.get('video', {}) or {}
     rtsp_latency_ms = _safe_int(video_cfg.get('rtsp_latency_ms', 200), 200)
     rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
+    try:
+        reader_frame_timeout_seconds = float(video_cfg.get('reader_frame_timeout_seconds', 5.0))
+    except (TypeError, ValueError):
+        reader_frame_timeout_seconds = 5.0
+    reader_frame_timeout_seconds = max(0.0, reader_frame_timeout_seconds)
     decode_meta = {
         'decode_mode': 'sw',
         'decode_backend': 'software',
@@ -956,6 +1079,7 @@ def create_video_reader(path, args):
         'fallback_reason': '',
         'source_kind': _source_kind_for_decode(path),
         'attempt_order': [],
+        'reader_frame_timeout_seconds': reader_frame_timeout_seconds,
     }
 
     attempt_order = decode_meta['attempt_order']
@@ -965,6 +1089,7 @@ def create_video_reader(path, args):
             path,
             rtsp_latency_ms=rtsp_latency_ms,
             rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+            read_timeout_seconds=reader_frame_timeout_seconds,
         )
         if _is_capture_opened(cap_hw):
             decode_meta['decode_mode'] = 'hw'

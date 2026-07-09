@@ -357,6 +357,36 @@ def process_video(path, args):
     def _throttled_log(key, message, window_seconds=10.0):
         log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
 
+    def _capture_failure_extra(cap_obj):
+        if cap_obj is None or not hasattr(cap_obj, 'diagnostics'):
+            return {}
+        try:
+            diag = cap_obj.diagnostics() or {}
+        except Exception:
+            return {}
+        recent_errors = diag.get('recent_error_lines') or []
+        extra = {
+            'reader_last_error': str(diag.get('last_read_error') or ''),
+            'reader_recent_error_count': int(diag.get('recent_error_match_count') or 0),
+        }
+        if recent_errors:
+            extra['reader_recent_error_tail'] = recent_errors[-4:]
+        return extra
+
+    def _capture_failure_summary(cap_obj):
+        extra = _capture_failure_extra(cap_obj)
+        last_error = str(extra.get('reader_last_error') or '')
+        recent_error_count = int(extra.get('reader_recent_error_count') or 0)
+        error_tail = extra.get('reader_recent_error_tail') or []
+        parts = []
+        if last_error:
+            parts.append(f'last_error={last_error}')
+        if recent_error_count:
+            parts.append(f'recent_decode_errors={recent_error_count}')
+        if error_tail:
+            parts.append(f'error_tail={error_tail}')
+        return ' '.join(parts), extra
+
     config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
     config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
     config_namespace_hint = Path(config_path).stem if config_path else ''
@@ -1883,6 +1913,7 @@ def process_video(path, args):
             break
         ret, frame = cap.read()
         if not ret or frame is None:
+            failure_summary, failure_extra = _capture_failure_summary(cap)
             consecutive_fails += 1
             if is_file_input:
                 print('[reader] local file reached EOF or failed, stopping.')
@@ -1891,7 +1922,10 @@ def process_video(path, args):
                 write_heartbeat(
                     status='waiting_reader',
                     force=True,
-                    extra={'consecutive_reader_failures': consecutive_fails},
+                    extra={
+                        'consecutive_reader_failures': consecutive_fails,
+                        **failure_extra,
+                    },
                 )
                 time.sleep(0.05)
                 continue
@@ -1899,13 +1933,17 @@ def process_video(path, args):
             consecutive_fails = 0
             _throttled_log(
                 'reader.reconnect_attempt',
-                f'[reader] capture stalled, reconnect attempt #{reconnect_count}',
+                f'[reader] capture stalled, reconnect attempt #{reconnect_count}'
+                + (f' {failure_summary}' if failure_summary else ''),
                 window_seconds=15.0,
             )
             write_heartbeat(
                 status='reader_reconnect',
                 force=True,
-                extra={'reconnect_attempt': reconnect_count},
+                extra={
+                    'reconnect_attempt': reconnect_count,
+                    **failure_extra,
+                },
             )
             try:
                 cap.release()

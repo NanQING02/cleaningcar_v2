@@ -92,6 +92,35 @@ class InferenceManager:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _safe_getpgid(pid: int) -> Optional[int]:
+        if pid <= 0:
+            return None
+        try:
+            return os.getpgid(pid)
+        except OSError:
+            return None
+
+    def _signal_target(self, pid: int, sig: int, reason: str, allow_group: bool = True) -> bool:
+        if pid <= 0:
+            return False
+        pgid = self._safe_getpgid(pid) if allow_group else None
+        if allow_group and pgid is not None and pgid == pid:
+            try:
+                os.killpg(pgid, sig)
+                return True
+            except OSError as exc:
+                self._append_log(
+                    f'[guardian] failed to signal process group pgid={pgid} sig={sig} reason={reason}: {exc}'
+                )
+                return False
+        try:
+            os.kill(pid, sig)
+            return True
+        except OSError as exc:
+            self._append_log(f'[guardian] failed to signal pid={pid} sig={sig} reason={reason}: {exc}')
+            return False
+
     def _launch_locked(self):
         if not self.script_path.exists():
             raise RuntimeError('run_zone_detect.py not found')
@@ -117,6 +146,7 @@ class InferenceManager:
             text=True,
             bufsize=1,
             env=env,
+            start_new_session=True,
         )
         self.process = proc
         self.restart_count += 1
@@ -142,12 +172,20 @@ class InferenceManager:
         if not self.process:
             return
         proc = self.process
-        self._append_log(f'[guardian] stopping pid={proc.pid}')
+        pgid = self._safe_getpgid(proc.pid)
+        if pgid is not None and pgid == proc.pid:
+            self._append_log(f'[guardian] stopping pid={proc.pid} pgid={pgid}')
+        else:
+            self._append_log(f'[guardian] stopping pid={proc.pid}')
         try:
-            proc.terminate()
+            self._signal_target(proc.pid, signal.SIGTERM, reason='tracked_stop', allow_group=True)
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            self._signal_target(proc.pid, getattr(signal, 'SIGKILL', signal.SIGTERM), reason='tracked_kill', allow_group=True)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         finally:
             code = proc.poll()
             self.last_exit = {'time': time.time(), 'code': code if code is not None else -1}
@@ -285,11 +323,12 @@ class InferenceManager:
             return False
         if not self._pid_exists(pid):
             return False
-        self._append_log(f'[guardian] terminating stale inference pid={pid} reason={reason}')
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError as exc:
-            self._append_log(f'[guardian] failed to terminate stale pid={pid}: {exc}')
+        pgid = self._safe_getpgid(pid)
+        if pgid is not None and pgid == pid:
+            self._append_log(f'[guardian] terminating stale inference pid={pid} pgid={pgid} reason={reason}')
+        else:
+            self._append_log(f'[guardian] terminating stale inference pid={pid} reason={reason}')
+        if not self._signal_target(pid, signal.SIGTERM, reason=f'stale_term:{reason}', allow_group=True):
             return False
         deadline = time.time() + 5.0
         while time.time() < deadline:
@@ -298,10 +337,7 @@ class InferenceManager:
                 return True
             time.sleep(0.1)
         force_signal = getattr(signal, 'SIGKILL', signal.SIGTERM)
-        try:
-            os.kill(pid, force_signal)
-        except OSError as exc:
-            self._append_log(f'[guardian] failed to kill stale pid={pid}: {exc}')
+        if not self._signal_target(pid, force_signal, reason=f'stale_kill:{reason}', allow_group=True):
             return False
         deadline = time.time() + 2.0
         while time.time() < deadline:
