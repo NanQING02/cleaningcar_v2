@@ -1,6 +1,6 @@
 {
   "system": {
-    "device_id": "RK3588-WASH",
+    "device_id": "RK3588-DEV",
     "api": {
       "url": "http://127.0.0.1:28014/api/vehicle/wash-event",
       "token": "",
@@ -28,6 +28,7 @@
     "source": "rtsp://user:password@main-camera-ip:port/path",
     "source_mode": "camera",
     "hw_decode": true,
+    "decode_backend": "gstreamer",
     "rtsp_latency_ms": 100,
     "rtsp_appsink_max_buffers": 1,
     "workers": 1,
@@ -76,20 +77,50 @@
   },
   "zones": {
     "zone_a_detection": [
-      [0.2403, 0.9977],
-      [0.2626, 0.3727],
-      [0.4752, 0.3661],
-      [0.9941, 0.991]
+      [
+        0.2403,
+        0.9977
+      ],
+      [
+        0.2626,
+        0.3727
+      ],
+      [
+        0.4752,
+        0.3661
+      ],
+      [
+        0.9941,
+        0.991
+      ]
     ],
     "zone_b_wash": [
-      [0.2745, 0.6023],
-      [0.6405, 0.5843],
-      [0.9482, 0.9536],
-      [0.268, 0.9928]
+      [
+        0.2745,
+        0.6023
+      ],
+      [
+        0.6405,
+        0.5843
+      ],
+      [
+        0.9482,
+        0.9536
+      ],
+      [
+        0.268,
+        0.9928
+      ]
     ],
     "flow_vector": {
-      "start": [0.4621, 0.5186],
-      "end": [0.6266, 0.9452]
+      "start": [
+        0.4621,
+        0.5186
+      ],
+      "end": [
+        0.6266,
+        0.9452
+      ]
     }
   },
   "logic": {
@@ -126,7 +157,14 @@
       "max_candidates": 50,
       "max_age_frames": 120
     },
-    "allowed_event_types": [1, 2, 3, 4, 5, 6],
+    "allowed_event_types": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
     "debug_overlay": false,
     "debug_track_state": false,
     "debug_anchor_points": false,
@@ -154,7 +192,7 @@
     "copy_track_last_frame": false,
     "copy_raw_frame_cache": false,
     "plate_core_mask": "0",
-    "plate_infer_stride": 3,
+    "plate_infer_stride": 1,
     "enable_event_disk": false,
     "vehicle_tracker_impl": "bytetrack"
   },
