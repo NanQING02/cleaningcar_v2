@@ -614,6 +614,9 @@ class WheelBindingTests(unittest.TestCase):
         self.assertFalse(config["wheel"]["enabled"])
         self.assertEqual(config["wheel"]["classes"], ["0-25", "25-50", "50-75", "75-100"])
         self.assertEqual(config["wheel"]["target_fps"], 5.0)
+        self.assertEqual(config["wheel"]["reader_stale_seconds"], 5.0)
+        self.assertEqual(config["wheel"]["reader_stale_check_interval_frames"], 15)
+        self.assertEqual(config["wheel"]["reader_stale_hash_size"], 16)
         self.assertNotIn("center_min_margin_ratio", config["wheel"])
 
     def test_wheel_model_path_prefers_project_root_when_relative_path_exists(self):

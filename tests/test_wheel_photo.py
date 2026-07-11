@@ -469,6 +469,27 @@ class WheelPhotoTests(unittest.TestCase):
 
         self.assertEqual(len(st['wheel_photo_history']['left']), 1)
 
+    def test_same_vehicle_same_side_duplicate_photo_bytes_are_skipped(self):
+        uploader = _FakeWheelPhotoUploader()
+        mgr = self._manager(uploader=uploader, bucket_seconds=0.25)
+        st = self._new_track(mgr)
+        claimer = _StaticClaimer()
+
+        for idx, ts in enumerate([1000.10, 1000.60], start=1):
+            mgr._update_wheel_photo_history(
+                track_id=1,
+                track_state=st,
+                side='left',
+                candidate=self._candidate(capture_ts=ts, entry_id=idx, image_bytes=b'samejpg'),
+                claimer=claimer,
+            )
+
+        mgr._enqueue_wheel_photos(st)
+
+        self.assertEqual(len(st['wheel_photo_history']['left']), 2)
+        self.assertEqual(st['wheel_photo_seq']['left'], 1)
+        self.assertEqual(len(uploader.enqueued), 1)
+
     def test_event_manager_default_photo_bucket_seconds_is_one_second(self):
         mgr = EventManager(
             {

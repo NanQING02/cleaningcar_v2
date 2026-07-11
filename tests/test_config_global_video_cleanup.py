@@ -120,6 +120,9 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             manager = ConfigManager(path)
 
+            self.assertEqual(manager.video["debug_frame_path"], "off")
+            self.assertEqual(manager.data["event_capture_quality"], 70)
+
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
 
     def test_web_config_registry_exposes_reader_frame_timeout(self):

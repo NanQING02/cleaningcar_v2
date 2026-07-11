@@ -105,7 +105,7 @@ class ConfigManager:
         video.setdefault('core_mask', '0-2')
         video.setdefault('fp_output_mode', '6')
         video.setdefault('csv', '')
-        video.setdefault('debug_frame_path', '/dev/shm/cleaningcar_debug.jpg')
+        video.setdefault('debug_frame_path', 'off')
         video.setdefault('debug_frame_interval', 30)
         video.setdefault('debug_frame_max_width', 960)
         video.setdefault('debug_frame_quality', 80)
@@ -216,6 +216,21 @@ class ConfigManager:
         except (TypeError, ValueError):
             photo_min_score = 0.3
         wheel['photo_min_score'] = max(0.0, min(photo_min_score, 1.0))
+        try:
+            reader_stale_seconds = float(wheel.get('reader_stale_seconds', 5.0))
+        except (TypeError, ValueError):
+            reader_stale_seconds = 5.0
+        wheel['reader_stale_seconds'] = max(0.0, reader_stale_seconds)
+        try:
+            reader_stale_check_interval = int(wheel.get('reader_stale_check_interval_frames', 15))
+        except (TypeError, ValueError):
+            reader_stale_check_interval = 15
+        wheel['reader_stale_check_interval_frames'] = max(1, reader_stale_check_interval)
+        try:
+            reader_stale_hash_size = int(wheel.get('reader_stale_hash_size', 16))
+        except (TypeError, ValueError):
+            reader_stale_hash_size = 16
+        wheel['reader_stale_hash_size'] = max(4, min(reader_stale_hash_size, 64))
         wheel.pop('photo_per_bucket', None)
 
         zones = self.data.setdefault('zones', {})
@@ -301,7 +316,7 @@ class ConfigManager:
 
         self.data.pop('storage', None)
 
-        self.data.setdefault('event_capture_quality', 85)
+        self.data.setdefault('event_capture_quality', 70)
 
         cfg_name = self.path.stem or 'default'
         default_events = f'events/{cfg_name}'

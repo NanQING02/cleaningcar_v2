@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import threading
 import time
@@ -2339,15 +2340,18 @@ class EventManager:
                 return
         history = track_state.setdefault('wheel_photo_history', {'left': {}, 'right': {}})
         side_history = history.setdefault(side, {})
+        image_bytes = candidate.get('imageJpegBytes', b'') or b''
+        image_hash = hashlib.sha1(image_bytes).hexdigest() if image_bytes else ''
         bucket_ts = int(candidate['capture_ts'] // self.wheel_photo_bucket_seconds)
         bucket = side_history.setdefault(bucket_ts, {'candidates': [], 'representative': None})
-        if any(int(c.get('entryId', 0) or 0) == entry_id for c in bucket['candidates']):
+        if entry_id > 0 and any(int(c.get('entryId', 0) or 0) == entry_id for c in bucket['candidates']):
             return
         bucket['candidates'].append({
             'className': candidate.get('className', ''),
             'score': float(candidate.get('score', 0.0) or 0.0),
             'centerDistance': float(candidate.get('centerDistance', 0.0) or 0.0),
-            'imageJpegBytes': candidate.get('imageJpegBytes', b'') or b'',
+            'imageJpegBytes': image_bytes,
+            'imageHash': image_hash,
             'capture_ts': float(candidate.get('capture_ts', 0.0) or 0.0),
             'entryId': entry_id,
         })
@@ -2357,22 +2361,51 @@ class EventManager:
         clean_class_name = self._select_bucket_clean_class_name(bucket['candidates'])
         clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(clean_class_name, 0)
         current_rep = bucket.get('representative')
+        new_rep_hash = str(new_rep_candidate.get('imageHash') or '')
         if current_rep and int(current_rep.get('entryId', 0) or 0) == int(new_rep_candidate.get('entryId', 0) or 0):
             if int(current_rep.get('cleanValue', 0) or 0) != int(clean_value):
                 current_rep['cleanValue'] = int(clean_value)
             return
+        if current_rep and new_rep_hash and current_rep.get('imageHash') == new_rep_hash:
+            current_rep.update({
+                'cleanValue': int(clean_value),
+                'score': float(new_rep_candidate.get('score', 0.0) or 0.0),
+                'capture_ts': float(new_rep_candidate.get('capture_ts', 0.0) or 0.0),
+                'entryId': int(new_rep_candidate.get('entryId', 0) or 0),
+            })
+            return
+        duplicate_photo_url = ''
+        duplicate_rep = None
+        if new_rep_hash:
+            for existing_bucket_key, existing_bucket in side_history.items():
+                if existing_bucket_key == bucket_ts:
+                    continue
+                existing_rep = existing_bucket.get('representative') if isinstance(existing_bucket, dict) else None
+                if (
+                    isinstance(existing_rep, dict)
+                    and existing_rep.get('imageHash') == new_rep_hash
+                    and int(existing_rep.get('cleanValue', 0) or 0) == int(clean_value)
+                ):
+                    duplicate_photo_url = str(existing_rep.get('photoUrl') or '')
+                    duplicate_rep = existing_rep
+                    break
         seq_map = track_state.setdefault('wheel_photo_seq', {'left': 0, 'right': 0})
-        if current_rep and current_rep.get('seq'):
+        if duplicate_rep and duplicate_rep.get('seq'):
+            seq = int(duplicate_rep['seq'])
+        elif current_rep and current_rep.get('seq'):
             seq = int(current_rep['seq'])
         else:
             seq = int(seq_map.get(side, 0)) + 1
             seq_map[side] = seq
-        photo_url = self._save_wheel_photo(
-            side=side, track_id=track_id, seq=seq,
-            image_bytes=new_rep_candidate.get('imageJpegBytes', b'') or b'',
-            capture_ts=new_rep_candidate.get('capture_ts'),
-            class_name=new_rep_candidate.get('className', ''),
-        )
+        if duplicate_photo_url:
+            photo_url = duplicate_photo_url
+        else:
+            photo_url = self._save_wheel_photo(
+                side=side, track_id=track_id, seq=seq,
+                image_bytes=new_rep_candidate.get('imageJpegBytes', b'') or b'',
+                capture_ts=new_rep_candidate.get('capture_ts'),
+                class_name=new_rep_candidate.get('className', ''),
+            )
         if not photo_url:
             return
         bucket['representative'] = {
@@ -2383,6 +2416,8 @@ class EventManager:
             'capture_ts': float(new_rep_candidate.get('capture_ts', 0.0) or 0.0),
             'entryId': int(new_rep_candidate.get('entryId', 0) or 0),
             'seq': seq,
+            'imageHash': new_rep_hash,
+            'duplicatePhoto': bool(duplicate_photo_url),
         }
 
     @staticmethod
@@ -2423,6 +2458,8 @@ class EventManager:
                     continue
                 rep = bucket.get('representative')
                 if not isinstance(rep, dict):
+                    continue
+                if rep.get('duplicatePhoto'):
                     continue
                 photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
         photos.sort(key=lambda item: item[0])
