@@ -5,6 +5,7 @@ from urllib.parse import urlparse, urlunparse
 
 DEFAULT_PER_ID_VIDEO_DIR = 'video_result/per_id'
 DEFAULT_WHEEL_MODEL = 'models/wheel/2026.4.28CRwheel.rknn'
+DEFAULT_EVENT_CAPTURE_BASE_DIR = '/data/ftp/event_captures'
 
 
 def _derive_wheel_photo_url(api_url: str) -> str:
@@ -59,6 +60,10 @@ class ConfigManager:
         system['api'].setdefault('url', '')
         system['api'].setdefault('token', '')
         system['api'].setdefault('capture_mode', 'path')
+        capture_mode = str(system['api'].get('capture_mode', 'path') or 'path').strip().lower()
+        if capture_mode not in {'path', 'base64'}:
+            capture_mode = 'path'
+        system['api']['capture_mode'] = capture_mode
         system['api'].setdefault('wheel_photo_url', '')
         derived_wheel_photo_url = _derive_wheel_photo_url(system['api'].get('url', ''))
         current_wheel_photo_url = str(system['api'].get('wheel_photo_url') or '').strip()
@@ -126,6 +131,19 @@ class ConfigManager:
             wheel['enabled'] = enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['enabled'] = bool(enabled)
+        pause_bypass_enabled = wheel.get('pause_bypass_during_wash_enabled', False)
+        if isinstance(pause_bypass_enabled, str):
+            wheel['pause_bypass_during_wash_enabled'] = pause_bypass_enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            wheel['pause_bypass_during_wash_enabled'] = bool(pause_bypass_enabled)
+        wheel['pause_bypass_config_key'] = str(
+            wheel.get('pause_bypass_config_key', 'config_绕行.json') or 'config_绕行.json'
+        ).strip()
+        try:
+            pause_resume_delay = float(wheel.get('pause_bypass_resume_delay_seconds', 0.5))
+        except (TypeError, ValueError):
+            pause_resume_delay = 0.5
+        wheel['pause_bypass_resume_delay_seconds'] = max(0.0, pause_resume_delay)
         event_driven = wheel.get('event_driven', True)
         if isinstance(event_driven, str):
             wheel['event_driven'] = event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -320,7 +338,7 @@ class ConfigManager:
 
         cfg_name = self.path.stem or 'default'
         default_events = f'events/{cfg_name}'
-        default_captures = f'captures/{cfg_name}'
+        default_captures = f'{DEFAULT_EVENT_CAPTURE_BASE_DIR}/{cfg_name}'
         self.data.setdefault('event_output_dir', default_events)
         self.data.setdefault('event_capture_dir', default_captures)
 

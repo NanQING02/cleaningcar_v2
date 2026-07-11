@@ -199,7 +199,9 @@ class EventManager:
         self.capture_dir = Path(config.get('event_capture_dir', './captures'))
         self.capture_dir.mkdir(parents=True, exist_ok=True)
         self.events_dir = Path(config.get('event_output_dir', './events'))
-        self.events_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_event_disk = bool(self.logic.get('enable_event_disk', False))
+        if self.enable_event_disk or uploader:
+            self.events_dir.mkdir(parents=True, exist_ok=True)
         self.tracks = {}
         self.timeout_frames = int(config.get('track_timeout_frames', 60))
         self.base_time = datetime.now()
@@ -980,12 +982,13 @@ class EventManager:
                 )
             except Exception:
                 pass
-        event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
-        try:
-            with event_path.open('w', encoding='utf-8') as f:
-                json.dump(event, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        if self.enable_event_disk:
+            event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
+            try:
+                with event_path.open('w', encoding='utf-8') as f:
+                    json.dump(event, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
         t_json = time.perf_counter()
         print(f"[EVENT] cam={self.camera_id} track={track_id} type={event_type} time={event['captureTime']}")
         if self.event_log_path:
@@ -1591,7 +1594,12 @@ class EventManager:
             self._log_capture_failure(event_type, track_id, frame_idx, '', frame, error='frame is None')
             self._capture_metrics['failed'] += 1
             return ''
-        capture_file = self.capture_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.jpg'
+        now = datetime.now()
+        capture_dir = self.capture_dir / now.strftime('%Y%m%d') / now.strftime('%H')
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now.strftime('%Y%m%d_%H%M%S')
+        safe_camera_id = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(self.camera_id or 'CAM'))
+        capture_file = capture_dir / f'{stamp}_{safe_camera_id}_{track_id}_t{event_type}_f{frame_idx}.jpg'
         capture_path = str(capture_file)
         try:
             h, w = frame.shape[:2]

@@ -4,7 +4,7 @@
     "api": {
       "url": "http://127.0.0.1:28014/api/vehicle/wash-event",
       "token": "",
-      "capture_mode": "base64",
+      "capture_mode": "path",
       "wheel_photo_url": ""
     },
     "wheel_photo_base_dir": "/data/ftp",
@@ -43,6 +43,9 @@
   },
   "wheel": {
     "enabled": false,
+    "pause_bypass_during_wash_enabled": false,
+    "pause_bypass_config_key": "config_绕行.json",
+    "pause_bypass_resume_delay_seconds": 0.5,
     "run_mode": "remote",
     "service_url": "http://127.0.0.1:28015",
     "service_timeout_seconds": 0.5,
@@ -158,6 +161,6 @@
     "vehicle_tracker_impl": "bytetrack"
   },
   "event_output_dir": "events/config_bypass",
-  "event_capture_dir": "captures/config_bypass",
+  "event_capture_dir": "/data/ftp/event_captures/config_bypass",
   "event_capture_quality": 70
 }

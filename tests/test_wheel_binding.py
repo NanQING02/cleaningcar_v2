@@ -291,6 +291,7 @@ class WheelBindingTests(unittest.TestCase):
         )
 
         manager = self._manager(wheel_provider=cache)
+        manager.enable_event_disk = True
         track_state = self._track_state()
         manager._update_track_wheel_results(1, track_state, frame_ts=now_ts)
         track_state["type1_capture_time"] = "2026-04-28 11:59:47"
@@ -629,6 +630,76 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(model_path.name, "2026.4.28CRwheel.rknn")
         self.assertEqual(model_path.parent, Path(__file__).resolve().parent.parent / "models" / "wheel")
         self.assertTrue(model_path.exists())
+
+    def test_event_json_disk_retention_is_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            event_dir = root / "events"
+            capture_dir = root / "captures"
+            manager = EventManager(
+                {
+                    "logic": {"enable_event_disk": False},
+                    "event_output_dir": str(event_dir),
+                    "event_capture_dir": str(capture_dir),
+                },
+                fps=25.0,
+                frame_size=(64, 64),
+                zone_manager=_DummyZoneManager(),
+            )
+            track_state = {
+                "plate_conf_history": [0.9],
+                "vehicle_conf_history": [0.8],
+                "events": set(),
+                "last_frame_idx": 1,
+            }
+
+            manager._emit_event_core(
+                1,
+                1,
+                1,
+                np.zeros((64, 64, 3), dtype=np.uint8),
+                {"captureTime": "2026-07-11 16:00:00"},
+                track_state,
+                "car",
+            )
+
+            self.assertFalse(list(event_dir.glob("*.json")))
+            self.assertTrue(list(capture_dir.rglob("*.jpg")))
+
+    def test_event_json_disk_retention_can_be_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            event_dir = root / "events"
+            capture_dir = root / "captures"
+            manager = EventManager(
+                {
+                    "logic": {"enable_event_disk": True},
+                    "event_output_dir": str(event_dir),
+                    "event_capture_dir": str(capture_dir),
+                },
+                fps=25.0,
+                frame_size=(64, 64),
+                zone_manager=_DummyZoneManager(),
+            )
+            track_state = {
+                "plate_conf_history": [0.9],
+                "vehicle_conf_history": [0.8],
+                "events": set(),
+                "last_frame_idx": 1,
+            }
+
+            manager._emit_event_core(
+                1,
+                1,
+                1,
+                np.zeros((64, 64, 3), dtype=np.uint8),
+                {"captureTime": "2026-07-11 16:00:00"},
+                track_state,
+                "car",
+            )
+
+            self.assertTrue(list(event_dir.glob("*.json")))
+            self.assertTrue(list(capture_dir.rglob("*.jpg")))
 
 
 if __name__ == "__main__":

@@ -167,6 +167,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
     def test_locked_text_is_not_overwritten_by_single_wrong_frame(self):
         manager = self._manager(plate_lock_frames=3)
+        manager.enable_event_disk = True
 
         self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
         self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
@@ -205,6 +206,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
     def test_unlocked_event_marks_plate_recognition_abnormal_and_blank_plate(self):
         manager = self._manager(plate_lock_frames=3)
+        manager.enable_event_disk = True
 
         self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
         self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)

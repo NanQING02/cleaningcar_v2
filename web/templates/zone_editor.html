@@ -99,6 +99,16 @@
             <input type="checkbox" v-model="form.wheel.enabled" />
             启用左右车轮旁路检测
           </label>
+          <label>
+            <input type="checkbox" v-model="form.wheel.pause_bypass_during_wash_enabled" />
+            冲洗道有车时暂停绕行道
+          </label>
+          <label>目标绕行配置
+            <input v-model="form.wheel.pause_bypass_config_key" placeholder="config_绕行.json" />
+          </label>
+          <label>绕行恢复延迟（秒）
+            <input type="number" min="0" step="0.1" v-model.number="form.wheel.pause_bypass_resume_delay_seconds" />
+          </label>
           <label>左车轮 RTSP
             <input v-model="form.wheel.left_source" placeholder="rtsp://left-wheel" />
           </label>
@@ -134,6 +144,13 @@
               <option value="path">path</option>
               <option value="base64">base64</option>
             </select>
+          </label>
+          <label>事件图片目录
+            <input v-model="form.event_capture_dir" placeholder="/data/ftp/event_captures/config" />
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.enable_event_disk" />
+            保存本地事件 JSON
           </label>
           <div>
             <button @click="saveUserConfig" :disabled="busy">保存用户参数</button>
@@ -208,9 +225,6 @@
             </label>
             <label>事件目录
               <input v-model="form.event_output_dir" placeholder="events/config" />
-            </label>
-            <label>事件截图目录
-              <input v-model="form.event_capture_dir" placeholder="captures/config" />
             </label>
             <label>事件截图质量
               <input type="number" min="1" max="100" v-model.number="form.event_capture_quality" />
@@ -474,6 +488,9 @@
             },
             wheel: {
               enabled: false,
+              pause_bypass_during_wash_enabled: false,
+              pause_bypass_config_key: 'config_绕行.json',
+              pause_bypass_resume_delay_seconds: 0.5,
               event_driven: false,
               left_source: '',
               right_source: '',
@@ -543,8 +560,8 @@
               flow_vector: { start: [0.5, 0.2], end: [0.5, 0.8] }
             },
             event_output_dir: 'events/config',
-            event_capture_dir: 'captures/config',
-            event_capture_quality: 85
+            event_capture_dir: '/data/ftp/event_captures/config',
+            event_capture_quality: 70
           },
           status: '初始化中…',
           lastSave: '',
@@ -791,7 +808,15 @@
           this.form.video.debug_frame_max_width = this.form.video.debug_frame_max_width || 960;
           this.form.video.debug_frame_quality = this.form.video.debug_frame_quality || 80;
           this.form.video.segment_minutes = this.form.video.segment_minutes || 60;
+          const wheelValueOr = (value, fallback) => (
+            (typeof value === 'undefined' || value === null) ? fallback : value
+          );
           this.form.wheel.enabled = !!this.form.wheel.enabled;
+          this.form.wheel.pause_bypass_during_wash_enabled = !!this.form.wheel.pause_bypass_during_wash_enabled;
+          this.form.wheel.pause_bypass_config_key = this.form.wheel.pause_bypass_config_key || 'config_绕行.json';
+          this.form.wheel.pause_bypass_resume_delay_seconds = Number(
+            wheelValueOr(this.form.wheel.pause_bypass_resume_delay_seconds, 0.5)
+          );
           this.form.wheel.event_driven = !!this.form.wheel.event_driven;
           this.form.wheel.left_source = this.form.wheel.left_source || '';
           this.form.wheel.right_source = this.form.wheel.right_source || '';
@@ -803,9 +828,6 @@
           }
           this.form.wheel.classes_text = this.form.wheel.classes.join(',');
           this.form.wheel.target_fps = Number(this.form.wheel.target_fps || 5);
-          const wheelValueOr = (value, fallback) => (
-            (typeof value === 'undefined' || value === null) ? fallback : value
-          );
           this.form.wheel.active_target_fps = Number(wheelValueOr(this.form.wheel.active_target_fps, 0));
           this.form.wheel.core_mask = this.form.wheel.core_mask || '';
           this.form.wheel.imgsz = Number(this.form.wheel.imgsz || 640);
@@ -857,8 +879,8 @@
           this.form.logic.min_zone_b_dwell_frames_for_type4 = Number(this.form.logic.min_zone_b_dwell_frames_for_type4 || 60);
           this.form.logic.enable_event_disk = !!this.form.logic.enable_event_disk;
           this.form.event_output_dir = this.form.event_output_dir || 'events/config';
-          this.form.event_capture_dir = this.form.event_capture_dir || 'captures/config';
-          this.form.event_capture_quality = Number(this.form.event_capture_quality || 85);
+          this.form.event_capture_dir = this.form.event_capture_dir || '/data/ftp/event_captures/config';
+          this.form.event_capture_quality = Number(this.form.event_capture_quality || 70);
         },
         async postConfig(endpoint, payload, successText) {
           this.busy = true;
@@ -907,14 +929,19 @@
             },
             wheel: {
               enabled: this.form.wheel.enabled,
+              pause_bypass_during_wash_enabled: this.form.wheel.pause_bypass_during_wash_enabled,
+              pause_bypass_config_key: this.form.wheel.pause_bypass_config_key,
+              pause_bypass_resume_delay_seconds: this.form.wheel.pause_bypass_resume_delay_seconds,
               left_source: this.form.wheel.left_source,
               right_source: this.form.wheel.right_source
             },
             logic: {
               lane_name: this.form.logic.lane_name,
               enable_per_id_video: this.form.logic.enable_per_id_video,
-              per_id_video_dir: this.form.logic.per_id_video_dir
-            }
+              per_id_video_dir: this.form.logic.per_id_video_dir,
+              enable_event_disk: this.form.logic.enable_event_disk
+            },
+            event_capture_dir: this.form.event_capture_dir
           };
         },
         buildDeveloperConfigPayload() {
@@ -1006,11 +1033,9 @@
               debug_anchor_points: this.form.logic.debug_anchor_points,
               debug_water_boxes: this.form.logic.debug_water_boxes,
               wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
-              min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4,
-              enable_event_disk: this.form.logic.enable_event_disk
+              min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4
             },
             event_output_dir: this.form.event_output_dir,
-            event_capture_dir: this.form.event_capture_dir,
             event_capture_quality: this.form.event_capture_quality
           };
         },

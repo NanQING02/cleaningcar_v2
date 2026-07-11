@@ -124,11 +124,40 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.data["event_capture_quality"], 70)
 
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
+            self.assertFalse(manager.data["wheel"]["pause_bypass_during_wash_enabled"])
+            self.assertEqual(manager.data["wheel"]["pause_bypass_config_key"], "config_绕行.json")
+            self.assertEqual(manager.data["wheel"]["pause_bypass_resume_delay_seconds"], 0.5)
+            self.assertEqual(manager.data["event_capture_dir"], "/data/ftp/event_captures/config")
 
     def test_web_config_registry_exposes_reader_frame_timeout(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertIn("video.reader_frame_timeout_seconds", field_paths)
+
+    def test_web_config_registry_exposes_wash_priority_pause_fields(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertIn("wheel.pause_bypass_during_wash_enabled", field_paths)
+        self.assertIn("wheel.pause_bypass_config_key", field_paths)
+        self.assertIn("wheel.pause_bypass_resume_delay_seconds", field_paths)
+
+    def test_web_config_registry_exposes_event_path_controls_as_user_fields(self):
+        user_fields = {
+            item["path"]
+            for item in CONFIG_FIELD_REGISTRY
+            if item["tier"] == "user"
+        }
+        developer_fields = {
+            item["path"]
+            for item in CONFIG_FIELD_REGISTRY
+            if item["tier"] == "developer"
+        }
+
+        self.assertIn("system.api.capture_mode", user_fields)
+        self.assertIn("event_capture_dir", user_fields)
+        self.assertIn("logic.enable_event_disk", user_fields)
+        self.assertNotIn("event_capture_dir", developer_fields)
+        self.assertNotIn("logic.enable_event_disk", developer_fields)
 
     def test_config_manager_strips_obsolete_rga_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:

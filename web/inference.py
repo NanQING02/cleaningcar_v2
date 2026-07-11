@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from cleaningcar.runtime_signals import load_json_file, resolve_runtime_settings
+from cleaningcar.runtime_signals import load_json_file, resolve_runtime_settings, write_json_atomic
 from config_manager import ConfigError, ConfigManager
 
 from . import state
@@ -45,6 +45,11 @@ class InferenceManager:
             'healthy': True,
             'reason': 'not_started',
         }
+        self._wash_priority_bypass_paused = False
+        self._wash_priority_resume_due: Optional[float] = None
+        self._wash_priority_last_target = ''
+        self._wash_priority_last_target_config: Optional[Path] = None
+        self._wash_priority_last_missing_log = ''
         self.log_buffer = deque(maxlen=800)
         self.log_lock = threading.Lock()
         self.shutdown = threading.Event()
@@ -496,6 +501,131 @@ class InferenceManager:
         info['reason'] = 'ok'
         return info
 
+    @staticmethod
+    def _coerce_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+        return bool(value)
+
+    def _load_wash_priority_settings_locked(self) -> Dict[str, object]:
+        try:
+            cfg = ConfigManager(self.config_path)
+        except ConfigError as exc:
+            self._append_log(f'[wash-priority] config error: {exc}')
+            return {'enabled': False}
+        wheel_cfg = (cfg.data or {}).get('wheel', {}) or {}
+        target_key = str(wheel_cfg.get('pause_bypass_config_key', 'config_绕行.json') or 'config_绕行.json').strip()
+        try:
+            resume_delay = float(wheel_cfg.get('pause_bypass_resume_delay_seconds', 0.5))
+        except (TypeError, ValueError):
+            resume_delay = 0.5
+        return {
+            'enabled': self._coerce_bool(wheel_cfg.get('pause_bypass_during_wash_enabled', False)),
+            'target_key': target_key,
+            'resume_delay': max(0.0, resume_delay),
+        }
+
+    def _target_config_path_for_key_locked(self, key: str) -> Optional[Path]:
+        key = str(key or '').strip()
+        if not key:
+            return None
+        base = self.config_path.parent
+        candidate = (base / key).resolve()
+        try:
+            base_resolved = base.resolve()
+            candidate.relative_to(base_resolved)
+        except Exception:
+            return None
+        if candidate.suffix.lower() != '.json' or not candidate.exists():
+            return None
+        return candidate
+
+    def _write_runtime_pause_command_locked(self, target_config: Path, paused: bool, reason: str) -> bool:
+        try:
+            cfg = ConfigManager(target_config)
+            runtime = resolve_runtime_settings(cfg.data, target_config.parent, namespace_hint=target_config.stem)
+            command_dir = Path(runtime['command_dir'])
+            command_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            command_path = command_dir / f"runtime_pause_{ts}_{uuid4().hex[:8]}.cmd.json"
+            write_json_atomic(
+                command_path,
+                {
+                    'cmd': 'set_runtime_pause',
+                    'paused': bool(paused),
+                    'reason': reason,
+                    'requested_at': time.time(),
+                    'requested_by': 'web_guardian',
+                    'source_config': self.config_path.name,
+                    'target_config': target_config.name,
+                },
+            )
+            self._append_log(
+                f'[wash-priority] sent {"pause" if paused else "resume"} command '
+                f'target={target_config.name} cmd={command_path}'
+            )
+            return True
+        except Exception as exc:
+            self._append_log(f'[wash-priority] failed to write runtime pause command target={target_config}: {exc}')
+            return False
+
+    def _coordinate_wash_priority_locked(self, heartbeat_info: Dict[str, object], now: Optional[float] = None) -> None:
+        now = time.time() if now is None else float(now)
+        settings = self._load_wash_priority_settings_locked()
+        if not settings.get('enabled'):
+            self._wash_priority_resume_due = None
+            if self._wash_priority_bypass_paused and self._wash_priority_last_target_config is not None:
+                if not self._write_runtime_pause_command_locked(
+                    self._wash_priority_last_target_config,
+                    False,
+                    'wash_lane_priority_disabled',
+                ):
+                    return
+                self._wash_priority_bypass_paused = False
+            self._wash_priority_last_target = ''
+            self._wash_priority_last_target_config = None
+            return
+        target_key = str(settings.get('target_key') or '').strip()
+        target_config = self._target_config_path_for_key_locked(target_key)
+        if target_config is None:
+            log_key = target_key or '<empty>'
+            if self._wash_priority_last_missing_log != log_key:
+                self._append_log(f'[wash-priority] bypass config not found or invalid: {target_key}')
+                self._wash_priority_last_missing_log = log_key
+            return
+        heartbeat = heartbeat_info.get('heartbeat') if isinstance(heartbeat_info, dict) else None
+        heartbeat = heartbeat if isinstance(heartbeat, dict) else {}
+        active = bool(heartbeat.get('wash_priority_active', False))
+        target_name = target_config.name
+        if self._wash_priority_last_target and self._wash_priority_last_target != target_name:
+            if self._wash_priority_bypass_paused and self._wash_priority_last_target_config is not None:
+                if not self._write_runtime_pause_command_locked(
+                    self._wash_priority_last_target_config,
+                    False,
+                    'wash_lane_priority_target_changed',
+                ):
+                    return
+                self._wash_priority_bypass_paused = False
+            self._wash_priority_resume_due = None
+        self._wash_priority_last_target = target_name
+        self._wash_priority_last_target_config = target_config
+        if active:
+            self._wash_priority_resume_due = None
+            if not self._wash_priority_bypass_paused:
+                if self._write_runtime_pause_command_locked(target_config, True, 'wash_lane_priority'):
+                    self._wash_priority_bypass_paused = True
+            return
+        if not self._wash_priority_bypass_paused:
+            self._wash_priority_resume_due = None
+            return
+        if self._wash_priority_resume_due is None:
+            self._wash_priority_resume_due = now + float(settings.get('resume_delay', 0.5) or 0.0)
+            return
+        if now >= self._wash_priority_resume_due:
+            if self._write_runtime_pause_command_locked(target_config, False, 'wash_lane_priority'):
+                self._wash_priority_bypass_paused = False
+                self._wash_priority_resume_due = None
+
     def _monitor_loop(self):
         while not self.shutdown.is_set():
             with self.lock:
@@ -524,6 +654,7 @@ class InferenceManager:
                         else:
                             heartbeat = self._check_heartbeat_locked()
                             self.last_heartbeat_status = heartbeat
+                            self._coordinate_wash_priority_locked(heartbeat)
                             if not heartbeat.get('healthy', True):
                                 reason = heartbeat.get('reason', 'unknown')
                                 self._append_log(f'[guardian] unhealthy heartbeat detected: {reason}')

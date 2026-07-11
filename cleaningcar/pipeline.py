@@ -588,6 +588,12 @@ def process_video(path, args):
     last_heartbeat_write = 0.0
     startup_emitted = False
     last_command_poll = 0.0
+    runtime_paused = False
+    runtime_pause_reason = ''
+    runtime_pause_changed_ts = None
+    wash_priority_active = False
+    wash_priority_active_tracks = []
+    wash_priority_last_change_ts = None
     task_q = Queue(maxsize=args.queue_size)
     result_q = Queue()
     dropped_frame_count = 0
@@ -891,6 +897,7 @@ def process_video(path, args):
         return True
 
     def write_startup_heartbeat(stage='booting'):
+        _refresh_wash_priority_state()
         now = time.time()
         payload = {
             'timestamp': now,
@@ -917,6 +924,12 @@ def process_video(path, args):
             'config_name': config_name,
             'source': str(path),
             'startup_stage': stage,
+            'runtime_paused': runtime_paused,
+            'runtime_pause_reason': runtime_pause_reason,
+            'runtime_pause_changed_ts': runtime_pause_changed_ts,
+            'wash_priority_active': wash_priority_active,
+            'wash_priority_active_tracks': wash_priority_active_tracks,
+            'wash_priority_last_change_ts': wash_priority_last_change_ts,
         }
         try:
             write_json_atomic(heartbeat_path, payload)
@@ -928,6 +941,7 @@ def process_video(path, args):
         now = time.time()
         if not force and (now - last_heartbeat_write) < heartbeat_interval_seconds:
             return
+        _refresh_wash_priority_state()
         payload = {
             'timestamp': now,
             'pid': os.getpid(),
@@ -952,6 +966,12 @@ def process_video(path, args):
             'config_path': config_path,
             'config_name': config_name,
             'source': str(path),
+            'runtime_paused': runtime_paused,
+            'runtime_pause_reason': runtime_pause_reason,
+            'runtime_pause_changed_ts': runtime_pause_changed_ts,
+            'wash_priority_active': wash_priority_active,
+            'wash_priority_active_tracks': wash_priority_active_tracks,
+            'wash_priority_last_change_ts': wash_priority_last_change_ts,
         }
         if extra:
             payload.update(extra)
@@ -960,6 +980,27 @@ def process_video(path, args):
             last_heartbeat_write = now
         except Exception:
             pass
+
+    def _refresh_wash_priority_state():
+        nonlocal wash_priority_active, wash_priority_active_tracks, wash_priority_last_change_ts
+        active_tracks = []
+        min_type1_frames = max(0, int(getattr(event_manager, 'min_type1_track_frames', 0) or 0))
+        for tid, st in list(getattr(event_manager, 'tracks', {}).items()):
+            if not isinstance(st, dict):
+                continue
+            events = st.get('events') or set()
+            if st.get('closed') or 5 in events:
+                continue
+            zone_active = bool(st.get('zone_a_enter_frame', -1) is not None and int(st.get('zone_a_enter_frame', -1) or -1) >= 0)
+            stable_zone_active = bool(zone_active and int(st.get('zone_a_dwell_frames', 0) or 0) >= min_type1_frames)
+            if 1 in events or stable_zone_active:
+                active_tracks.append(int(tid))
+        active_tracks.sort()
+        active_now = bool(active_tracks)
+        if active_now != wash_priority_active or active_tracks != wash_priority_active_tracks:
+            wash_priority_active = active_now
+            wash_priority_active_tracks = active_tracks
+            wash_priority_last_change_ts = time.time()
 
     def emit_startup_signal_if_needed():
         nonlocal startup_emitted
@@ -1020,6 +1061,29 @@ def process_video(path, args):
         print(f'[snapshot] kept frame={latest_frame_idx} tag={tag} files={saved}')
         return saved
 
+    def handle_set_runtime_pause(command_payload):
+        nonlocal cap, runtime_paused, runtime_pause_reason, runtime_pause_changed_ts, last_progress_ts
+        paused = command_payload.get('paused', False)
+        if isinstance(paused, str):
+            paused = paused.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            paused = bool(paused)
+        reason = str(command_payload.get('reason') or 'runtime_command').strip() or 'runtime_command'
+        if runtime_paused == paused and runtime_pause_reason == reason:
+            return {'paused': runtime_paused, 'reason': runtime_pause_reason}
+        runtime_paused = paused
+        runtime_pause_reason = reason if paused else ''
+        runtime_pause_changed_ts = time.time()
+        last_progress_ts = runtime_pause_changed_ts
+        if paused and cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+            cap = None
+        print(f'[runtime-pause] paused={int(runtime_paused)} reason={reason}')
+        return {'paused': runtime_paused, 'reason': reason}
+
     def _command_result_path(command_path, suffix):
         name = command_path.name
         if name.endswith('.cmd.json'):
@@ -1049,19 +1113,26 @@ def process_video(path, args):
                 if not payload:
                     raise ValueError('invalid command payload')
                 command_name = str(payload.get('cmd', '')).strip().lower()
-                if command_name != 'keep_snapshot':
-                    raise ValueError(f'unsupported command: {command_name or "empty"}')
-                saved = handle_keep_snapshot(payload)
-                write_json_atomic(
-                    _command_result_path(command_path, 'done'),
-                    {
+                if command_name == 'keep_snapshot':
+                    saved = handle_keep_snapshot(payload)
+                    result_payload = {
                         **meta,
                         'status': 'done',
                         'cmd': command_name,
                         'frame_idx': latest_frame_idx,
                         'captures': saved,
-                    },
-                )
+                    }
+                elif command_name == 'set_runtime_pause':
+                    pause_result = handle_set_runtime_pause(payload)
+                    result_payload = {
+                        **meta,
+                        'status': 'done',
+                        'cmd': command_name,
+                        **pause_result,
+                    }
+                else:
+                    raise ValueError(f'unsupported command: {command_name or "empty"}')
+                write_json_atomic(_command_result_path(command_path, 'done'), result_payload)
             except Exception as exc:
                 write_json_atomic(
                     _command_result_path(command_path, 'failed'),
@@ -1907,6 +1978,38 @@ def process_video(path, args):
     while True:
         _advance_dropped_frames()
         poll_runtime_commands()
+        if runtime_paused:
+            last_progress_ts = time.time()
+            drain_results(block=False)
+            event_manager.flush_inactive(alias_seen, next_frame_to_write, finalize_per_id_for_track)
+            write_heartbeat(
+                status='paused',
+                force=True,
+                extra={'runtime_pause_poll_interval_seconds': 0.1},
+            )
+            poll_runtime_commands(force=True)
+            if runtime_paused:
+                time.sleep(0.1)
+                continue
+        if cap is None:
+            write_heartbeat(
+                status='reader_reopen',
+                force=True,
+                extra={'reopen_after_runtime_pause': True},
+            )
+            cap, decode_meta = create_video_reader(path, args)
+            if cap and hasattr(cap, 'isOpened') and cap.isOpened():
+                _log_decode_open_result('恢复打开', decode_meta, True)
+                consecutive_fails = 0
+                write_heartbeat(status='running', force=True)
+            else:
+                _log_decode_open_result('恢复打开', decode_meta, False)
+                reconnect_count += 1
+                if reader_max_reconnect and reconnect_count >= reader_max_reconnect:
+                    print('[reader] max reconnect attempts reached during runtime resume, aborting stream.')
+                    break
+                time.sleep(reader_reconnect_delay)
+                continue
         write_heartbeat(status='running')
         storage_cleaner.run_due(reason='periodic')
         if frame_limit is not None and total_frames >= frame_limit:
@@ -2181,7 +2284,8 @@ def process_video(path, args):
         csv_f.close()
     if wheel_service is not None:
         wheel_service.stop()
-    cap.release()
+    if cap is not None:
+        cap.release()
     monitor_stop.set()
     if monitor_thread:
         monitor_thread.join(timeout=0.5)
