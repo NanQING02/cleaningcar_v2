@@ -10,6 +10,7 @@ Pillow
 # - rknnlite: install_runtime_venv.sh installs the wheel from packages/
 #
 pycryptodome>=3.20.0
+cffi>=1.16.0
 
 # Optional test dependency:
 # - onnxruntime: only needed for tools/tests/test_plate_dual_models.py --onnx
