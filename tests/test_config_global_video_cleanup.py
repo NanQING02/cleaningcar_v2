@@ -136,7 +136,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
         self.assertIn("video.reader_frame_timeout_seconds", field_paths)
 
-    def test_config_manager_defaults_plate_stability_controls(self):
+    def test_config_manager_defaults_plate_and_event_quality_controls(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
             payload = {
@@ -157,14 +157,40 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertTrue(manager.logic["plate_draw_stable_only"])
             self.assertEqual(manager.logic["shadow_plate_pool"]["text_window_frames"], 50)
             self.assertEqual(manager.logic["shadow_plate_pool"]["color_min_confidence"], 0.70)
+            self.assertTrue(manager.logic["event_track_quality"]["enabled"])
+            self.assertEqual(manager.logic["event_track_quality"]["min_hits_type1"], 12)
+            self.assertEqual(manager.logic["event_track_quality"]["min_zone_a_dwell_type5"], 15)
 
-    def test_web_config_registry_exposes_plate_stability_controls(self):
+    def test_web_config_registry_exposes_plate_and_event_quality_controls(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertIn("logic.plate_output_shape_log_once", field_paths)
         self.assertIn("logic.plate_draw_stable_only", field_paths)
         self.assertIn("logic.shadow_plate_pool.text_window_frames", field_paths)
         self.assertIn("logic.shadow_plate_pool.color_min_confidence", field_paths)
+        self.assertIn("logic.event_track_quality.min_hits_type1", field_paths)
+        self.assertIn("logic.event_track_quality.suppress_obvious_false_type5", field_paths)
+
+    def test_config_manager_accepts_boolean_event_quality_legacy_value(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "logic": {"event_track_quality": False},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertIsInstance(manager.logic["event_track_quality"], dict)
+            self.assertFalse(manager.logic["event_track_quality"]["enabled"])
+            self.assertEqual(manager.logic["event_track_quality"]["min_hits_type1"], 12)
 
     def test_config_manager_normalizes_disabled_software_decode_backend(self):
         with tempfile.TemporaryDirectory() as tmpdir:

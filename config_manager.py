@@ -339,6 +339,20 @@ class ConfigManager:
         shadow.setdefault('color_switch_min_consecutive', 3)
         shadow.setdefault('color_switch_gain_ratio', 1.2)
         shadow.setdefault('color_switch_margin', 0.5)
+        event_quality = logic.get('event_track_quality')
+        if not isinstance(event_quality, dict):
+            event_quality = {'enabled': bool(event_quality)} if event_quality is not None else {}
+            logic['event_track_quality'] = event_quality
+        event_quality.setdefault('enabled', True)
+        event_quality.setdefault('min_hits_type1', 12)
+        event_quality.setdefault('fast_vehicle_min_hits_type1', 6)
+        event_quality.setdefault('min_avg_vehicle_conf', 0.62)
+        event_quality.setdefault('fast_vehicle_min_avg_conf', 0.72)
+        event_quality.setdefault('plate_candidate_min_hits', 2)
+        event_quality.setdefault('plate_candidate_can_confirm_type1', True)
+        event_quality.setdefault('min_zone_a_dwell_type5', 15)
+        event_quality.setdefault('suppress_obvious_false_type5', True)
+        event_quality.setdefault('suspicious_cooldown_seconds', 6)
 
         self.data.pop('storage', None)
 

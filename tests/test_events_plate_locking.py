@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from collections import deque
 
 from cleaningcar.events import EventManager
 
@@ -24,6 +25,37 @@ class _ZoneAZoneManager:
     def update_track(track_id, anchor_point, frame_idx):
         state = type("ZoneState", (), {"inside_a": True, "inside_b": False})()
         return state, {"enter_a": frame_idx == 1, "exit_a": False, "enter_b": False, "exit_b": False}
+
+    @staticmethod
+    def drop_track(track_id):
+        return None
+
+    @staticmethod
+    def resolve_direction(state):
+        return 0, ""
+
+
+class _ScriptedZoneManager:
+    def __init__(self, states):
+        self.states = states
+
+    def update_track(self, track_id, anchor_point, frame_idx):
+        spec = self.states.get(frame_idx, {})
+        state = type(
+            "ZoneState",
+            (),
+            {
+                "inside_a": bool(spec.get("inside_a", False)),
+                "inside_b": bool(spec.get("inside_b", False)),
+            },
+        )()
+        flags = {
+            "enter_a": bool(spec.get("enter_a", False)),
+            "exit_a": bool(spec.get("exit_a", False)),
+            "enter_b": bool(spec.get("enter_b", False)),
+            "exit_b": bool(spec.get("exit_b", False)),
+        }
+        return state, flags
 
     @staticmethod
     def drop_track(track_id):
@@ -117,6 +149,44 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             frame_size=(128, 128),
             zone_manager=zone_manager,
             wheel_result_provider=wheel_provider,
+        )
+
+    def _quality_manager(self, zone_manager):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        config = {
+            "logic": {
+                "plate_lock_frames": 3,
+                "event_track_quality": {
+                    "enabled": True,
+                    "min_hits_type1": 12,
+                    "fast_vehicle_min_hits_type1": 6,
+                    "min_avg_vehicle_conf": 0.62,
+                    "fast_vehicle_min_avg_conf": 0.72,
+                    "plate_candidate_min_hits": 2,
+                    "plate_candidate_can_confirm_type1": True,
+                    "min_zone_a_dwell_type5": 15,
+                    "suppress_obvious_false_type5": True,
+                    "suspicious_cooldown_seconds": 6,
+                },
+            },
+            "shadow_pool": {
+                "max_candidates": 80,
+                "max_age_frames": 120,
+                "text_window_frames": 20,
+                "text_switch_min_consecutive": 3,
+                "color_min_confidence": 0.60,
+                "color_lock_frames": 3,
+            },
+            "event_capture_dir": temp_dir.name,
+            "event_output_dir": temp_dir.name,
+            "lane_name": "lane-a",
+        }
+        return EventManager(
+            config,
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=zone_manager,
         )
 
     @staticmethod
@@ -352,6 +422,129 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertTrue(color)
         self.assertGreater(confidence, 0.0)
 
+    def test_quality_gate_suppresses_short_low_confidence_type1_without_plate(self):
+        zone = _ScriptedZoneManager({
+            idx: {"inside_a": True, "enter_a": idx == 1}
+            for idx in range(1, 6)
+        })
+        manager = self._quality_manager(zone)
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+
+        for idx in range(1, 6):
+            manager.update_track(
+                1,
+                None,
+                [0, 0, 20, 20],
+                "",
+                idx,
+                None,
+                [],
+                False,
+                False,
+                "car",
+                0.40,
+                None,
+                False,
+                anchor_point=(10.0, 10.0),
+            )
+
+        self.assertNotIn(1, emitted)
+        self.assertNotIn(1, manager.tracks[1]["events"])
+
+    def test_fast_high_confidence_stable_motion_can_emit_type1(self):
+        zone = _ScriptedZoneManager({
+            idx: {"inside_a": True, "enter_a": idx == 1}
+            for idx in range(1, 7)
+        })
+        manager = self._quality_manager(zone)
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+
+        for idx in range(1, 7):
+            manager.update_track(
+                1,
+                None,
+                [idx * 8, 0, idx * 8 + 20, 20],
+                "",
+                idx,
+                None,
+                [],
+                False,
+                False,
+                "car",
+                0.95,
+                None,
+                False,
+                anchor_point=(float(idx * 8), 10.0),
+            )
+
+        self.assertIn(1, emitted)
+        self.assertIn(1, manager.tracks[1]["events"])
+
+    def test_valid_plate_candidate_can_confirm_type1_with_few_vehicle_frames(self):
+        zone = _ScriptedZoneManager({
+            idx: {"inside_a": True, "enter_a": idx == 1}
+            for idx in range(1, 3)
+        })
+        manager = self._quality_manager(zone)
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+
+        for idx in range(1, 3):
+            manager.update_track(
+                1,
+                [0, 0, 10, 10],
+                [0, 0, 20, 20],
+                "鲁A12345",
+                idx,
+                None,
+                [],
+                False,
+                True,
+                "car",
+                0.55,
+                0.95,
+                False,
+                anchor_point=(5.0 + idx, 5.0),
+                plate_is_guess=False,
+            )
+
+        self.assertIn(1, emitted)
+        self.assertIn(1, manager.tracks[1]["events"])
+
+    def test_type5_requires_type2_but_not_water_signal(self):
+        manager = self._quality_manager(_DummyZoneManager())
+        track_state = {
+            "events": {1, 2},
+            "type2_qualified": True,
+            "zone_a_seen": True,
+            "zone_a_dwell_frames": 6,
+            "vehicle_conf_history": [0.95] * 6,
+            "vehicle_hit_frames": 6,
+            "track_frame_count": 6,
+        }
+
+        self.assertTrue(manager._can_emit_type5(track_state))
+
+    def test_obvious_false_type5_is_suppressed_and_recorded_in_cooldown(self):
+        manager = self._quality_manager(_DummyZoneManager())
+        track_state = {
+            "events": {1, 2},
+            "type2_qualified": True,
+            "zone_a_seen": True,
+            "zone_a_dwell_frames": 14,
+            "vehicle_conf_history": [0.40] * 3,
+            "vehicle_hit_frames": 3,
+            "track_frame_count": 3,
+            "last_vehicle_box": [0, 0, 20, 20],
+            "center_jump_history": deque([0.20]),
+        }
+
+        self.assertTrue(manager._can_emit_type5(track_state))
+        self.assertTrue(manager._should_suppress_type5_quality(1, track_state, 20))
+        self.assertTrue(manager.suspicious_type5_cooldown)
+
     def test_update_track_notifies_wheel_activity_when_track_enters_zone_a(self):
         provider = _WheelActivityProvider()
         manager = self._manager_with_zone(_ZoneAZoneManager(), wheel_provider=provider)
@@ -372,6 +565,31 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         self.assertTrue(provider.calls)
         self.assertFalse(provider.calls[-1]["active"])
+
+    def test_type5_still_emits_when_vehicle_type_required_but_missing(self):
+        manager = self._manager()
+        manager.require_vehicle_type_for_events = True
+        emitted = []
+
+        def fake_emit(*args, **kwargs):
+            emitted.append((args, kwargs))
+
+        manager._emit_event_core = fake_emit
+        track_state = {
+            "events": {1, 2},
+            "last_frame_idx": 0,
+            "last_frame": None,
+            "type2_qualified": True,
+            "zone_a_dwell_frames": 1,
+        }
+        manager.tracks[1] = track_state
+
+        manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
+
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0][0][1], 5)
+        self.assertIn(5, track_state["events"])
+        self.assertNotIn(1, manager.pending_events)
 
 
 if __name__ == "__main__":

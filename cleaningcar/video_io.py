@@ -1261,6 +1261,22 @@ def create_video_reader(path, args):
     return None, decode_meta
 
 
+def _per_id_has_valid_plate_candidate(track_state, event_manager):
+    checker = getattr(event_manager, '_has_valid_plate_candidate', None)
+    if callable(checker):
+        try:
+            return bool(checker(track_state or {}))
+        except Exception:
+            return False
+    state = track_state or {}
+    return bool(
+        state.get('plate_text_locked')
+        or state.get('plate_candidate_latest')
+        or state.get('plate_text_latest')
+        or state.get('plate_text')
+    )
+
+
 def finalize_per_id_recording(writer, track_id, track_state, event_manager):
     if writer is None:
         return False
@@ -1284,6 +1300,9 @@ def finalize_per_id_recording(writer, track_id, track_state, event_manager):
         return False
 
     if output_path and not output_path.exists():
+        return False
+    if not _per_id_has_valid_plate_candidate(state, event_manager):
+        print(f'[per-id-video] suppress type6 without valid plate candidate: track={track_id}')
         return False
 
     frame_idx = state.get('record_stop_frame')

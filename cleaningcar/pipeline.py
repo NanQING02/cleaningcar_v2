@@ -1008,7 +1008,6 @@ def process_video(path, args):
     def _refresh_wash_priority_state():
         nonlocal wash_priority_active, wash_priority_active_tracks, wash_priority_last_change_ts
         active_tracks = []
-        min_type1_frames = max(0, int(getattr(event_manager, 'min_type1_track_frames', 0) or 0))
         for tid, st in list(getattr(event_manager, 'tracks', {}).items()):
             if not isinstance(st, dict):
                 continue
@@ -1016,7 +1015,8 @@ def process_video(path, args):
             if st.get('closed') or 5 in events:
                 continue
             zone_active = bool(st.get('zone_a_enter_frame', -1) is not None and int(st.get('zone_a_enter_frame', -1) or -1) >= 0)
-            stable_zone_active = bool(zone_active and int(st.get('zone_a_dwell_frames', 0) or 0) >= min_type1_frames)
+            can_type1_fn = getattr(event_manager, '_can_emit_type1', None)
+            stable_zone_active = bool(zone_active and callable(can_type1_fn) and can_type1_fn(st))
             if 1 in events or stable_zone_active:
                 active_tracks.append(int(tid))
         active_tracks.sort()
@@ -1772,7 +1772,7 @@ def process_video(path, args):
                     if event_use_annotated_frame and frame_out is not None
                     else (raw_frame_for_idx if raw_frame_for_idx is not None else frame_out)
                 )
-                assignments = vehicle_tracker.update(next_frame_to_write, vehicle_dets) if vehicle_dets else []
+                assignments = vehicle_tracker.update(next_frame_to_write, vehicle_dets)
                 for det_ref, track_id in zip(vehicle_payload_refs, assignments):
                     det_ref['track_id'] = track_id
                     car_boxes[track_id] = det_ref['box']
@@ -2139,7 +2139,7 @@ def process_video(path, args):
         if runtime_paused:
             last_progress_ts = time.time()
             drain_results(block=False)
-            event_manager.flush_inactive(alias_seen, next_frame_to_write, finalize_per_id_for_track)
+            event_manager.flush_inactive(set(), next_frame_to_write, finalize_per_id_for_track)
             write_heartbeat(
                 status='paused',
                 force=True,

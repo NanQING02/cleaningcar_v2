@@ -167,6 +167,18 @@
       "color_switch_gain_ratio": 1.2,
       "color_switch_margin": 0.5
     },
+    "event_track_quality": {
+      "enabled": true,
+      "min_hits_type1": 12,
+      "fast_vehicle_min_hits_type1": 6,
+      "min_avg_vehicle_conf": 0.62,
+      "fast_vehicle_min_avg_conf": 0.72,
+      "plate_candidate_min_hits": 2,
+      "plate_candidate_can_confirm_type1": true,
+      "min_zone_a_dwell_type5": 15,
+      "suppress_obvious_false_type5": true,
+      "suspicious_cooldown_seconds": 6
+    },
     "allowed_event_types": [
       1,
       2,

@@ -19,8 +19,12 @@ class _DummyWriter:
 
 
 class _DummyEventManager:
-    def __init__(self):
+    def __init__(self, has_valid_plate_candidate=True):
         self.calls = []
+        self.has_valid_plate_candidate = has_valid_plate_candidate
+
+    def _has_valid_plate_candidate(self, track_state):
+        return self.has_valid_plate_candidate
 
     def emit_event(self, *args, **kwargs):
         self.calls.append((args, kwargs))
@@ -83,6 +87,46 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertFalse(output_path.exists())
             self.assertEqual(writer.release_calls, 1)
             self.assertEqual(event_manager.calls, [])
+
+    def test_finalize_per_id_recording_suppresses_type6_without_valid_plate_candidate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "session.mp4"
+            output_path.write_text("video", encoding="utf-8")
+            writer = _DummyWriter(output_path)
+            event_manager = _DummyEventManager(has_valid_plate_candidate=False)
+
+            result = video_io.finalize_per_id_recording(
+                writer,
+                track_id=7,
+                track_state={"type2_qualified": True, "record_stop_frame": 30},
+                event_manager=event_manager,
+            )
+
+            self.assertFalse(result)
+            self.assertTrue(output_path.exists())
+            self.assertEqual(writer.release_calls, 1)
+            self.assertEqual(event_manager.calls, [])
+
+    def test_finalize_per_id_recording_emits_type6_with_valid_plate_candidate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "session.mp4"
+            output_path.write_text("video", encoding="utf-8")
+            writer = _DummyWriter(output_path)
+            event_manager = _DummyEventManager(has_valid_plate_candidate=True)
+
+            result = video_io.finalize_per_id_recording(
+                writer,
+                track_id=7,
+                track_state={"type2_qualified": True, "record_stop_frame": 30},
+                event_manager=event_manager,
+            )
+
+            self.assertTrue(result)
+            self.assertEqual(writer.release_calls, 1)
+            self.assertEqual(len(event_manager.calls), 1)
+            self.assertEqual(event_manager.calls[0][0][0], 7)
+            self.assertEqual(event_manager.calls[0][0][1], 6)
+            self.assertEqual(event_manager.calls[0][0][2], 30)
 
 
 if __name__ == "__main__":
