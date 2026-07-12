@@ -283,7 +283,7 @@ def process_video(path, args):
     cap, decode_meta = create_video_reader(path, args)
 
     def _log_decode_open_result(stage, meta, success):
-        mode = str((meta or {}).get('decode_mode') or 'sw')
+        mode = str((meta or {}).get('decode_mode') or 'none')
         fallback_used = bool((meta or {}).get('fallback_used'))
         fallback_reason = str((meta or {}).get('fallback_reason') or '')
         source_kind = str((meta or {}).get('source_kind') or 'other')
@@ -291,7 +291,7 @@ def process_video(path, args):
             if mode == 'hw':
                 if fallback_used:
                     print(
-                        f'[reader] {stage}成功：硬解回退成功 '
+                        f'[reader] {stage}成功：硬解备用链路成功 '
                         f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
                     )
                 else:
@@ -299,19 +299,22 @@ def process_video(path, args):
                 return
             if fallback_used:
                 print(
-                    f'[reader] {stage}成功：硬解失败已切软解 '
+                    f'[reader] {stage}成功：解码备用链路成功 '
                     f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
                 )
                 return
-            print(f'[reader] {stage}成功：软解成功 source_kind={source_kind}')
+            print(f'[reader] {stage}成功：解码成功 source_kind={source_kind}')
             return
         if fallback_used:
             print(
-                f'[reader] {stage}失败：硬解失败已切软解，但软解也失败 '
+                f'[reader] {stage}失败：硬解链路不可用 '
                 f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
             )
             return
-        print(f'[reader] {stage}失败：软解失败 source_kind={source_kind}')
+        print(
+            f'[reader] {stage}失败：没有可用硬解链路 '
+            f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
+        )
 
     if cap is None or not hasattr(cap, 'isOpened') or not cap.isOpened():
         _log_decode_open_result('首次打开', decode_meta, False)

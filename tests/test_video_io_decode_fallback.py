@@ -8,11 +8,17 @@ from cleaningcar import video_io
 class _DummyCapture:
     def __init__(self, opened):
         self._opened = opened
+        self.released = False
 
     def isOpened(self):
         return self._opened
 
+    def read(self):
+        return True, "frame"
+
     def release(self):
+        self.released = True
+        self._opened = False
         return None
 
 
@@ -30,40 +36,13 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
             },
         )
 
-    @patch("cleaningcar.video_io._open_software_capture")
     @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
     @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
-    def test_create_video_reader_prefers_ffmpeg_hardware_decode(
+    def test_create_video_reader_prefers_gstreamer_direct_bgr_hardware_decode(
         self,
         ffmpeg_hw_open,
         gstreamer_hw_open,
-        software_open,
     ):
-        ffmpeg_hw_open.return_value = _DummyCapture(True)
-
-        cap, meta = video_io.create_video_reader("rtsp://camera", self._args(hw_decode=True))
-
-        self.assertIsNotNone(cap)
-        self.assertEqual(meta["decode_mode"], "hw")
-        self.assertEqual(meta["decode_backend"], "ffmpeg")
-        self.assertFalse(meta["fallback_used"])
-        self.assertEqual(meta["source_kind"], "rtsp")
-        self.assertEqual(meta["attempt_order"], ["ffmpeg_hw"])
-        self.assertEqual(meta["reader_frame_timeout_seconds"], 7.5)
-        self.assertEqual(ffmpeg_hw_open.call_args.kwargs["read_timeout_seconds"], 7.5)
-        gstreamer_hw_open.assert_not_called()
-        software_open.assert_not_called()
-
-    @patch("cleaningcar.video_io._open_software_capture")
-    @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
-    @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
-    def test_create_video_reader_uses_gstreamer_hardware_after_ffmpeg_failure(
-        self,
-        ffmpeg_hw_open,
-        gstreamer_hw_open,
-        software_open,
-    ):
-        ffmpeg_hw_open.return_value = _DummyCapture(False)
         gstreamer_hw_open.return_value = _DummyCapture(True)
 
         cap, meta = video_io.create_video_reader("rtsp://camera", self._args(hw_decode=True))
@@ -71,32 +50,51 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         self.assertIsNotNone(cap)
         self.assertEqual(meta["decode_mode"], "hw")
         self.assertEqual(meta["decode_backend"], "gstreamer")
-        self.assertTrue(meta["fallback_used"])
-        self.assertEqual(meta["fallback_reason"], "ffmpeg_hw_open_failed")
-        self.assertEqual(meta["attempt_order"], ["ffmpeg_hw", "gstreamer_hw"])
-        software_open.assert_not_called()
+        self.assertFalse(meta["fallback_used"])
+        self.assertEqual(meta["source_kind"], "rtsp")
+        self.assertEqual(meta["attempt_order"], ["gstreamer_hw"])
+        self.assertEqual(meta["reader_frame_timeout_seconds"], 7.5)
+        self.assertEqual(gstreamer_hw_open.call_args.kwargs["read_timeout_seconds"], 7.5)
+        self.assertEqual(gstreamer_hw_open.call_args.kwargs["bgr_mode"], "direct")
+        ffmpeg_hw_open.assert_not_called()
 
-    @patch("cleaningcar.video_io._open_software_capture")
     @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
     @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
-    def test_create_video_reader_falls_back_to_software_after_both_hardware_paths_fail(
+    def test_create_video_reader_uses_ffmpeg_hardware_after_gstreamer_failure(
         self,
         ffmpeg_hw_open,
         gstreamer_hw_open,
-        software_open,
     ):
-        ffmpeg_hw_open.return_value = _DummyCapture(False)
         gstreamer_hw_open.return_value = _DummyCapture(False)
-        software_open.return_value = _DummyCapture(True)
+        ffmpeg_hw_open.return_value = _DummyCapture(True)
 
         cap, meta = video_io.create_video_reader("rtsp://camera", self._args(hw_decode=True))
 
         self.assertIsNotNone(cap)
-        self.assertEqual(meta["decode_mode"], "sw")
-        self.assertEqual(meta["decode_backend"], "software")
+        self.assertEqual(meta["decode_mode"], "hw")
+        self.assertEqual(meta["decode_backend"], "ffmpeg")
         self.assertTrue(meta["fallback_used"])
-        self.assertEqual(meta["fallback_reason"], "hw_open_failed")
-        self.assertEqual(meta["attempt_order"], ["ffmpeg_hw", "gstreamer_hw", "software"])
+        self.assertEqual(meta["fallback_reason"], "gstreamer_hw_open_failed")
+        self.assertEqual(meta["attempt_order"], ["gstreamer_hw", "ffmpeg_hw"])
+
+    @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
+    @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
+    def test_create_video_reader_reports_failure_after_both_hardware_paths_fail(
+        self,
+        ffmpeg_hw_open,
+        gstreamer_hw_open,
+    ):
+        ffmpeg_hw_open.return_value = _DummyCapture(False)
+        gstreamer_hw_open.return_value = _DummyCapture(False)
+
+        cap, meta = video_io.create_video_reader("rtsp://camera", self._args(hw_decode=True))
+
+        self.assertIsNone(cap)
+        self.assertEqual(meta["decode_mode"], "none")
+        self.assertEqual(meta["decode_backend"], "none")
+        self.assertTrue(meta["fallback_used"])
+        self.assertEqual(meta["fallback_reason"], "hardware_open_failed")
+        self.assertEqual(meta["attempt_order"], ["gstreamer_hw", "ffmpeg_hw"])
 
     def test_ffmpeg_rawvideo_timeout_returns_failure_and_records_diagnostics(self):
         cap = video_io.FfmpegRawVideoCapture.__new__(video_io.FfmpegRawVideoCapture)
@@ -128,27 +126,42 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         self.assertGreater(cap._last_read_error_ts, 0.0)
         cap.release.assert_called_once()
 
-    @patch("cleaningcar.video_io._open_software_capture")
     @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
     @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
     def test_create_video_reader_reports_total_failure_after_all_fallbacks(
         self,
         ffmpeg_hw_open,
         gstreamer_hw_open,
-        software_open,
     ):
         ffmpeg_hw_open.return_value = _DummyCapture(False)
         gstreamer_hw_open.return_value = _DummyCapture(False)
-        software_open.return_value = _DummyCapture(False)
 
         cap, meta = video_io.create_video_reader("rtsp://camera", self._args(hw_decode=True))
 
         self.assertIsNone(cap)
-        self.assertEqual(meta["decode_mode"], "sw")
-        self.assertEqual(meta["decode_backend"], "software")
+        self.assertEqual(meta["decode_mode"], "none")
+        self.assertEqual(meta["decode_backend"], "none")
         self.assertTrue(meta["fallback_used"])
-        self.assertEqual(meta["fallback_reason"], "hw_open_failed")
-        self.assertEqual(meta["attempt_order"], ["ffmpeg_hw", "gstreamer_hw", "software"])
+        self.assertEqual(meta["fallback_reason"], "hardware_open_failed")
+        self.assertEqual(meta["attempt_order"], ["gstreamer_hw", "ffmpeg_hw"])
+
+    def test_timed_video_capture_timeout_returns_failure_and_releases_capture(self):
+        class _BlockingCapture(_DummyCapture):
+            def read(self):
+                import time
+
+                time.sleep(0.2)
+                return True, "late"
+
+        inner = _BlockingCapture(True)
+        cap = video_io.TimedVideoCapture(inner, read_timeout_seconds=0.01, backend="gstreamer_hw")
+
+        ok, frame = cap.read()
+
+        self.assertFalse(ok)
+        self.assertIsNone(frame)
+        self.assertTrue(inner.released)
+        self.assertIn("timed_capture_read_timeout", cap.diagnostics()["last_read_error"])
 
 
 if __name__ == "__main__":

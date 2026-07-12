@@ -635,8 +635,8 @@ class WheelReaderThread(threading.Thread):
                         if self.stop_event.wait(self.reconnect_delay):
                             break
                         continue
-                    mode = str((decode_meta or {}).get("decode_mode") or "sw")
-                    backend = str((decode_meta or {}).get("decode_backend") or "software")
+                    mode = str((decode_meta or {}).get("decode_mode") or "none")
+                    backend = str((decode_meta or {}).get("decode_backend") or "none")
                     self.open_count += 1
                     open_started_ts = time.time()
                     frames_since_open = 0
