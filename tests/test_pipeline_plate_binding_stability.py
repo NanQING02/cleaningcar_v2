@@ -141,6 +141,14 @@ class PlateBindingStabilityTests(unittest.TestCase):
             car_plate_cache_ttl=3,
         )
         self.assertEqual(car_plate_cache.get(101, {}).get("plate_id"), 11)
+        car_to_plate = _refresh_car_plate_cache_from_locked(
+            plate_binding_states=plate_states,
+            car_plate_cache=car_plate_cache,
+            active_car_ids={101},
+            car_plate_cache_ttl=3,
+        )
+        plate_to_car = {plate_id: car_id for car_id, plate_id in car_to_plate.items()}
+        self.assertEqual(plate_to_car.get(11), 101)
 
         _stabilize_plate_binding(
             state,

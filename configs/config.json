@@ -25,7 +25,7 @@
     "performance_lock_script": ""
   },
   "video": {
-    "source": "rtsp://user:password@main-camera-ip:port/path",
+    "source": "rtsp://admin:yanya999@192.168.1.111:8557/h264",
     "source_mode": "camera",
     "hw_decode": true,
     "decode_backend": "auto",
@@ -50,8 +50,8 @@
     "event_driven": true,
     "reader_event_driven": false,
     "reader_idle_fps": 5.0,
-    "left_source": "rtsp://user:password@left-wheel-camera-ip:554/stream1",
-    "right_source": "rtsp://user:password@right-wheel-camera-ip:554/stream1",
+    "left_source": "rtsp://admin:yanya999@192.168.1.20:554/stream1",
+    "right_source": "rtsp://admin:yanya999@192.168.1.21:554/stream1",
     "model": "models/wheel/2026.4.28CRwheel.rknn",
     "classes": [
       "0-25",
