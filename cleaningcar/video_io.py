@@ -12,7 +12,6 @@ import cv2
 import numpy as np
 
 FFMPEG_HW_ENCODERS = ('h264_rkmpp', 'h264_v4l2m2m', 'h264_omx')
-FFMPEG_SW_ENCODERS = ('libx264',)
 GSTREAMER_HW_ENCODERS = ('mpph264enc', 'v4l2h264enc', 'omxh264enc')
 FFMPEG_HW_DECODER_CANDIDATES = (
     'h264_rkmpp',
@@ -33,7 +32,6 @@ FFMPEG_CODEC_TO_RKMPP_DECODER = {
     'vp8': 'vp8_rkmpp',
     'vp9': 'vp9_rkmpp',
 }
-
 
 def _gstreamer_bgr_mode(value=None):
     raw = str(value or os.environ.get('CLEANINGCAR_GSTREAMER_BGR_MODE', '') or '').strip().lower()
@@ -451,7 +449,7 @@ class FfmpegH264Writer:
         self.stdin = None
         self.encoder = None
         self.backend = 'ffmpeg'
-        self._encoders = tuple(encoders or (FFMPEG_HW_ENCODERS + FFMPEG_SW_ENCODERS))
+        self._encoders = tuple(encoders or FFMPEG_HW_ENCODERS)
         self._opened = False
         self._frames_total = 0
         self._frames_since_log = 0
@@ -476,28 +474,14 @@ class FfmpegH264Writer:
             '-',
             '-an',
         ]
-        if encoder in ('h264_rkmpp', 'h264_v4l2m2m', 'h264_omx'):
-            opts = [
-                '-c:v',
-                encoder,
-                '-pix_fmt',
-                'yuv420p',
-            ]
-        else:
-            opts = [
-                '-c:v',
-                'libx264',
-                '-profile:v',
-                'baseline',
-                '-level',
-                '3.1',
-                '-preset',
-                'veryfast',
-                '-crf',
-                '28',
-                '-pix_fmt',
-                'yuv420p',
-            ]
+        if encoder not in FFMPEG_HW_ENCODERS:
+            raise ValueError(f'unsupported hardware encoder: {encoder}')
+        opts = [
+            '-c:v',
+            encoder,
+            '-pix_fmt',
+            'yuv420p',
+        ]
         tail = [
             '-movflags',
             '+faststart',
@@ -848,7 +832,7 @@ def _safe_release_writer(writer):
 def create_h264_video_writer(path, width, height, fps):
     attempt_order = []
     meta = {
-        'writer_mode': 'sw',
+        'writer_mode': 'none',
         'writer_backend': 'none',
         'fallback_used': False,
         'fallback_reason': '',
@@ -873,19 +857,8 @@ def create_h264_video_writer(path, width, height, fps):
         return writer, meta
     _safe_release_writer(writer)
 
-    attempt_order.append('ffmpeg_sw')
-    writer = FfmpegH264Writer(path, width, height, fps, encoders=FFMPEG_SW_ENCODERS)
-    if writer.is_opened():
-        meta['writer_mode'] = 'sw'
-        meta['writer_backend'] = 'ffmpeg'
-        meta['fallback_used'] = True
-        meta['fallback_reason'] = 'hw_writer_open_failed'
-        return writer, meta
-    _safe_release_writer(writer)
-
-    meta['writer_backend'] = 'ffmpeg'
     meta['fallback_used'] = True
-    meta['fallback_reason'] = 'all_writer_open_failed'
+    meta['fallback_reason'] = 'hardware_writer_open_failed'
     return None, meta
 
 def parse_core_mask(text: str):
