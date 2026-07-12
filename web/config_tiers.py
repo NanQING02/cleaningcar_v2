@@ -36,7 +36,6 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.enable_event_disk", "tier": TIER_USER, "group": "logic", "label": "本地事件 JSON 留存"},
     {"path": "event_capture_dir", "tier": TIER_USER, "group": "output", "label": "事件图片目录"},
     {"path": "logic.per_id_video_source", "tier": TIER_DEVELOPER, "group": "logic", "label": "单车录像帧来源"},
-    {"path": "logic.per_id_raw_prebuffer_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "原始单车录像预缓存秒数"},
     {"path": "zones.zone_a_detection", "tier": TIER_USER, "group": "zones", "label": "Zone A 检测区"},
     {"path": "zones.zone_b_wash", "tier": TIER_USER, "group": "zones", "label": "Zone B 清洗区"},
     {"path": "zones.flow_vector.start", "tier": TIER_USER, "group": "zones", "label": "流向起点"},

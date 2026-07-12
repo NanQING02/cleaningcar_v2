@@ -37,9 +37,10 @@
 
 ### `video.hw_decode`
 
-- `true` 时，读流按 `FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码` 依次尝试
-- 板端若缺少 `ffmpeg rkmpp`，程序会自动退到 `mppvideodec`
-- 若两级硬解都不可用，才会退到软件解码
+- `true` 时，读流按 `GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解` 依次尝试
+- 当前配置建议 `video.decode_backend=auto`；只在排查特定链路时临时改成 `gstreamer` 或 `ffmpeg`
+- 排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式会明显降低 1080p RTSP 读流帧率
+- 若两级硬解都不可用，不再切软件解码；主链路会按读流失败处理并重连或退出
 
 ### `video.fp_output_mode`
 
@@ -59,9 +60,8 @@ FP 检测模型后处理模式：
 ### `logic.enable_per_id_video`
 
 - 当前只保留单车视频留存开关 `logic.enable_per_id_video`
-- 单车视频写出顺序为 `FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
-- `logic.per_id_video_source=auto` 时，关闭绘制（`logic.no_draw=true`）默认写主路原始解码帧；开启绘制时写绘制后的调试帧
-- `logic.per_id_raw_prebuffer_seconds` 控制原始帧录像在 type1 触发前/触发延迟期间的短预缓存，默认 `3.0s`
+- 单车视频写出顺序为 `GStreamer 硬编 -> FFmpeg 硬编`；硬编不可用时不保存该段单车视频
+- `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 默认写主路原始解码帧；`logic.no_draw=false` 时写绘制后的帧
 - Web 端不再浏览这些单车录像，但后台仍会继续保存
 - 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效
 

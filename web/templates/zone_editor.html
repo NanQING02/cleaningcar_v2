@@ -378,9 +378,6 @@
               <option value="annotated">annotated（绘制帧）</option>
             </select>
           </label>
-          <label>原始单车录像预缓存秒数
-            <input type="number" min="0" step="0.1" v-model.number="form.logic.per_id_raw_prebuffer_seconds" />
-          </label>
           <label>
             <input type="checkbox" v-model="form.logic.debug_overlay" />
             开启调试覆盖（Zone/水雾/锚点）
@@ -474,7 +471,7 @@
             video: {
               source: '',
               source_mode: 'auto',
-              hw_decode: false,
+              hw_decode: true,
               workers: 1,
               core_mask: '0',
               worker_core_strategy: 'auto',
@@ -526,7 +523,6 @@
               draw_plate_boxes: false,
               enable_per_id_video: false,
               per_id_video_source: 'auto',
-              per_id_raw_prebuffer_seconds: 3.0,
               lane_name: '冲洗',
               vehicle_shrink_ratio: 0.35,
               vehicle_lock_min_votes: 40,
@@ -881,7 +877,6 @@
             this.form.logic.enable_per_id_video = false;
           }
           this.form.logic.per_id_video_source = this.form.logic.per_id_video_source || 'auto';
-          this.form.logic.per_id_raw_prebuffer_seconds = Number(this.form.logic.per_id_raw_prebuffer_seconds || 3.0);
           this.form.logic.debug_water_boxes = !!(this.form.logic.debug_water_boxes || this.form.logic.debug_overlay);
           if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
             this.form.logic.anchor_offset_ratio = 0;
@@ -898,7 +893,7 @@
           this.form.logic.plate_output_shape_log_once = (typeof this.form.logic.plate_output_shape_log_once === 'undefined') ? true : !!this.form.logic.plate_output_shape_log_once;
           this.form.logic.plate_draw_stable_only = (typeof this.form.logic.plate_draw_stable_only === 'undefined') ? true : !!this.form.logic.plate_draw_stable_only;
           this.form.logic.plate_core_mask = this.form.logic.plate_core_mask || '';
-          this.form.logic.plate_infer_stride = Number(this.form.logic.plate_infer_stride || 3);
+          this.form.logic.plate_infer_stride = Number(this.form.logic.plate_infer_stride || 1);
           this.form.logic.default_plate_color = this.form.logic.default_plate_color || '';
           this.form.logic.default_plate_color_conf = Number(this.form.logic.default_plate_color_conf || 0);
           this.form.logic.default_cleanliness = Number(this.form.logic.default_cleanliness || 0);
@@ -1037,7 +1032,6 @@
               no_draw: this.form.logic.no_draw,
               draw_plate_boxes: this.form.logic.draw_plate_boxes,
               per_id_video_source: this.form.logic.per_id_video_source,
-              per_id_raw_prebuffer_seconds: this.form.logic.per_id_raw_prebuffer_seconds,
               vehicle_shrink_ratio: this.form.logic.vehicle_shrink_ratio,
               vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
               vehicle_lock_on_confirm: this.form.logic.vehicle_lock_on_confirm,

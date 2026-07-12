@@ -96,13 +96,13 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             manager = ConfigManager(path)
 
             self.assertEqual(manager.logic["per_id_video_source"], "auto")
-            self.assertEqual(manager.logic["per_id_raw_prebuffer_seconds"], 3.0)
+            self.assertNotIn("per_id_raw_prebuffer_seconds", manager.logic)
 
     def test_web_config_registry_exposes_raw_per_id_video_policy(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertIn("logic.per_id_video_source", field_paths)
-        self.assertIn("logic.per_id_raw_prebuffer_seconds", field_paths)
+        self.assertNotIn("logic.per_id_raw_prebuffer_seconds", field_paths)
 
     def test_config_manager_defaults_reader_frame_timeout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,6 +121,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             manager = ConfigManager(path)
 
             self.assertEqual(manager.video["debug_frame_path"], "off")
+            self.assertTrue(manager.video["hw_decode"])
+            self.assertEqual(manager.video["decode_backend"], "auto")
             self.assertEqual(manager.data["event_capture_quality"], 70)
 
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
@@ -163,6 +165,24 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("logic.plate_draw_stable_only", field_paths)
         self.assertIn("logic.shadow_plate_pool.text_window_frames", field_paths)
         self.assertIn("logic.shadow_plate_pool.color_min_confidence", field_paths)
+
+    def test_config_manager_normalizes_disabled_software_decode_backend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4", "decode_backend": "software"},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertEqual(manager.video["decode_backend"], "auto")
 
     def test_web_config_registry_exposes_wash_priority_pause_fields(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}

@@ -316,11 +316,6 @@ class ConfigManager:
         if per_id_video_source not in {'auto', 'raw', 'source', 'original', 'origin', 'annotated', 'draw', 'debug'}:
             per_id_video_source = 'auto'
         logic['per_id_video_source'] = per_id_video_source
-        try:
-            per_id_raw_prebuffer = float(logic.get('per_id_raw_prebuffer_seconds', 3.0))
-        except (TypeError, ValueError):
-            per_id_raw_prebuffer = 3.0
-        logic['per_id_raw_prebuffer_seconds'] = max(0.0, per_id_raw_prebuffer)
         logic.setdefault('copy_track_last_frame', False)
         logic.setdefault('copy_raw_frame_cache', False)
         logic.setdefault('plate_core_mask', '')

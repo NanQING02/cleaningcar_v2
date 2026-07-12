@@ -41,15 +41,15 @@ run_zone_detect.py
 ## 当前运行口径
 
 - 当前只保留双模型车牌链路，旧单模型 LPR 不再参与主链路
-- 当 `video.hw_decode=true` 时，读流顺序为：`FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码`
-- 单车视频写出顺序为：`FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
+- 当 `video.hw_decode=true` 时，读流顺序为：`GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解`；两级硬解都不可用时按读流失败处理，不再切软件解码
+- 单车视频写出顺序为：`GStreamer 硬编 -> FFmpeg 硬编`；硬编不可用时不保存该段单车视频，没有软件编码兜底
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - 车轮旁路独立于主相机冲洗检测运行，只在 `wheel.enabled=true` 时启用
 - 主事件只有 `type=5` 会附加 `wheelResults`，且只附加该车主轨迹生命周期内已锁定的左右轮结果
 - 同一侧短时间连续命中的车轮结果会按连续簇整串归属给同一辆车，避免同一波旁路结果拆给后车
 - 上传给接口的车轮图片为原图，不带调试标注
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
-- `logic.per_id_video_source=auto` 时，关闭绘制默认按主路原始解码帧写单车录像；开启绘制时按绘制帧写
+- `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 按主路原始解码帧写单车录像；`logic.no_draw=false` 按绘制帧写
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存
 - 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
@@ -61,7 +61,7 @@ run_zone_detect.py
 
 - 设备 ID：`system.device_id=RK3588-DEV`
 - 视频源：RTSP，`video.source_mode=camera`
-- 解码：`video.hw_decode=true`
+- 解码：`video.hw_decode=true`、`video.decode_backend=auto`
 - 推理并发：`video.workers=1`，`video.core_mask=0`，`video.worker_core_strategy=auto`
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - 板端定频：`system.performance_lock_enabled=true`，推理启动前默认尝试定频
@@ -70,21 +70,21 @@ run_zone_detect.py
 - 画面叠加：`logic.no_draw=true`
 - 车牌框绘制：`logic.draw_plate_boxes=false`
 - 调试帧：`video.debug_frame_path=off`
-- 车牌副链路降频：`logic.plate_infer_stride=3`
+- 车牌副链路降频：`logic.plate_infer_stride=1`
 - 单车视频：`logic.enable_per_id_video=true`
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
-- 单车视频帧源：`logic.per_id_video_source=auto`，关闭绘制时走原始解码帧，`logic.per_id_raw_prebuffer_seconds=3.0`
+- 单车视频帧源：`logic.per_id_video_source=auto`，`logic.no_draw=true` 时走原始解码帧
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
 - 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=1.0`
 - 检测 CSV：`video.csv=./video_result/test.csv`
-- 事件截图上报格式：`system.api.capture_mode=base64`
+- 事件截图上报格式：`system.api.capture_mode=path`
 - 事件目录：`event_output_dir=events/config`
 - 事件截图目录：`event_capture_dir=captures/config`
 
 说明：
 
 - 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
-- 若板端缺少 `ffmpeg rkmpp`，程序会先退到 `GStreamer+mpp`；若 `mppvideodec` 也不可用，再退到软件解码
+- 程序优先使用 `GStreamer+mpp direct-BGR`；短测显示该路径资源占用最低。排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式在 1080p RTSP 上帧率明显偏低。
 - 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
 
 ## 运行时命名空间

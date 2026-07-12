@@ -38,7 +38,7 @@ class WheelReaderThreadTests(unittest.TestCase):
             captures.append(cap)
             if len(captures) >= 2:
                 stop_event.set()
-            return cap, {"decode_mode": "sw", "decode_backend": "fake"}
+            return cap, {"decode_mode": "hw", "decode_backend": "fake"}
 
         reader = WheelReaderThread(
             side="left",

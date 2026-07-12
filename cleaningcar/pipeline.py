@@ -1,3 +1,4 @@
+import atexit
 import csv
 import os
 import threading
@@ -100,6 +101,16 @@ def _resolve_per_id_recording_params(width, height, source_fps, logic_cfg=None):
         'fps': resolved_fps,
         'frame_stride': 1,
     }
+
+
+def _resolve_per_id_video_source(logic_cfg=None, no_draw=False, draw_enabled=False):
+    logic_cfg = logic_cfg or {}
+    raw_value = str(logic_cfg.get('per_id_video_source', 'auto') or 'auto').strip().lower()
+    if raw_value in {'raw', 'source', 'original', 'origin'}:
+        return 'raw'
+    if raw_value in {'annotated', 'draw', 'debug'}:
+        return 'annotated'
+    return 'annotated' if (not no_draw and draw_enabled) else 'raw'
 
 
 def _ensure_plate_binding_state(frame_idx, state=None):
@@ -558,6 +569,7 @@ def process_video(path, args):
     setattr(args, 'draw_plate_boxes', draw_plate_boxes)
     plate_draw_stable_only = bool(logic_cfg.get('plate_draw_stable_only', True))
     event_use_annotated_frame = bool(not args.no_draw and (draw_plate_boxes or debug_water_boxes))
+    per_id_draw_enabled = bool(not args.no_draw)
 
     if debug_frame_file:
         debug_frame_file = Path(debug_frame_file)
@@ -569,7 +581,16 @@ def process_video(path, args):
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
     copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
-    if args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points):
+    per_id_video_source = _resolve_per_id_video_source(
+        logic_cfg,
+        no_draw=args.no_draw,
+        draw_enabled=per_id_draw_enabled,
+    )
+    if (
+        args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points)
+    ) or (
+        bool(logic_cfg.get('enable_per_id_video', False)) and per_id_video_source == 'raw'
+    ):
         copy_raw_frame_cache = True
     debug_frame_max_width = max(0, int(video_cfg.get('debug_frame_max_width', 960) or 0))
     debug_frame_quality = min(max(int(video_cfg.get('debug_frame_quality', 80) or 80), 1), 100)
@@ -742,8 +763,6 @@ def process_video(path, args):
                         f'[per-id-video] writer selected backend={writer_meta.get("writer_backend")} '
                         f'mode={writer_meta.get("writer_mode")} path={target_path}'
                     )
-                    if writer_meta.get("writer_mode") == "sw":
-                        print(f'[per-id-video] WARNING: software encoder fallback active path={target_path}')
                 if is_fallback_root:
                     print(f'[per-id-video] switched to local fallback directory: {root}')
                     per_id_video_dir = root
@@ -770,7 +789,8 @@ def process_video(path, args):
             print(
                 f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
                 f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} '
-                f'queue={per_id_video_queue_size} resize_backend={resize_backend_label}'
+                f'source={per_id_video_source} queue={per_id_video_queue_size} '
+                f'resize_backend={resize_backend_label}'
             )
 
     def collect_per_id_cleanup_roots():
@@ -1317,6 +1337,65 @@ def process_video(path, args):
 
     def finalize_per_id_for_track(track_id, track_state):
         close_per_id_writer(track_id, track_state)
+
+    cleanup_done = False
+
+    def cleanup_runtime():
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+
+        if enable_per_id_video and per_id_writers:
+            for tid in list(per_id_writers.keys()):
+                track_state = event_manager.tracks.get(tid) or {}
+                close_per_id_writer(tid, track_state)
+
+        if csv_f:
+            try:
+                csv_f.close()
+            except Exception:
+                pass
+        if wheel_service is not None:
+            try:
+                wheel_service.stop()
+            except Exception:
+                pass
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        monitor_stop.set()
+        if monitor_thread:
+            try:
+                monitor_thread.join(timeout=0.5)
+            except Exception:
+                pass
+        try:
+            event_manager.flush_inactive(
+                set(),
+                total_frames + int(config.get('track_timeout_frames', 60)) + 1,
+                finalize_per_id_for_track,
+            )
+        except Exception:
+            pass
+        try:
+            cleanup_alias_confirm(total_frames + alias_timeout + 1)
+        except Exception:
+            pass
+        if uploader:
+            try:
+                uploader.close()
+            except Exception:
+                pass
+        if wheel_photo_uploader:
+            try:
+                wheel_photo_uploader.close()
+            except Exception:
+                pass
+
+    atexit.register(cleanup_runtime)
 
     def mark_alias_confirm(alias_id, has_plate_text, frame_idx, require_text):
         if alias_id <= 0:
@@ -1992,7 +2071,10 @@ def process_video(path, args):
                                 writer = None
                                 break
                         if writer is not None:
-                            frame_to_write = frame_out
+                            if per_id_video_source == 'raw' and raw_frame_for_idx is not None:
+                                frame_to_write = raw_frame_for_idx
+                            else:
+                                frame_to_write = frame_out
                             if frame_to_write is not None:
                                 writer.write(frame_to_write)
                 t_after_perid = time.perf_counter()
@@ -2351,26 +2433,11 @@ def process_video(path, args):
             poll_runtime_commands(force=True)
             write_heartbeat(status='draining', force=True)
 
-    if enable_per_id_video and per_id_writers:
-        for tid in list(per_id_writers.keys()):
-            track_state = event_manager.tracks.get(tid) or {}
-            close_per_id_writer(tid, track_state)
-
-    if csv_f:
-        csv_f.close()
-    if wheel_service is not None:
-        wheel_service.stop()
-    if cap is not None:
-        cap.release()
-    monitor_stop.set()
-    if monitor_thread:
-        monitor_thread.join(timeout=0.5)
-    event_manager.flush_inactive(set(), total_frames + int(config.get('track_timeout_frames', 60)) + 1, finalize_per_id_for_track)
-    cleanup_alias_confirm(total_frames + alias_timeout + 1)
-    if uploader:
-        uploader.close()
-    if wheel_photo_uploader:
-        wheel_photo_uploader.close()
+    cleanup_runtime()
+    try:
+        atexit.unregister(cleanup_runtime)
+    except Exception:
+        pass
 
     elapsed = time.time() - start
     write_heartbeat(status='stopped', force=True, extra={'elapsed_seconds': elapsed})
