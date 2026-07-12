@@ -24,23 +24,27 @@ def _install_fake_rknn():
 
 _install_fake_rknn()
 
+from cleaningcar.constants import PLATE_DECODE_CHARS  # noqa: E402
 from cleaningcar.plate_lpr import DualPlateRecognizer  # noqa: E402
 
 
 class _FakeRecognizer:
     @staticmethod
     def inference(inputs, data_format):
-        plate_logits = np.array(
-            [
-                [
-                    [0.0, 2.0, 0.0, 0.0],
-                    [0.0, 0.0, 3.0, 0.0],
-                ]
-            ],
-            dtype=np.float32,
-        )
+        plate_logits = np.zeros((1, 2, len(PLATE_DECODE_CHARS)), dtype=np.float32)
+        plate_logits[0, 0, 1] = 2.0
+        plate_logits[0, 1, 2] = 3.0
         color_logits = np.array([[0.0, 2.0, 1.0, -1.0, -2.0]], dtype=np.float32)
         return [plate_logits, color_logits]
+
+
+class _BadShapeDetector:
+    def __init__(self):
+        self.calls = 0
+
+    def inference(self, inputs, data_format):
+        self.calls += 1
+        return [np.zeros((1, 14), dtype=np.float32)]
 
 
 class PlateLprColorConfTests(unittest.TestCase):
@@ -87,6 +91,25 @@ class PlateLprColorConfTests(unittest.TestCase):
         self.assertEqual(results[0]["text"], "")
         self.assertEqual(results[0]["plate_color"], "")
         self.assertEqual(float(results[0]["plate_color_conf"]), 0.0)
+
+    def test_detect_logs_shape_once_and_skips_bad_shape(self):
+        recognizer = DualPlateRecognizer.__new__(DualPlateRecognizer)
+        recognizer.detector = _BadShapeDetector()
+        recognizer.log_output_shape_once = True
+        recognizer._detect_shape_logged = False
+        recognizer._rec_shape_logged = False
+        recognizer._detect_shape_warned = False
+        recognizer._rec_shape_warned = False
+
+        with patch("builtins.print") as mocked_print:
+            first = recognizer._detect(np.zeros((24, 24, 3), dtype=np.uint8), 0.3, 0.5)
+            second = recognizer._detect(np.zeros((24, 24, 3), dtype=np.uint8), 0.3, 0.5)
+
+        self.assertEqual(first.shape, (0, 14))
+        self.assertEqual(second.shape, (0, 14))
+        printed = "\n".join(str(call.args[0]) for call in mocked_print.call_args_list if call.args)
+        self.assertEqual(printed.count("detect output shapes"), 1)
+        self.assertEqual(printed.count("detect output shape warning"), 1)
 
 
 if __name__ == "__main__":

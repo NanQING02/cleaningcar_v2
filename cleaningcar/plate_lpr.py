@@ -142,8 +142,20 @@ def _decode_plate(indices: Sequence[int]) -> str:
 
 
 class DualPlateRecognizer:
-    def __init__(self, detect_model_path: str, rec_model_path: str, verbose: bool = False, core_mask=None):
+    def __init__(
+        self,
+        detect_model_path: str,
+        rec_model_path: str,
+        verbose: bool = False,
+        core_mask=None,
+        log_output_shape_once: bool = True,
+    ):
         self.verbose = bool(verbose)
+        self.log_output_shape_once = bool(log_output_shape_once)
+        self._detect_shape_logged = False
+        self._rec_shape_logged = False
+        self._detect_shape_warned = False
+        self._rec_shape_warned = False
         self.detector = RKNNLite(verbose=self.verbose)
         self.recognizer = RKNNLite(verbose=self.verbose)
 
@@ -179,20 +191,67 @@ class DualPlateRecognizer:
     def __del__(self) -> None:
         self.release()
 
+    @staticmethod
+    def _shape_list(outputs) -> List[Any]:
+        if not outputs:
+            return []
+        shapes = []
+        for item in outputs:
+            shape = getattr(item, "shape", None)
+            if shape is None:
+                shapes.append(None)
+            else:
+                shapes.append(tuple(int(v) for v in shape))
+        return shapes
+
+    def _log_shapes_once(self, kind: str, outputs) -> None:
+        if not getattr(self, "log_output_shape_once", True):
+            return
+        if kind == "detect":
+            if getattr(self, "_detect_shape_logged", False):
+                return
+            self._detect_shape_logged = True
+        elif kind == "recognize":
+            if getattr(self, "_rec_shape_logged", False):
+                return
+            self._rec_shape_logged = True
+        else:
+            return
+        print(f"[plate-lpr] {kind} output shapes: {self._shape_list(outputs)}")
+
+    def _warn_shape_once(self, kind: str, message: str) -> None:
+        if kind == "detect":
+            if getattr(self, "_detect_shape_warned", False):
+                return
+            self._detect_shape_warned = True
+        elif kind == "recognize":
+            if getattr(self, "_rec_shape_warned", False):
+                return
+            self._rec_shape_warned = True
+        else:
+            return
+        print(f"[plate-lpr] {kind} output shape warning: {message}")
+
     def _detect(self, frame_bgr: np.ndarray, conf_thresh: float, iou_thresh: float) -> np.ndarray:
         img_letterbox, r, left, top = _letter_box(frame_bgr, (640, 640))
         img_rgb = cv2.cvtColor(img_letterbox, cv2.COLOR_BGR2RGB)
         inp = np.expand_dims(img_rgb, axis=0).astype(np.uint8)
         outputs = self.detector.inference(inputs=[inp], data_format=["nhwc"])
+        self._log_shapes_once("detect", outputs)
         if not outputs:
             return np.empty((0, 14), dtype=np.float32)
 
         dets = outputs[0]
         if dets is None:
             return np.empty((0, 14), dtype=np.float32)
+        dets = np.asarray(dets, dtype=np.float32)
         if dets.ndim == 3:
             dets = dets[0]
         if dets.ndim != 2 or dets.shape[1] < 15:
+            self._warn_shape_once(
+                "detect",
+                f"expected 2D output with at least 15 columns, got shape={getattr(dets, 'shape', None)}",
+            )
             return np.empty((0, 14), dtype=np.float32)
 
         dets = dets[dets[:, 4] > float(conf_thresh)]
@@ -227,17 +286,23 @@ class DualPlateRecognizer:
         plate = resize_bgr(plate_bgr, (168, 48))
         inp = np.expand_dims(plate, axis=0).astype(np.uint8)
         outputs = self.recognizer.inference(inputs=[inp], data_format=["nhwc"])
+        self._log_shapes_once("recognize", outputs)
         if not outputs or len(outputs) < 2:
+            self._warn_shape_once("recognize", f"expected plate logits and color logits, got {self._shape_list(outputs)}")
             return "", "", 0.0
 
         plate_logits = outputs[0]
         color_logits = outputs[1]
         if plate_logits is None or color_logits is None:
+            self._warn_shape_once("recognize", f"got None output: {self._shape_list(outputs)}")
             return "", "", 0.0
 
+        plate_logits = np.asarray(plate_logits, dtype=np.float32)
+        color_logits = np.asarray(color_logits, dtype=np.float32)
         if plate_logits.ndim == 3:
             plate_logits = plate_logits[0]
         if plate_logits.ndim != 2:
+            self._warn_shape_once("recognize", f"plate logits must be 2D after batch squeeze, got {plate_logits.shape}")
             return "", "", 0.0
 
         if plate_logits.shape[1] == len(_PLATE_NAME):
@@ -245,7 +310,11 @@ class DualPlateRecognizer:
         elif plate_logits.shape[0] == len(_PLATE_NAME):
             token_ids = np.argmax(plate_logits, axis=0)
         else:
-            token_ids = np.argmax(plate_logits, axis=1)
+            self._warn_shape_once(
+                "recognize",
+                f"plate logits must be [T,C] or [C,T] with C={len(_PLATE_NAME)}, got {plate_logits.shape}",
+            )
+            return "", "", 0.0
 
         text = _decode_plate(token_ids)
         color_probs = self._softmax_1d(color_logits)

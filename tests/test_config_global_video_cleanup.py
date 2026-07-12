@@ -134,6 +134,36 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
         self.assertIn("video.reader_frame_timeout_seconds", field_paths)
 
+    def test_config_manager_defaults_plate_stability_controls(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertEqual(manager.logic["plate_lock_frames"], 6)
+            self.assertTrue(manager.logic["plate_output_shape_log_once"])
+            self.assertTrue(manager.logic["plate_draw_stable_only"])
+            self.assertEqual(manager.logic["shadow_plate_pool"]["text_window_frames"], 50)
+            self.assertEqual(manager.logic["shadow_plate_pool"]["color_min_confidence"], 0.70)
+
+    def test_web_config_registry_exposes_plate_stability_controls(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertIn("logic.plate_output_shape_log_once", field_paths)
+        self.assertIn("logic.plate_draw_stable_only", field_paths)
+        self.assertIn("logic.shadow_plate_pool.text_window_frames", field_paths)
+        self.assertIn("logic.shadow_plate_pool.color_min_confidence", field_paths)
+
     def test_web_config_registry_exposes_wash_priority_pause_fields(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 

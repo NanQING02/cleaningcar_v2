@@ -28,33 +28,42 @@ class DetectWorker(threading.Thread):
         self.task_q = task_q
         self.result_q = result_q
         self.detect_mask = detect_mask
-
-        self.rk = RKNNLite()
-        if self.rk.load_rknn(args.model) != 0:
-            raise RuntimeError("load_rknn failed")
-        init_kwargs = {}
-        if core_mask is not None:
-            init_kwargs["core_mask"] = core_mask
-        if self.rk.init_runtime(**init_kwargs) != 0:
-            raise RuntimeError("init_runtime failed")
-
-        min_conf = min([float(args.conf)] + [float(v) for v in CLASS_THRESH.values()])
-        self.detector_postprocessor = FpModelPostprocessor(
-            img_size=(int(args.imgsz), int(args.imgsz)),
-            obj_thresh=min_conf,
-            nms_thresh=float(args.iou),
-            output_mode=str(getattr(args, "fp_output_mode", "6")),
-            num_classes=len(CLASS_NAMES),
-        )
-        print(f"Worker {self.idx}: fp_postprocess_mode={self.detector_postprocessor.describe_mode()}")
-        self.dual_lpr = DualPlateRecognizer(
-            detect_model_path=str(args.plate_detect_model),
-            rec_model_path=str(args.plate_rec_model),
-            verbose=False,
-            core_mask=plate_core_mask,
-        )
-        self.plate_infer_stride = max(1, int(getattr(args, "plate_infer_stride", 1) or 1))
+        self.rk = None
+        self.dual_lpr = None
         logic_cfg = ((getattr(args, "_config", {}) or {}).get("logic", {}) or {})
+        plate_output_shape_log_once = bool(logic_cfg.get("plate_output_shape_log_once", True))
+        self.plate_draw_stable_only = bool(logic_cfg.get("plate_draw_stable_only", True))
+
+        try:
+            self.rk = RKNNLite()
+            if self.rk.load_rknn(args.model) != 0:
+                raise RuntimeError("load_rknn failed")
+            init_kwargs = {}
+            if core_mask is not None:
+                init_kwargs["core_mask"] = core_mask
+            if self.rk.init_runtime(**init_kwargs) != 0:
+                raise RuntimeError("init_runtime failed")
+
+            min_conf = min([float(args.conf)] + [float(v) for v in CLASS_THRESH.values()])
+            self.detector_postprocessor = FpModelPostprocessor(
+                img_size=(int(args.imgsz), int(args.imgsz)),
+                obj_thresh=min_conf,
+                nms_thresh=float(args.iou),
+                output_mode=str(getattr(args, "fp_output_mode", "6")),
+                num_classes=len(CLASS_NAMES),
+            )
+            print(f"Worker {self.idx}: fp_postprocess_mode={self.detector_postprocessor.describe_mode()}")
+            self.dual_lpr = DualPlateRecognizer(
+                detect_model_path=str(args.plate_detect_model),
+                rec_model_path=str(args.plate_rec_model),
+                verbose=False,
+                core_mask=plate_core_mask,
+                log_output_shape_once=plate_output_shape_log_once,
+            )
+        except Exception:
+            self._release_runtime()
+            raise
+        self.plate_infer_stride = max(1, int(getattr(args, "plate_infer_stride", 1) or 1))
         explicit_plate_requires_vehicle = logic_cfg.get("plate_requires_vehicle")
         default_plate_requires_vehicle = bool(
             logic_cfg.get("disable_plate_only_events", False)
@@ -71,11 +80,33 @@ class DetectWorker(threading.Thread):
             print(
                 f"plate_infer_stride={self.plate_infer_stride} "
                 f"plate_core_mask={self.plate_core_mask} "
-                f"plate_requires_vehicle={self.plate_requires_vehicle}"
+                f"plate_requires_vehicle={self.plate_requires_vehicle} "
+                f"plate_draw_stable_only={self.plate_draw_stable_only}"
             )
 
         self.frames = 0
         self.infer_time = 0.0
+
+    def _release_runtime(self):
+        dual_lpr = getattr(self, "dual_lpr", None)
+        if dual_lpr is not None:
+            release_fn = getattr(dual_lpr, "release", None)
+            if callable(release_fn):
+                try:
+                    release_fn()
+                except Exception:
+                    pass
+            self.dual_lpr = None
+
+        rk = getattr(self, "rk", None)
+        if rk is not None:
+            release_fn = getattr(rk, "release", None)
+            if callable(release_fn):
+                try:
+                    release_fn()
+                except Exception:
+                    pass
+            self.rk = None
 
     def _put_empty_result(self, frame_idx, capture_ts, frame):
         self.result_q.put((frame_idx, capture_ts, frame, [], []))
@@ -209,9 +240,10 @@ class DetectWorker(threading.Thread):
                     plate_type = str(item.get("plate_type", "") or "")
 
                     label = f"{label_name} {score:.2f}"
-                    if plate_text:
+                    plate_draw_stable_only = bool(getattr(self, "plate_draw_stable_only", True))
+                    if plate_text and not plate_draw_stable_only:
                         label = f"{label} {plate_text}"
-                    if plate_color:
+                    if plate_color and not plate_draw_stable_only:
                         label = f"{label} {plate_color}"
 
                     if draw_plate_boxes:
@@ -246,6 +278,7 @@ class DetectWorker(threading.Thread):
                             "score": score,
                             "box": [x1, y1, x2, y2],
                             "text": plate_text,
+                            "raw_text": plate_text,
                             "plate_color": plate_color,
                             "plate_color_conf": plate_color_conf,
                             "plate_type": plate_type,
@@ -263,4 +296,5 @@ class DetectWorker(threading.Thread):
             finally:
                 self.task_q.task_done()
 
+        self._release_runtime()
         self.result_q.put(None)

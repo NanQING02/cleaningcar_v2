@@ -294,6 +294,8 @@ class ConfigManager:
         logic.setdefault('vehicle_lock_min_votes', 40)
         logic.setdefault('vehicle_lock_on_confirm', True)
         logic.setdefault('plate_lock_frames', 6)
+        logic.setdefault('plate_output_shape_log_once', True)
+        logic.setdefault('plate_draw_stable_only', True)
         logic.setdefault('default_plate_color', '')
         logic.setdefault('default_plate_color_conf', 0.0)
         logic.setdefault('default_cleanliness', 0)
@@ -325,9 +327,23 @@ class ConfigManager:
         per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()
         logic['per_id_video_dir'] = per_id_video_dir or DEFAULT_PER_ID_VIDEO_DIR
         logic.setdefault('enable_event_disk', False)
-        shadow = logic.setdefault('shadow_plate_pool', {})
+        shadow = logic.get('shadow_plate_pool')
+        if not isinstance(shadow, dict):
+            shadow = {}
+            logic['shadow_plate_pool'] = shadow
         shadow.setdefault('max_candidates', 50)
         shadow.setdefault('max_age_frames', 120)
+        shadow.setdefault('text_window_frames', 50)
+        shadow.setdefault('text_margin_ratio', 0.12)
+        shadow.setdefault('text_switch_min_consecutive', 6)
+        shadow.setdefault('text_switch_gain_ratio', 1.2)
+        shadow.setdefault('text_switch_margin_ratio', 0.18)
+        shadow.setdefault('color_min_confidence', 0.70)
+        shadow.setdefault('color_lock_frames', 3)
+        shadow.setdefault('color_window_frames', 50)
+        shadow.setdefault('color_switch_min_consecutive', 3)
+        shadow.setdefault('color_switch_gain_ratio', 1.2)
+        shadow.setdefault('color_switch_margin', 0.5)
 
         self.data.pop('storage', None)
 

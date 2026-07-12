@@ -153,63 +153,63 @@ class EventManagerPlateLockingTests(unittest.TestCase):
     def test_unlocked_does_not_report_shadow_guess(self):
         manager = self._manager(plate_lock_frames=3)
 
-        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 3, plate_text="XYZ9999", plate_is_guess=True)
+        self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 2, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 3, plate_text="粤B98765", plate_is_guess=True)
 
         track_state = manager.tracks[1]
         text, is_guess = manager._resolve_plate_with_shadow(1, track_state, 3)
 
         self.assertEqual(text, "")
         self.assertFalse(is_guess)
-        self.assertEqual(track_state.get("plate_text_latest"), "XYZ9999")
+        self.assertEqual(track_state.get("plate_text_latest"), "粤B98765")
         self.assertEqual(track_state.get("plate_text_locked"), "")
 
     def test_locked_text_is_not_overwritten_by_single_wrong_frame(self):
         manager = self._manager(plate_lock_frames=3)
         manager.enable_event_disk = True
 
-        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 3, plate_text="ABC1234", plate_is_guess=False)
-        self._update(manager, 4, plate_text="XYZ9999", plate_is_guess=False)
+        self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 2, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 3, plate_text="鲁A12345", plate_is_guess=False)
+        self._update(manager, 4, plate_text="粤B98765", plate_is_guess=False)
 
         track_state = manager.tracks[1]
         text, is_guess = manager._resolve_plate_with_shadow(1, track_state, 4)
 
-        self.assertEqual(text, "ABC1234")
+        self.assertEqual(text, "鲁A12345")
         self.assertFalse(is_guess)
-        self.assertEqual(track_state.get("plate_text_latest"), "XYZ9999")
-        self.assertEqual(track_state.get("plate_text_locked"), "ABC1234")
+        self.assertEqual(track_state.get("plate_text_latest"), "粤B98765")
+        self.assertEqual(track_state.get("plate_text_locked"), "鲁A12345")
 
     def test_text_can_switch_after_stronger_consecutive_candidate(self):
         manager = self._manager(plate_lock_frames=3)
 
-        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=False, plate_conf=0.60)
-        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=False, plate_conf=0.60)
-        self._update(manager, 3, plate_text="ABC1234", plate_is_guess=False, plate_conf=0.60)
-        self.assertEqual(manager.tracks[1].get("plate_text_locked"), "ABC1234")
+        self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=False, plate_conf=0.60)
+        self._update(manager, 2, plate_text="鲁A12345", plate_is_guess=False, plate_conf=0.60)
+        self._update(manager, 3, plate_text="鲁A12345", plate_is_guess=False, plate_conf=0.60)
+        self.assertEqual(manager.tracks[1].get("plate_text_locked"), "鲁A12345")
 
-        self._update(manager, 4, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
-        self._update(manager, 5, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
-        self._update(manager, 6, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
-        self._update(manager, 7, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
-        self._update(manager, 8, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
-        self._update(manager, 9, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
-        self._update(manager, 10, plate_text="XYZ9999", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 4, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 5, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 6, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 7, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 8, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 9, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
+        self._update(manager, 10, plate_text="粤B98765", plate_is_guess=False, plate_conf=0.99)
 
         track_state = manager.tracks[1]
         text, is_guess = manager._resolve_plate_with_shadow(1, track_state, 10)
-        self.assertEqual(text, "XYZ9999")
+        self.assertEqual(text, "粤B98765")
         self.assertFalse(is_guess)
-        self.assertEqual(track_state.get("plate_text_locked"), "XYZ9999")
+        self.assertEqual(track_state.get("plate_text_locked"), "粤B98765")
 
     def test_unlocked_event_marks_plate_recognition_abnormal_and_blank_plate(self):
         manager = self._manager(plate_lock_frames=3)
         manager.enable_event_disk = True
 
-        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
+        self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 2, plate_text="鲁A12345", plate_is_guess=True)
         track_state = manager.tracks[1]
 
         manager._emit_event_core(
@@ -235,8 +235,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         uploader = _CollectingUploader()
         manager = self._manager(plate_lock_frames=3, uploader=uploader)
 
-        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
+        self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 2, plate_text="鲁A12345", plate_is_guess=True)
         track_state = manager.tracks[1]
         manager._emit_event_core(
             track_id=1,
@@ -249,7 +249,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         )
         self.assertEqual(len(uploader.payloads), 0)
 
-        self._update(manager, 3, plate_text="ABC1234", plate_is_guess=False)
+        self._update(manager, 3, plate_text="鲁A12345", plate_is_guess=False)
         track_state = manager.tracks[1]
         manager._emit_event_core(
             track_id=1,
@@ -264,7 +264,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(len(uploader.payloads), 2)
         first_payload = uploader.payloads[0]
         self.assertEqual(first_payload["type"], 1)
-        self.assertEqual(first_payload["plateNumber"], "ABC1234")
+        self.assertEqual(first_payload["plateNumber"], "鲁A12345")
         self.assertFalse(first_payload["plateRecognitionAbnormal"])
         self.assertFalse(first_payload["plateIsGuess"])
 
@@ -272,8 +272,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         uploader = _CollectingUploader()
         manager = self._manager(plate_lock_frames=3, uploader=uploader)
 
-        self._update(manager, 1, plate_text="ABC1234", plate_is_guess=True)
-        self._update(manager, 2, plate_text="ABC1234", plate_is_guess=True)
+        self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=True)
+        self._update(manager, 2, plate_text="鲁A12345", plate_is_guess=True)
         track_state = manager.tracks[1]
 
         payload = manager._build_api_payload(
@@ -301,9 +301,9 @@ class EventManagerPlateLockingTests(unittest.TestCase):
     def test_color_lock_on_majority_high_confidence(self):
         manager = self._manager(plate_lock_frames=3)
 
-        self._update(manager, 1, plate_text="ABC1234", plate_color="blue", plate_color_conf=0.95)
-        self._update(manager, 2, plate_text="ABC1234", plate_color="blue", plate_color_conf=0.92)
-        self._update(manager, 3, plate_text="ABC1234", plate_color="blue", plate_color_conf=0.91)
+        self._update(manager, 1, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.95)
+        self._update(manager, 2, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.92)
+        self._update(manager, 3, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.91)
 
         track_state = manager.tracks[1]
         self.assertEqual(track_state.get("plate_color_locked"), "blue")
@@ -315,11 +315,11 @@ class EventManagerPlateLockingTests(unittest.TestCase):
     def test_locked_color_wins_over_low_confidence_new_color(self):
         manager = self._manager(plate_lock_frames=3)
 
-        self._update(manager, 1, plate_text="ABC1234", plate_color="blue", plate_color_conf=0.95)
-        self._update(manager, 2, plate_text="ABC1234", plate_color="blue", plate_color_conf=0.92)
-        self._update(manager, 3, plate_text="ABC1234", plate_color="blue", plate_color_conf=0.91)
-        self._update(manager, 4, plate_text="ABC1234", plate_color="yellow", plate_color_conf=0.10)
-        self._update(manager, 5, plate_text="ABC1234", plate_color="yellow", plate_color_conf=0.20)
+        self._update(manager, 1, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.95)
+        self._update(manager, 2, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.92)
+        self._update(manager, 3, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.91)
+        self._update(manager, 4, plate_text="鲁A12345", plate_color="yellow", plate_color_conf=0.10)
+        self._update(manager, 5, plate_text="鲁A12345", plate_color="yellow", plate_color_conf=0.20)
 
         color, confidence = manager._infer_plate_color(manager.tracks[1])
 
@@ -329,7 +329,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
     def test_color_falls_back_to_vehicle_heuristic_only_without_model_signal(self):
         manager = self._manager(plate_lock_frames=3)
 
-        self._update(manager, 1, plate_text="ABC12345")
+        self._update(manager, 1, plate_text="鲁A1234D")
 
         track_state = manager.tracks[1]
         self.assertEqual(track_state.get("plate_color_locked"), "")
@@ -356,7 +356,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         provider = _WheelActivityProvider()
         manager = self._manager_with_zone(_ZoneAZoneManager(), wheel_provider=provider)
 
-        self._update(manager, 1, plate_text="ABC1234")
+        self._update(manager, 1, plate_text="鲁A12345")
 
         self.assertTrue(provider.calls)
         self.assertTrue(provider.calls[-1]["active"])
@@ -366,7 +366,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         provider = _WheelActivityProvider()
         manager = self._manager_with_zone(_ZoneAZoneManager(), wheel_provider=provider)
 
-        self._update(manager, 1, plate_text="ABC1234")
+        self._update(manager, 1, plate_text="鲁A12345")
         provider.calls.clear()
         manager.flush_inactive(active_ids=set(), frame_idx=100)
 

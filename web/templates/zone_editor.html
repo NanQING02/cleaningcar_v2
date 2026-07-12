@@ -532,6 +532,8 @@
               vehicle_lock_min_votes: 40,
               vehicle_lock_on_confirm: true,
               plate_lock_frames: 6,
+              plate_output_shape_log_once: true,
+              plate_draw_stable_only: true,
               default_plate_color: '',
               default_plate_color_conf: 0.0,
               default_cleanliness: 0,
@@ -544,7 +546,21 @@
               require_vehicle_type_for_events: false,
               anchor_offset_ratio: 0.0,
               zone_b_anchor_min_frames: 0,
-              shadow_plate_pool: { max_candidates: 50, max_age_frames: 120 },
+              shadow_plate_pool: {
+                max_candidates: 50,
+                max_age_frames: 120,
+                text_window_frames: 50,
+                text_margin_ratio: 0.12,
+                text_switch_min_consecutive: 6,
+                text_switch_gain_ratio: 1.2,
+                text_switch_margin_ratio: 0.18,
+                color_min_confidence: 0.7,
+                color_lock_frames: 3,
+                color_window_frames: 50,
+                color_switch_min_consecutive: 3,
+                color_switch_gain_ratio: 1.2,
+                color_switch_margin: 0.5
+              },
               debug_overlay: false,
               debug_track_state: false,
               debug_anchor_points: false,
@@ -803,6 +819,17 @@
           this.form.logic.shadow_plate_pool = this.form.logic.shadow_plate_pool || { max_candidates: 50, max_age_frames: 120 };
           this.form.logic.shadow_plate_pool.max_candidates = Number(this.form.logic.shadow_plate_pool.max_candidates || 50);
           this.form.logic.shadow_plate_pool.max_age_frames = Number(this.form.logic.shadow_plate_pool.max_age_frames || 120);
+          this.form.logic.shadow_plate_pool.text_window_frames = Number(this.form.logic.shadow_plate_pool.text_window_frames || 50);
+          this.form.logic.shadow_plate_pool.text_margin_ratio = Number(this.form.logic.shadow_plate_pool.text_margin_ratio || 0.12);
+          this.form.logic.shadow_plate_pool.text_switch_min_consecutive = Number(this.form.logic.shadow_plate_pool.text_switch_min_consecutive || 6);
+          this.form.logic.shadow_plate_pool.text_switch_gain_ratio = Number(this.form.logic.shadow_plate_pool.text_switch_gain_ratio || 1.2);
+          this.form.logic.shadow_plate_pool.text_switch_margin_ratio = Number(this.form.logic.shadow_plate_pool.text_switch_margin_ratio || 0.18);
+          this.form.logic.shadow_plate_pool.color_min_confidence = Number(this.form.logic.shadow_plate_pool.color_min_confidence || 0.7);
+          this.form.logic.shadow_plate_pool.color_lock_frames = Number(this.form.logic.shadow_plate_pool.color_lock_frames || 3);
+          this.form.logic.shadow_plate_pool.color_window_frames = Number(this.form.logic.shadow_plate_pool.color_window_frames || 50);
+          this.form.logic.shadow_plate_pool.color_switch_min_consecutive = Number(this.form.logic.shadow_plate_pool.color_switch_min_consecutive || 3);
+          this.form.logic.shadow_plate_pool.color_switch_gain_ratio = Number(this.form.logic.shadow_plate_pool.color_switch_gain_ratio || 1.2);
+          this.form.logic.shadow_plate_pool.color_switch_margin = Number(this.form.logic.shadow_plate_pool.color_switch_margin || 0.5);
           this.form.video.debug_frame_path = this.form.video.debug_frame_path || '';
           this.form.video.debug_frame_interval = this.form.video.debug_frame_interval || 30;
           this.form.video.debug_frame_max_width = this.form.video.debug_frame_max_width || 960;
@@ -868,6 +895,8 @@
           this.form.logic.vehicle_lock_min_votes = Number(this.form.logic.vehicle_lock_min_votes || 40);
           this.form.logic.vehicle_lock_on_confirm = !!this.form.logic.vehicle_lock_on_confirm;
           this.form.logic.plate_lock_frames = Number(this.form.logic.plate_lock_frames || 6);
+          this.form.logic.plate_output_shape_log_once = (typeof this.form.logic.plate_output_shape_log_once === 'undefined') ? true : !!this.form.logic.plate_output_shape_log_once;
+          this.form.logic.plate_draw_stable_only = (typeof this.form.logic.plate_draw_stable_only === 'undefined') ? true : !!this.form.logic.plate_draw_stable_only;
           this.form.logic.plate_core_mask = this.form.logic.plate_core_mask || '';
           this.form.logic.plate_infer_stride = Number(this.form.logic.plate_infer_stride || 3);
           this.form.logic.default_plate_color = this.form.logic.default_plate_color || '';
@@ -1013,6 +1042,8 @@
               vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
               vehicle_lock_on_confirm: this.form.logic.vehicle_lock_on_confirm,
               plate_lock_frames: this.form.logic.plate_lock_frames,
+              plate_output_shape_log_once: this.form.logic.plate_output_shape_log_once,
+              plate_draw_stable_only: this.form.logic.plate_draw_stable_only,
               plate_core_mask: this.form.logic.plate_core_mask,
               plate_infer_stride: this.form.logic.plate_infer_stride,
               default_plate_color: this.form.logic.default_plate_color,

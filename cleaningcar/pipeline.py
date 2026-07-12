@@ -556,6 +556,7 @@ def process_video(path, args):
     debug_tracks = getattr(args, 'debug_tracks', False) or debug_tracks_cfg or debug_overlay_flag
     draw_plate_boxes = bool(getattr(args, 'draw_plate_boxes', False) or logic_cfg.get('draw_plate_boxes', False))
     setattr(args, 'draw_plate_boxes', draw_plate_boxes)
+    plate_draw_stable_only = bool(logic_cfg.get('plate_draw_stable_only', True))
     event_use_annotated_frame = bool(not args.no_draw and (draw_plate_boxes or debug_water_boxes))
 
     if debug_frame_file:
@@ -1372,6 +1373,71 @@ def process_video(path, args):
                     cv2.putText(frame_img, f'A{track_id}', (ax + 4, ay - 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
+    def apply_stable_plate_fields(track_id, det_ref, rows_ref):
+        if det_ref is None or det_ref.get('cls') != LICENSE_CLASS:
+            return
+        raw_text = str(det_ref.get('raw_text', det_ref.get('text', '')) or '').strip()
+        det_ref['raw_text'] = raw_text
+        locked_info = event_manager.get_locked_plate(track_id) if track_id and track_id > 0 else {}
+        locked_text = str((locked_info or {}).get('text') or '').strip()
+        locked_color = str((locked_info or {}).get('plate_color') or '').strip()
+        locked_color_conf = (locked_info or {}).get('plate_color_conf')
+        if plate_draw_stable_only or locked_text:
+            det_ref['text'] = locked_text
+            det_ref['plate_color'] = locked_color
+            det_ref['plate_color_conf'] = locked_color_conf if locked_color else None
+        row_idx = det_ref.get('row_idx', -1)
+        if row_idx is not None and 0 <= row_idx < len(rows_ref):
+            rows_ref[row_idx][-2] = str(det_ref.get('text') or '')
+            rows_ref[row_idx][-1] = raw_text
+
+    def draw_stable_plate_overlay(frame_img, det_items):
+        if args.no_draw or frame_img is None or not draw_plate_boxes:
+            return
+        for det in det_items or []:
+            if det.get('cls') != LICENSE_CLASS:
+                continue
+            box = det.get('box')
+            if not box or len(box) != 4:
+                continue
+            try:
+                x1, y1, x2, y2 = [int(round(v)) for v in box]
+            except Exception:
+                continue
+            label_name = CLASS_NAMES[LICENSE_CLASS]
+            score = det.get('score')
+            plate_text = str(det.get('text') or '').strip()
+            plate_color = str(det.get('plate_color') or '').strip()
+            label = plate_text or label_name
+            if plate_color and plate_text:
+                label = f'{label} {plate_color}'
+            try:
+                if score is not None:
+                    label = f'{label} {float(score):.2f}'
+            except Exception:
+                pass
+            color = select_box_color(label_name)
+            cv2.rectangle(frame_img, (x1, y1), (x2, y2), color, 2)
+            draw_text(
+                frame_img,
+                label,
+                (x1, max(0, y1 - 12)),
+                font_scale=0.65,
+                color=(255, 255, 255),
+                thickness=2,
+                anchor='lb',
+            )
+            for pt in det.get('landmarks', []) or []:
+                if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                    continue
+                cv2.circle(
+                    frame_img,
+                    (int(round(pt[0])), int(round(pt[1]))),
+                    3,
+                    (0, 255, 255),
+                    -1,
+                )
+
     def draw_debug_detections(frame_img, det_items):
         if frame_img is None:
             return
@@ -1656,10 +1722,11 @@ def process_video(path, args):
                     plate_id = upd.get('track_id', -1)
                     text_val = upd.get('text', '')
                     is_guess = bool(upd.get('is_guess', False))
+                    det['raw_text'] = str(det.get('raw_text', det.get('text', '')) or '')
                     row_idx = det.get('row_idx', -1)
                     if row_idx is not None and 0 <= row_idx < len(rows):
-                        rows[row_idx][-1] = det.get('text', '')
-                        if text_val:
+                        rows[row_idx][-1] = det.get('raw_text', '')
+                        if text_val and not plate_draw_stable_only:
                             rows[row_idx][-2] = text_val
                     if plate_id > 0:
                         state = _ensure_plate_binding_state(
@@ -1699,6 +1766,7 @@ def process_video(path, args):
                             'plate_color_conf': det.get('plate_color_conf'),
                             'plate_type': det.get('plate_type', ''),
                             'car_id': locked_car_id if locked_car_id is not None else -1,
+                            'det_ref': det,
                         }
                 removed_locked_ids = _cleanup_plate_binding_states(
                     plate_binding_states=plate_binding_states,
@@ -1749,6 +1817,10 @@ def process_video(path, args):
                         plate_color_conf=info.get('plate_color_conf'),
                         plate_type=info.get('plate_type', ''),
                     )
+                    det_ref = info.get('det_ref')
+                    if det_ref is not None:
+                        det_ref['track_id'] = track_key
+                        apply_stable_plate_fields(track_key, det_ref, rows)
                     alias_seen.add(track_key)
                     plates_with_updates.add(track_key)
                 for det_ref in vehicle_payload_refs:
@@ -1843,6 +1915,7 @@ def process_video(path, args):
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)
+                draw_stable_plate_overlay(frame_out, license_dets)
                 t_after_updates = time.perf_counter()
                 if debug_tracks:
                     for det_ref in vehicle_payload_refs:

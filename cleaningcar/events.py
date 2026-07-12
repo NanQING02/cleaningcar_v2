@@ -16,7 +16,7 @@ from utils.upload_queue import SQLiteUploadQueue
 from .constants import VEHICLE_LABEL_CN, WHEEL_CLASS_NAME_TO_CLEAN_VALUE, WHEEL_SIDE_TO_PHOTO_TYPE
 from .log_throttle import WindowedLogThrottler
 from .npu_monitor import format_npu_status, snapshot_npu_status
-from .plate import normalize_plate_text
+from .plate import is_valid_plate, normalize_plate_candidate_text
 from .resize_accel import resize_bgr
 from .vision import box_iou, get_anchor_point
 
@@ -213,33 +213,36 @@ class EventManager:
         self.vehicle_shrink_ratio = float(config.get('vehicle_shrink_ratio', 0.35))
         self.vehicle_lock_min_votes = int(config.get('vehicle_lock_min_votes', 80))
         self.vehicle_lock_on_confirm = bool(config.get('vehicle_lock_on_confirm', True))
-        shadow_cfg = config.get('shadow_pool', {})
+        shadow_cfg = dict(self.logic.get('shadow_plate_pool') or {})
+        legacy_shadow_cfg = config.get('shadow_pool', {}) or {}
+        for key, value in legacy_shadow_cfg.items():
+            shadow_cfg.setdefault(key, value)
         self.shadow_max = int(shadow_cfg.get('max_candidates', 50))
         self.shadow_max_age = int(shadow_cfg.get('max_age_frames', 120))
-        self.plate_lock_frames = max(1, int(self.logic.get('plate_lock_frames', 5)))
+        self.plate_lock_frames = max(1, int(self.logic.get('plate_lock_frames', 6)))
         self.plate_text_window_frames = max(
             self.plate_lock_frames,
-            int(shadow_cfg.get('text_window_frames', min(self.shadow_max_age, max(self.plate_lock_frames * 3, 15)))),
+            int(shadow_cfg.get('text_window_frames', min(self.shadow_max_age, 50))),
         )
         self.plate_text_margin_ratio = float(shadow_cfg.get('text_margin_ratio', 0.12))
         self.plate_text_switch_min_consecutive = max(
             self.plate_lock_frames,
-            int(shadow_cfg.get('text_switch_min_consecutive', self.plate_lock_frames + 1)),
+            int(shadow_cfg.get('text_switch_min_consecutive', 6)),
         )
         self.plate_text_switch_gain_ratio = float(shadow_cfg.get('text_switch_gain_ratio', 1.2))
         self.plate_text_switch_margin_ratio = float(
             shadow_cfg.get('text_switch_margin_ratio', max(self.plate_text_margin_ratio + 0.05, 0.18))
         )
         self.plate_color_min_confidence = float(
-            shadow_cfg.get('color_min_confidence', shadow_cfg.get('plate_color_min_confidence', 0.6))
+            shadow_cfg.get('color_min_confidence', shadow_cfg.get('plate_color_min_confidence', 0.70))
         )
         self.plate_color_lock_frames = max(
-            2,
-            int(shadow_cfg.get('color_lock_frames', shadow_cfg.get('plate_color_lock_frames', 2))),
+            1,
+            int(shadow_cfg.get('color_lock_frames', shadow_cfg.get('plate_color_lock_frames', 3))),
         )
         self.plate_color_window_frames = max(
             self.plate_color_lock_frames,
-            int(shadow_cfg.get('color_window_frames', shadow_cfg.get('plate_color_window_frames', self.shadow_max_age))),
+            int(shadow_cfg.get('color_window_frames', shadow_cfg.get('plate_color_window_frames', min(self.shadow_max_age, 50)))),
         )
         self.plate_color_switch_min_consecutive = max(
             self.plate_color_lock_frames,
@@ -476,8 +479,9 @@ class EventManager:
             st['last_vehicle_box'] = vehicle_box
         if plate_box is not None:
             st['last_plate_box'] = plate_box
-        normalized_plate = normalize_plate_text(plate_text)
-        if normalized_plate:
+        normalized_plate = normalize_plate_candidate_text(plate_text)
+        has_valid_plate_candidate = bool(normalized_plate and is_valid_plate(normalized_plate))
+        if has_valid_plate_candidate:
             st['plate_text_latest'] = normalized_plate
             self._add_shadow_candidate(
                 track_id,
@@ -486,9 +490,6 @@ class EventManager:
                 frame_idx,
                 trusted=not bool(plate_is_guess),
             )
-            self._update_locked_plate_text(track_id, st, frame_idx)
-        elif plate_conf and plate_conf > 0.0:
-            self._add_shadow_candidate(track_id, plate_text, plate_conf, frame_idx, trusted=False)
             self._update_locked_plate_text(track_id, st, frame_idx)
         if plate_color:
             plate_color_latest = str(plate_color).strip()
@@ -1079,8 +1080,8 @@ class EventManager:
             self._emit_event_core(track_id, et, fi, fr, payload, track_state, vehicle_type)
 
     def _add_shadow_candidate(self, track_id, text, conf, frame_idx, trusted=False):
-        text = normalize_plate_text(text)
-        if not text:
+        text = normalize_plate_candidate_text(text)
+        if not text or not is_valid_plate(text):
             return
         pool = self.shadow_pool.setdefault(track_id, deque())
         pool.append({
@@ -1160,7 +1161,15 @@ class EventManager:
         best_text, best_hits, best_weight, best_trusted_hits, best_trusted_weight, _best_frame = ranked[0]
         locked_text = (track_state.get('plate_text_locked') or '').strip()
         if not locked_text:
-            if best_trusted_hits > 0:
+            second_trusted_weight = 0.0
+            for item in ranked[1:]:
+                second_trusted_weight = max(second_trusted_weight, float(item[4]))
+            margin_ok = self._plate_margin_ok(
+                best_trusted_weight if best_trusted_weight > 0 else best_weight,
+                second_trusted_weight,
+                self.plate_text_margin_ratio,
+            )
+            if best_hits >= self.plate_lock_frames and best_trusted_hits > 0 and margin_ok:
                 track_state['plate_text_locked'] = best_text
                 track_state['plate_text_locked_is_guess'] = False
                 track_state['plate_text_switch_candidate'] = ''
@@ -1320,12 +1329,16 @@ class EventManager:
     def _resolve_report_plate_fields(self, track_id, track_state, frame_idx):
         del frame_idx
         track_state = track_state or {}
-        locked_text = normalize_plate_text((track_state.get('plate_text_locked') or '').strip())
-        if locked_text:
+        locked_text = normalize_plate_candidate_text((track_state.get('plate_text_locked') or '').strip())
+        if locked_text and is_valid_plate(locked_text):
             return locked_text, False, False, ''
-        latest_text = normalize_plate_text((track_state.get('plate_text_latest') or track_state.get('plate_text') or '').strip())
+        latest_text = normalize_plate_candidate_text(
+            (track_state.get('plate_text_latest') or track_state.get('plate_text') or '').strip()
+        )
         pool = self.shadow_pool.get(track_id) or ()
-        has_candidate = bool(latest_text) or any(normalize_plate_text(entry.get('text', '')) for entry in pool)
+        has_candidate = bool(latest_text and is_valid_plate(latest_text)) or any(
+            is_valid_plate(normalize_plate_candidate_text(entry.get('text', ''))) for entry in pool
+        )
         if has_candidate:
             return '', False, True, 'PLATE_NOT_LOCKED'
         return '', False, True, 'PLATE_NOT_DETECTED'
@@ -1532,6 +1545,31 @@ class EventManager:
         if not st:
             return ''
         return st.get('vehicle_cls_locked') or st.get('vehicle_cls', '')
+
+
+    def get_locked_plate(self, track_id):
+        st = self.tracks.get(track_id)
+        if not st:
+            return {
+                'text': '',
+                'plate_color': '',
+                'plate_color_conf': 0.0,
+                'plate_type': '',
+            }
+        text = normalize_plate_candidate_text(st.get('plate_text_locked', ''))
+        if not is_valid_plate(text):
+            text = ''
+        color = (st.get('plate_color_locked') or '').strip()
+        try:
+            color_conf = float(st.get('plate_color_locked_conf', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            color_conf = 0.0
+        return {
+            'text': text,
+            'plate_color': color,
+            'plate_color_conf': color_conf,
+            'plate_type': st.get('plate_type', ''),
+        }
 
     def get_track_debug(self, track_id):
         st = self.tracks.get(track_id)
