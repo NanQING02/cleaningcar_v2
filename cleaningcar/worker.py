@@ -139,39 +139,34 @@ class DetectWorker(threading.Thread):
                 self.infer_time += infer_time
                 self.frames += 1
 
-                if not outputs:
-                    self._put_empty_result(frame_idx, capture_ts, frame)
-                    continue
-
-                boxes, classes, scores = self.detector_postprocessor.postprocess(outputs)
-                if boxes is None or classes is None or scores is None:
-                    self._put_empty_result(frame_idx, capture_ts, frame)
-                    continue
-
-                boxes = self.detector_postprocessor.map_boxes_to_original(boxes, lb_info)
-                per_class_conf = np.array(
-                    [CLASS_THRESH.get(int(c), self.args.conf) for c in classes],
-                    dtype=np.float32,
-                )
-                keep = scores >= per_class_conf
-                if not np.any(keep):
-                    self._put_empty_result(frame_idx, capture_ts, frame)
-                    continue
-
-                boxes = boxes[keep]
-                scores = scores[keep]
-                classes = classes[keep]
-                has_vehicle_candidates = bool(np.any(np.isin(classes, list(VEHICLE_CLASS_IDS))))
-                primary_keep = classes != LICENSE_CLASS
-                primary_boxes = boxes[primary_keep]
-                primary_scores = scores[primary_keep]
-                primary_classes = classes[primary_keep]
-
                 csv_rows = []
                 det_payload = []
                 base_frame = frame
                 draw_frame = frame if self.args.no_draw else frame.copy()
                 draw_plate_boxes = bool(getattr(self.args, "draw_plate_boxes", False)) and not self.args.no_draw
+                has_vehicle_candidates = False
+                primary_boxes = np.empty((0, 4), dtype=np.float32)
+                primary_scores = np.empty((0,), dtype=np.float32)
+                primary_classes = np.empty((0,), dtype=np.int32)
+
+                if outputs:
+                    boxes, classes, scores = self.detector_postprocessor.postprocess(outputs)
+                    if boxes is not None and classes is not None and scores is not None:
+                        boxes = self.detector_postprocessor.map_boxes_to_original(boxes, lb_info)
+                        per_class_conf = np.array(
+                            [CLASS_THRESH.get(int(c), self.args.conf) for c in classes],
+                            dtype=np.float32,
+                        )
+                        keep = scores >= per_class_conf
+                        if np.any(keep):
+                            boxes = boxes[keep]
+                            scores = scores[keep]
+                            classes = classes[keep]
+                            has_vehicle_candidates = bool(np.any(np.isin(classes, list(VEHICLE_CLASS_IDS))))
+                            primary_keep = classes != LICENSE_CLASS
+                            primary_boxes = boxes[primary_keep]
+                            primary_scores = scores[primary_keep]
+                            primary_classes = classes[primary_keep]
 
                 for box, score, cls_id in zip(primary_boxes, primary_scores, primary_classes):
                     x1, y1, x2, y2 = box.astype(int)

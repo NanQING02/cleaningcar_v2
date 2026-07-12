@@ -16,7 +16,10 @@ if "rknnlite" not in sys.modules:
     sys.modules["rknnlite.api"] = rknn_api_module
 
 from cleaningcar.pipeline import (
+    _append_pending_plate_candidate,
     _cleanup_plate_binding_states,
+    _cleanup_pending_plate_cache,
+    _consume_pending_plate_candidates,
     _ensure_plate_binding_state,
     _refresh_car_plate_cache_from_locked,
     _stabilize_plate_binding,
@@ -183,6 +186,37 @@ class PlateBindingStabilityTests(unittest.TestCase):
 
         self.assertNotIn(11, plate_states)
         self.assertIn(101, removed_locked_ids)
+
+    def test_pending_plate_candidates_expire_before_late_vehicle_binding(self):
+        pending = {}
+        self.assertTrue(
+            _append_pending_plate_candidate(
+                pending,
+                plate_id=11,
+                text="鲁A12345",
+                frame_idx=10,
+                conf=0.91,
+                box=[1, 2, 20, 12],
+                max_entries=3,
+            )
+        )
+
+        self.assertEqual(len(_consume_pending_plate_candidates(pending, 11, frame_idx=12, ttl_frames=5)), 1)
+
+        self.assertTrue(
+            _append_pending_plate_candidate(
+                pending,
+                plate_id=11,
+                text="鲁A12345",
+                frame_idx=10,
+                conf=0.91,
+                box=[1, 2, 20, 12],
+                max_entries=3,
+            )
+        )
+        self.assertEqual(_consume_pending_plate_candidates(pending, 11, frame_idx=40, ttl_frames=5), [])
+        _cleanup_pending_plate_cache(pending, frame_idx=40, ttl_frames=5)
+        self.assertNotIn(11, pending)
 
 
 if __name__ == "__main__":

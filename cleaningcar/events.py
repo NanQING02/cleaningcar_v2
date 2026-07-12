@@ -388,10 +388,93 @@ class EventManager:
     def frame_timestamp(self, frame_idx):
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    def _ingest_plate_candidate(
+        self,
+        track_id,
+        track_state,
+        text,
+        frame_idx,
+        conf=None,
+        trusted=True,
+        plate_color='',
+        plate_color_conf=None,
+        plate_type='',
+        update_frame_idx=None,
+    ):
+        normalized_plate = normalize_plate_candidate_text(text)
+        has_valid_plate_candidate = bool(normalized_plate and is_valid_plate(normalized_plate))
+        try:
+            candidate_frame = int(frame_idx)
+        except (TypeError, ValueError):
+            candidate_frame = 0
+        if has_valid_plate_candidate:
+            last_candidate_frame = int(track_state.get('plate_candidate_last_frame', -1) or -1)
+            track_state['plate_candidate_hits'] = int(track_state.get('plate_candidate_hits', 0) or 0) + 1
+            if candidate_frame >= last_candidate_frame:
+                track_state['plate_text_latest'] = normalized_plate
+                if last_candidate_frame >= 0 and candidate_frame - last_candidate_frame <= 1:
+                    track_state['plate_candidate_consecutive'] = int(
+                        track_state.get('plate_candidate_consecutive', 0) or 0
+                    ) + 1
+                else:
+                    track_state['plate_candidate_consecutive'] = 1
+                track_state['plate_candidate_latest'] = normalized_plate
+                track_state['plate_candidate_last_frame'] = candidate_frame
+            self._add_shadow_candidate(
+                track_id,
+                normalized_plate,
+                conf,
+                candidate_frame,
+                trusted=trusted,
+            )
+            self._update_locked_plate_text(
+                track_id,
+                track_state,
+                candidate_frame if update_frame_idx is None else update_frame_idx,
+            )
+        if plate_color:
+            plate_color_latest = str(plate_color).strip()
+            if plate_color_latest:
+                track_state['plate_color_latest'] = plate_color_latest
+                parsed_color_conf = 0.0
+                if plate_color_conf is not None:
+                    try:
+                        parsed_color_conf = float(plate_color_conf)
+                    except (TypeError, ValueError):
+                        parsed_color_conf = 0.0
+                track_state['plate_color_latest_conf'] = parsed_color_conf
+                self._update_locked_plate_color(track_state, plate_color_latest, parsed_color_conf, candidate_frame)
+        if plate_type:
+            track_state['plate_type'] = str(plate_type)
+        return has_valid_plate_candidate
+
+    def _merge_plate_candidate_history(self, track_id, track_state, entries, frame_idx):
+        merged = 0
+        if not entries:
+            return merged
+        ordered_entries = sorted(entries, key=lambda item: int((item or {}).get('frame', frame_idx) or frame_idx))
+        for entry in ordered_entries:
+            if not isinstance(entry, dict):
+                continue
+            if self._ingest_plate_candidate(
+                track_id,
+                track_state,
+                entry.get('text', ''),
+                entry.get('frame', frame_idx),
+                conf=entry.get('conf'),
+                trusted=entry.get('trusted', True),
+                plate_color=entry.get('plate_color', ''),
+                plate_color_conf=entry.get('plate_color_conf'),
+                plate_type=entry.get('plate_type', ''),
+                update_frame_idx=frame_idx,
+            ):
+                merged += 1
+        return merged
+
     def update_track(self, track_id, plate_box, vehicle_box, plate_text, frame_idx, frame,
                      water_boxes, water_active, is_plate, vehicle_label, vehicle_conf,
                      plate_conf, confirmed, cleaning_label='', anchor_point=None, plate_is_guess=False,
-                     plate_color='', plate_color_conf=None, plate_type=''):
+                     plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None):
         if track_id <= 0:
             return
         st = self.tracks.setdefault(track_id, {
@@ -517,41 +600,19 @@ class EventManager:
             st['last_vehicle_box'] = vehicle_box
         if plate_box is not None:
             st['last_plate_box'] = plate_box
-        normalized_plate = normalize_plate_candidate_text(plate_text)
-        has_valid_plate_candidate = bool(normalized_plate and is_valid_plate(normalized_plate))
-        if has_valid_plate_candidate:
-            st['plate_text_latest'] = normalized_plate
-            last_candidate_frame = int(st.get('plate_candidate_last_frame', -1) or -1)
-            if last_candidate_frame >= 0 and frame_idx - last_candidate_frame <= 1:
-                st['plate_candidate_consecutive'] = int(st.get('plate_candidate_consecutive', 0) or 0) + 1
-            else:
-                st['plate_candidate_consecutive'] = 1
-            st['plate_candidate_hits'] = int(st.get('plate_candidate_hits', 0) or 0) + 1
-            st['plate_candidate_latest'] = normalized_plate
-            st['plate_candidate_last_frame'] = frame_idx
-            self._add_shadow_candidate(
-                track_id,
-                normalized_plate,
-                plate_conf,
-                frame_idx,
-                trusted=not bool(plate_is_guess),
-            )
-            self._update_locked_plate_text(track_id, st, frame_idx)
-        if plate_color:
-            plate_color_latest = str(plate_color).strip()
-            if plate_color_latest:
-                st['plate_color_latest'] = plate_color_latest
-                parsed_color_conf = 0.0
-                if plate_color_conf is not None:
-                    try:
-                        parsed_color_conf = float(plate_color_conf)
-                    except (TypeError, ValueError):
-                        parsed_color_conf = 0.0
-                st['plate_color_latest_conf'] = parsed_color_conf
-                self._update_locked_plate_color(st, plate_color_latest, parsed_color_conf, frame_idx)
+        self._merge_plate_candidate_history(track_id, st, plate_candidate_history, frame_idx)
+        self._ingest_plate_candidate(
+            track_id,
+            st,
+            plate_text,
+            frame_idx,
+            conf=plate_conf,
+            trusted=not bool(plate_is_guess),
+            plate_color=plate_color,
+            plate_color_conf=plate_color_conf,
+            plate_type=plate_type,
+        )
         self._sync_plate_legacy_fields(st)
-        if plate_type:
-            st['plate_type'] = str(plate_type)
         if confirmed:
             st['confirmed'] = True
             if self.vehicle_lock_on_confirm and st.get('vehicle_cls_locked'):
@@ -827,10 +888,16 @@ class EventManager:
                 continue
             if frame_idx - st.get('last_frame_idx', frame_idx) >= self.timeout_frames:
                 event_enabled = bool(st.get('zone_a_dwell_frames', 0) > 0)
+                suppress_plate_only_events = bool(
+                    self.disable_plate_only_events
+                    and st.get('last_vehicle_box') is None
+                    and int(st.get('vehicle_hit_frames', 0) or 0) <= 0
+                )
                 if (
                     4 not in st['events']
                     and 4 in self.allowed_events
                     and event_enabled
+                    and not suppress_plate_only_events
                     and st.get('type2_qualified')
                     and st.get('zone_b_dwell_frames', 0) > 0
                 ):
@@ -844,7 +911,13 @@ class EventManager:
                     }, st)
                     st['events'].add(4)
                 can_type5 = self._can_emit_type5(st)
-                if 5 not in st['events'] and 5 in self.allowed_events and can_type5 and event_enabled:
+                if (
+                    5 not in st['events']
+                    and 5 in self.allowed_events
+                    and can_type5
+                    and event_enabled
+                    and not suppress_plate_only_events
+                ):
                     last_frame_idx = st.get('last_frame_idx', frame_idx)
                     if self._should_suppress_type5_quality(tid, st, last_frame_idx):
                         st['type5_suppressed_quality'] = True

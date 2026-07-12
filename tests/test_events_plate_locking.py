@@ -513,6 +513,34 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertIn(1, emitted)
         self.assertIn(1, manager.tracks[1]["events"])
 
+    def test_pending_plate_history_can_lock_after_vehicle_binding(self):
+        manager = self._manager(plate_lock_frames=3)
+
+        manager.update_track(
+            101,
+            None,
+            [0, 0, 40, 40],
+            "",
+            20,
+            None,
+            [],
+            False,
+            False,
+            "car",
+            0.92,
+            None,
+            True,
+            anchor_point=(20.0, 20.0),
+            plate_candidate_history=[
+                {"text": "鲁A12345", "conf": 0.91, "frame": 10, "trusted": True},
+                {"text": "鲁A12345", "conf": 0.93, "frame": 11, "trusted": True},
+                {"text": "鲁A12345", "conf": 0.94, "frame": 12, "trusted": True},
+            ],
+        )
+
+        self.assertEqual(manager.tracks[101]["plate_text_locked"], "鲁A12345")
+        self.assertEqual(manager.tracks[101]["plate_text"], "鲁A12345")
+
     def test_type5_requires_type2_but_not_water_signal(self):
         manager = self._quality_manager(_DummyZoneManager())
         track_state = {
@@ -581,6 +609,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             "last_frame": None,
             "type2_qualified": True,
             "zone_a_dwell_frames": 1,
+            "vehicle_hit_frames": 1,
+            "last_vehicle_box": [0, 0, 20, 20],
         }
         manager.tracks[1] = track_state
 
@@ -590,6 +620,29 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(emitted[0][0][1], 5)
         self.assertIn(5, track_state["events"])
         self.assertNotIn(1, manager.pending_events)
+
+    def test_flush_inactive_does_not_emit_plate_only_events(self):
+        manager = self._manager()
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+        track_state = {
+            "events": {1, 2},
+            "last_frame_idx": 0,
+            "last_frame": None,
+            "type2_qualified": True,
+            "zone_a_dwell_frames": 20,
+            "zone_b_dwell_frames": 20,
+            "vehicle_hit_frames": 0,
+            "last_vehicle_box": None,
+            "track_frame_count": 20,
+            "plate_candidate_hits": 3,
+        }
+        manager.tracks[11] = track_state
+
+        manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
+
+        self.assertEqual(emitted, [])
+        self.assertEqual(track_state["events"], {1, 2})
 
 
 if __name__ == "__main__":

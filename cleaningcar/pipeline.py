@@ -30,7 +30,7 @@ from .events import EventManager, EventUploader, WheelPhotoUploader
 from .log_throttle import WindowedLogThrottle
 from .monitoring import monitor_loop
 from .npu_monitor import format_npu_status, npu_status_flags, snapshot_npu_status
-from .plate import PlateTextTracker
+from .plate import PlateTextTracker, is_valid_plate, normalize_plate_candidate_text
 from .resize_accel import resize_backend_name, resize_bgr
 from .runtime_config import load_config
 from .runtime_signals import (
@@ -288,6 +288,103 @@ def _refresh_car_plate_cache_from_locked(
             car_plate_cache.pop(car_id, None)
 
     return locked_car_to_plate
+
+
+def _append_pending_plate_candidate(
+    pending_plate_cache,
+    plate_id,
+    text,
+    frame_idx,
+    conf=None,
+    box=None,
+    plate_color='',
+    plate_color_conf=None,
+    plate_type='',
+    trusted=True,
+    max_entries=30,
+):
+    plate_id = _normalize_track_id(plate_id)
+    if plate_id is None:
+        return False
+    text = normalize_plate_candidate_text(text)
+    if not text or not is_valid_plate(text):
+        return False
+    try:
+        frame_idx = int(frame_idx)
+    except (TypeError, ValueError):
+        frame_idx = 0
+    history = pending_plate_cache.setdefault(plate_id, deque(maxlen=max(1, int(max_entries))))
+    history.append({
+        'text': text,
+        'conf': conf,
+        'frame': frame_idx,
+        'box': list(box) if box is not None else None,
+        'plate_color': str(plate_color or ''),
+        'plate_color_conf': plate_color_conf,
+        'plate_type': str(plate_type or ''),
+        'trusted': bool(trusted),
+    })
+    return True
+
+
+def _valid_pending_plate_candidates(pending_plate_cache, plate_id, frame_idx, ttl_frames):
+    plate_id = _normalize_track_id(plate_id)
+    if plate_id is None:
+        return []
+    try:
+        frame_idx = int(frame_idx)
+    except (TypeError, ValueError):
+        frame_idx = 0
+    ttl_frames = max(0, int(ttl_frames))
+    history = pending_plate_cache.get(plate_id) or ()
+    entries = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            entry_frame = int(entry.get('frame', frame_idx))
+        except (TypeError, ValueError):
+            continue
+        age = frame_idx - entry_frame
+        if 0 <= age <= ttl_frames:
+            entries.append(dict(entry))
+    return entries
+
+
+def _consume_pending_plate_candidates(pending_plate_cache, plate_id, frame_idx, ttl_frames):
+    entries = _valid_pending_plate_candidates(pending_plate_cache, plate_id, frame_idx, ttl_frames)
+    if entries:
+        pending_plate_cache.pop(int(plate_id), None)
+    return entries
+
+
+def _cleanup_pending_plate_cache(pending_plate_cache, frame_idx, ttl_frames):
+    try:
+        frame_idx = int(frame_idx)
+    except (TypeError, ValueError):
+        frame_idx = 0
+    ttl_frames = max(0, int(ttl_frames))
+    for plate_id in list(pending_plate_cache.keys()):
+        history = pending_plate_cache.get(plate_id)
+        if not history:
+            pending_plate_cache.pop(plate_id, None)
+            continue
+        maxlen = getattr(history, 'maxlen', None)
+        kept = deque(maxlen=maxlen)
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                entry_frame = int(entry.get('frame', frame_idx))
+            except (TypeError, ValueError):
+                continue
+            age = frame_idx - entry_frame
+            if 0 <= age <= ttl_frames:
+                kept.append(entry)
+        if kept:
+            pending_plate_cache[plate_id] = kept
+        else:
+            pending_plate_cache.pop(plate_id, None)
 
 
 def process_video(path, args):
@@ -629,6 +726,9 @@ def process_video(path, args):
     plate_binding_states = {}
     plate_binding_timeout_frames = max(1, int(config.get('track_timeout_frames', 60)))
     plate_binding_vehicle_missing_frames = max(1, int(config.get('track_timeout_frames', 60)))
+    pending_plate_cache = {}
+    pending_plate_cache_ttl_frames = max(1, int(logic_cfg.get('pending_plate_cache_ttl_frames', 40) or 40))
+    pending_plate_cache_max_entries = max(1, int(logic_cfg.get('pending_plate_cache_max_entries', 30) or 30))
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
@@ -1780,6 +1880,11 @@ def process_video(path, args):
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = track_id
                 active_car_ids = {det_ref.get('track_id', -1) for det_ref in vehicle_payload_refs if det_ref.get('track_id', -1) > 0}
+                _cleanup_pending_plate_cache(
+                    pending_plate_cache,
+                    next_frame_to_write,
+                    pending_plate_cache_ttl_frames,
+                )
                 license_dets = [d for d in det_payload if d.get('cls') == LICENSE_CLASS] if det_payload else []
                 if license_dets and car_boxes:
                     for det in license_dets:
@@ -1835,6 +1940,32 @@ def process_video(path, args):
                             vehicle_box = det.get('vehicle_box_candidate')
                         if locked_car_id is not None and vehicle_box is not None:
                             car_boxes.setdefault(locked_car_id, vehicle_box)
+                        plate_candidate_history = []
+                        if locked_car_id is not None:
+                            plate_candidate_history = _consume_pending_plate_candidates(
+                                pending_plate_cache,
+                                plate_id,
+                                next_frame_to_write,
+                                pending_plate_cache_ttl_frames,
+                            )
+                        else:
+                            raw_text = str(det.get('raw_text', det.get('text', '')) or '')
+                            candidate_text = raw_text
+                            if not is_valid_plate(normalize_plate_candidate_text(candidate_text)):
+                                candidate_text = text_val if text_val and not is_guess else ''
+                            _append_pending_plate_candidate(
+                                pending_plate_cache,
+                                plate_id,
+                                candidate_text,
+                                next_frame_to_write,
+                                conf=det.get('score'),
+                                box=det.get('box'),
+                                plate_color=det.get('plate_color', ''),
+                                plate_color_conf=det.get('plate_color_conf'),
+                                plate_type=det.get('plate_type', ''),
+                                trusted=True,
+                                max_entries=pending_plate_cache_max_entries,
+                            )
                         plate_track_info[plate_id] = {
                             'box': det['box'],
                             'text': text_val,
@@ -1845,6 +1976,7 @@ def process_video(path, args):
                             'plate_color_conf': det.get('plate_color_conf'),
                             'plate_type': det.get('plate_type', ''),
                             'car_id': locked_car_id if locked_car_id is not None else -1,
+                            'plate_candidate_history': plate_candidate_history,
                             'det_ref': det,
                         }
                 removed_locked_ids = _cleanup_plate_binding_states(
@@ -1895,6 +2027,7 @@ def process_video(path, args):
                         plate_color=info.get('plate_color', ''),
                         plate_color_conf=info.get('plate_color_conf'),
                         plate_type=info.get('plate_type', ''),
+                        plate_candidate_history=info.get('plate_candidate_history'),
                     )
                     det_ref = info.get('det_ref')
                     if det_ref is not None:
@@ -1918,6 +2051,12 @@ def process_video(path, args):
                                 known_text = track_state.get('plate_text', '')
                             confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
                             anchor_pt = anchor_point_for(det_ref['box'])
+                            plate_candidate_history = _consume_pending_plate_candidates(
+                                pending_plate_cache,
+                                alias_plate_id,
+                                next_frame_to_write,
+                                pending_plate_cache_ttl_frames,
+                            )
                             event_manager.update_track(
                                 car_id,
                                 None,
@@ -1934,6 +2073,7 @@ def process_video(path, args):
                                 confirmed=confirmed_alias,
                                 cleaning_label=cleaning_label,
                                 anchor_point=anchor_pt,
+                                plate_candidate_history=plate_candidate_history,
                             )
                         annotate_locked_label(car_id, det_ref, rows, frame_out)
                         alias_seen.add(car_id)
@@ -1950,6 +2090,12 @@ def process_video(path, args):
                             known_text = track_state.get('plate_text', '')
                         confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
                         anchor_pt = anchor_point_for(det_ref['box'])
+                        plate_candidate_history = _consume_pending_plate_candidates(
+                            pending_plate_cache,
+                            cache_entry.get('plate_id'),
+                            next_frame_to_write,
+                            pending_plate_cache_ttl_frames,
+                        )
                         event_manager.update_track(
                             car_id,
                             None,
@@ -1966,6 +2112,7 @@ def process_video(path, args):
                             confirmed=confirmed_alias,
                             cleaning_label=cleaning_label,
                             anchor_point=anchor_pt,
+                            plate_candidate_history=plate_candidate_history,
                         )
                         alias_seen.add(car_id)
                         continue

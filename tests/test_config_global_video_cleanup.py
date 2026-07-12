@@ -104,6 +104,13 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("logic.per_id_video_source", field_paths)
         self.assertNotIn("logic.per_id_raw_prebuffer_seconds", field_paths)
 
+    def test_web_config_registry_exposes_plate_prefetch_controls(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertIn("logic.plate_requires_vehicle", field_paths)
+        self.assertIn("logic.pending_plate_cache_ttl_frames", field_paths)
+        self.assertIn("logic.pending_plate_cache_max_entries", field_paths)
+
     def test_config_manager_defaults_reader_frame_timeout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"

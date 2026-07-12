@@ -326,6 +326,19 @@
               <option :value="false">关闭</option>
             </select>
           </label>
+          <label>车牌识别车辆框依赖
+            <select v-model="form.logic.plate_requires_vehicle">
+              <option :value="null">自动</option>
+              <option :value="true">需要车辆候选</option>
+              <option :value="false">不需要车辆候选</option>
+            </select>
+          </label>
+          <label>待绑定车牌缓存 TTL (帧)
+            <input type="number" min="1" v-model.number="form.logic.pending_plate_cache_ttl_frames" />
+          </label>
+          <label>待绑定车牌缓存容量
+            <input type="number" min="1" v-model.number="form.logic.pending_plate_cache_max_entries" />
+          </label>
           <label>进入/退出 Zone B 防抖帧数
             <input type="number" min="1" v-model.number="form.logic.zone_b_entry_hysteresis" />
           </label>
@@ -543,6 +556,9 @@
             logic: {
               detection_anchor: 'bottom_center',
               zone_a_mask_enable: true,
+              plate_requires_vehicle: null,
+              pending_plate_cache_ttl_frames: 40,
+              pending_plate_cache_max_entries: 30,
               zone_b_entry_hysteresis: 3,
               zone_b_exit_hysteresis: 3,
               stationary_min_frames: 0,
@@ -871,6 +887,11 @@
           this.form.logic.shadow_plate_pool.color_switch_min_consecutive = Number(this.form.logic.shadow_plate_pool.color_switch_min_consecutive || 3);
           this.form.logic.shadow_plate_pool.color_switch_gain_ratio = Number(this.form.logic.shadow_plate_pool.color_switch_gain_ratio || 1.2);
           this.form.logic.shadow_plate_pool.color_switch_margin = Number(this.form.logic.shadow_plate_pool.color_switch_margin || 0.5);
+          if (typeof this.form.logic.plate_requires_vehicle === 'undefined') {
+            this.form.logic.plate_requires_vehicle = null;
+          }
+          this.form.logic.pending_plate_cache_ttl_frames = Number(this.form.logic.pending_plate_cache_ttl_frames || 40);
+          this.form.logic.pending_plate_cache_max_entries = Number(this.form.logic.pending_plate_cache_max_entries || 30);
           this.form.logic.event_track_quality = this.form.logic.event_track_quality || {};
           const eventQualityValueOr = (value, fallback) => (
             (typeof value === 'undefined' || value === null || value === '') ? fallback : value
@@ -1079,6 +1100,9 @@
             logic: {
               detection_anchor: this.form.logic.detection_anchor,
               zone_a_mask_enable: this.form.logic.zone_a_mask_enable,
+              plate_requires_vehicle: this.form.logic.plate_requires_vehicle,
+              pending_plate_cache_ttl_frames: this.form.logic.pending_plate_cache_ttl_frames,
+              pending_plate_cache_max_entries: this.form.logic.pending_plate_cache_max_entries,
               zone_b_entry_hysteresis: this.form.logic.zone_b_entry_hysteresis,
               zone_b_exit_hysteresis: this.form.logic.zone_b_exit_hysteresis,
               stationary_min_frames: this.form.logic.stationary_min_frames,

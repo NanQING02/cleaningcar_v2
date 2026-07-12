@@ -29,6 +29,10 @@ class SiteConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(bypass["video"]["workers"], 1)
         self.assertEqual(bypass["video"]["core_mask"], "1")
         self.assertEqual(bypass["logic"]["plate_core_mask"], "1")
+        self.assertFalse(bypass["logic"]["zone_a_mask_enable"])
+        self.assertFalse(bypass["logic"]["plate_requires_vehicle"])
+        self.assertTrue(bypass["logic"]["disable_plate_only_events"])
+        self.assertEqual(bypass["logic"]["pending_plate_cache_ttl_frames"], 40)
         self.assertFalse(bypass["wheel"]["enabled"])
 
     def test_site_configs_enable_performance_lock(self):
