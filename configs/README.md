@@ -74,6 +74,7 @@ FP 检测模型后处理模式：
 
 - `wheel.enabled`
   - 是否启用左右车轮 RTSP 旁路
+- 车轮旁路只使用本地模式：本地拉左右 RTSP、本地 RKNN 推理、本地生命周期锁定；不使用远程车轮检测服务
 - `wheel.left_source` / `wheel.right_source`
   - 左右车轮视频源
 - `wheel.target_fps`

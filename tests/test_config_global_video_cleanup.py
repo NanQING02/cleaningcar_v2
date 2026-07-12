@@ -141,6 +141,44 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("wheel.pause_bypass_config_key", field_paths)
         self.assertIn("wheel.pause_bypass_resume_delay_seconds", field_paths)
 
+    def test_config_manager_strips_remote_wheel_service_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "wheel": {
+                    "enabled": True,
+                    "run_mode": "remote",
+                    "service_url": "http://127.0.0.1:28015",
+                    "service_timeout_seconds": 0.5,
+                },
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+            manager.save()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertNotIn("run_mode", manager.data["wheel"])
+        self.assertNotIn("service_url", manager.data["wheel"])
+        self.assertNotIn("service_timeout_seconds", manager.data["wheel"])
+        self.assertNotIn("run_mode", saved["wheel"])
+        self.assertNotIn("service_url", saved["wheel"])
+        self.assertNotIn("service_timeout_seconds", saved["wheel"])
+
+    def test_web_config_registry_hides_remote_wheel_service_fields(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertNotIn("wheel.run_mode", field_paths)
+        self.assertNotIn("wheel.service_url", field_paths)
+        self.assertNotIn("wheel.service_timeout_seconds", field_paths)
+
     def test_web_config_registry_exposes_event_path_controls_as_user_fields(self):
         user_fields = {
             item["path"]

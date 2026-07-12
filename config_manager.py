@@ -158,16 +158,9 @@ class ConfigManager:
             wheel['reader_event_driven'] = reader_event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['reader_event_driven'] = bool(reader_event_driven)
-        run_mode = str(wheel.get('run_mode', 'embedded') or 'embedded').strip().lower()
-        if run_mode not in {'embedded', 'remote'}:
-            run_mode = 'embedded'
-        wheel['run_mode'] = run_mode
-        wheel['service_url'] = str(wheel.get('service_url', '') or '').strip()
-        try:
-            service_timeout = float(wheel.get('service_timeout_seconds', 0.5))
-        except (TypeError, ValueError):
-            service_timeout = 0.5
-        wheel['service_timeout_seconds'] = max(0.1, service_timeout)
+        wheel.pop('run_mode', None)
+        wheel.pop('service_url', None)
+        wheel.pop('service_timeout_seconds', None)
         try:
             reader_idle_fps = float(wheel.get('reader_idle_fps', 0.0))
         except (TypeError, ValueError):
