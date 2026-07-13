@@ -122,12 +122,14 @@ class WheelBindingTests(unittest.TestCase):
             zone_manager=zone_manager or _DummyZoneManager(),
             uploader=object(),
             wheel_result_provider=wheel_provider,
+            wheel_photo_base_dir=temp_dir.name,
         )
 
     @staticmethod
     def _type5_event(capture_time="2026-04-28 12:00:00"):
         return {
             "id": "evt-1",
+            "trackId": 1,
             "type": 5,
             "captureTime": capture_time,
             "captureImage": "",
@@ -240,10 +242,12 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(len(payload["wheelResults"]), 1)
         self.assertEqual(
             set(payload["wheelResults"][0].keys()),
-            {"side", "captureTime", "imageBase64", "className"},
+            {"side", "captureTime", "photoUrl", "className"},
         )
         self.assertEqual(payload["wheelResults"][0]["side"], "left")
         self.assertEqual(payload["wheelResults"][0]["className"], "50-75")
+        self.assertTrue(payload["wheelResults"][0]["photoUrl"].startswith("box/"))
+        self.assertTrue((manager.wheel_photo_base_dir / payload["wheelResults"][0]["photoUrl"]).exists())
 
     def test_type5_payload_does_not_fallback_to_provider_without_lifecycle_lock(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
@@ -313,10 +317,12 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(len(event["wheelResults"]), 1)
         self.assertEqual(
             set(event["wheelResults"][0].keys()),
-            {"side", "captureTime", "imageBase64", "className"},
+            {"side", "captureTime", "photoUrl", "className"},
         )
         self.assertEqual(event["wheelResults"][0]["side"], "left")
         self.assertEqual(event["wheelResults"][0]["className"], "50-75")
+        self.assertTrue(event["wheelResults"][0]["photoUrl"].startswith("box/"))
+        self.assertTrue((manager.wheel_photo_base_dir / event["wheelResults"][0]["photoUrl"]).exists())
 
     def test_lifecycle_locked_wheel_results_survive_after_provider_no_longer_has_recent_items(self):
         provider = _StaticWheelProvider([

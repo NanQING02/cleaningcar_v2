@@ -1091,7 +1091,7 @@ class EventManager:
                     video_duration = 0.0
             event['videoDuration'] = video_duration
             event['cleanliness'] = self.default_cleanliness
-            self._attach_wheel_results(event, track_state=track_state)
+            self._attach_wheel_results(event, track_state=track_state, track_id=track_id)
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
         capture_ts_val = None
@@ -2091,7 +2091,7 @@ class EventManager:
                 payload['washStartTime'] = wash_start_time
             payload['direction'] = dir_code
             payload['directionLabel'] = dir_label
-            self._attach_wheel_results(payload, track_state=track_state)
+            self._attach_wheel_results(payload, track_state=track_state, track_id=track_id)
         else:
             payload['lane'] = lane
             payload['plateNumber'] = plate_number
@@ -2122,36 +2122,94 @@ class EventManager:
         self._apply_plate_recognition_flags(payload, plate_abnormal_reason)
         return payload
 
-    def _attach_wheel_results(self, payload, track_state=None):
+    def _attach_wheel_results(self, payload, track_state=None, track_id=None):
         if not isinstance(payload, dict):
             return payload
-        wheel_results = self._build_wheel_results_payload(track_state=track_state)
+        wheel_results = self._build_wheel_results_payload(track_state=track_state, track_id=track_id)
         if wheel_results:
             payload['wheelResults'] = wheel_results
         return payload
 
-    @staticmethod
-    def _serialize_locked_wheel_entry(side, entry):
+    def _find_existing_wheel_photo_url(self, track_state, side, entry):
+        if not isinstance(track_state, dict) or not isinstance(entry, dict):
+            return ''
+        history = track_state.get('wheel_photo_history')
+        if not isinstance(history, dict):
+            return ''
+        side_history = history.get(side)
+        if not isinstance(side_history, dict):
+            return ''
+        entry_id = int(entry.get('entryId', 0) or 0)
+        image_bytes = entry.get('imageJpegBytes', b'') or b''
+        image_hash = hashlib.sha1(image_bytes).hexdigest() if image_bytes else ''
+        for bucket in side_history.values():
+            if not isinstance(bucket, dict):
+                continue
+            rep = bucket.get('representative')
+            if not isinstance(rep, dict):
+                continue
+            photo_url = str(rep.get('photoUrl') or '').strip()
+            if not photo_url:
+                continue
+            if entry_id > 0 and int(rep.get('entryId', 0) or 0) == entry_id:
+                return photo_url
+            if image_hash and str(rep.get('imageHash') or '') == image_hash:
+                return photo_url
+        return ''
+
+    def _ensure_locked_wheel_photo_url(self, side, entry, track_state=None, track_id=None):
+        if not isinstance(entry, dict):
+            return ''
+        photo_url = str(entry.get('photoUrl') or '').strip()
+        if photo_url:
+            return photo_url
+        photo_url = self._find_existing_wheel_photo_url(track_state, side, entry)
+        if photo_url:
+            entry['photoUrl'] = photo_url
+            return photo_url
+        image_bytes = entry.get('imageJpegBytes', b'') or b''
+        if not image_bytes:
+            return ''
+        if isinstance(track_state, dict):
+            seq_map = track_state.setdefault('wheel_photo_seq', {'left': 0, 'right': 0})
+        else:
+            seq_map = {'left': 0, 'right': 0}
+        seq = int(seq_map.get(side, 0) or 0) + 1
+        seq_map[side] = seq
+        photo_url = self._save_wheel_photo(
+            side=side,
+            track_id=track_id or 0,
+            seq=seq,
+            image_bytes=image_bytes,
+            capture_ts=entry.get('capture_ts'),
+            class_name=entry.get('className', ''),
+        )
+        if photo_url:
+            entry['photoUrl'] = photo_url
+        return photo_url or ''
+
+    def _serialize_locked_wheel_entry(self, side, entry, track_state=None, track_id=None):
         side = str(side or '').strip().lower()
         if side not in ('left', 'right') or not isinstance(entry, dict):
             return None
         capture_time = str(entry.get('captureTime') or '').strip()
         class_name = str(entry.get('className') or '').strip()
-        image_b64 = str(entry.get('imageBase64') or '').strip()
-        if not image_b64:
-            image_bytes = entry.get('imageJpegBytes', b'') or b''
-            if image_bytes:
-                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        if not capture_time or not class_name or not image_b64:
+        photo_url = self._ensure_locked_wheel_photo_url(
+            side=side,
+            entry=entry,
+            track_state=track_state,
+            track_id=track_id,
+        )
+        if not capture_time or not class_name or not photo_url:
             return None
         return {
             'side': side,
             'captureTime': capture_time,
-            'imageBase64': image_b64,
+            'photoUrl': photo_url,
             'className': class_name,
         }
 
-    def _build_locked_wheel_results_payload(self, track_state):
+    def _build_locked_wheel_results_payload(self, track_state, track_id=None):
         if not isinstance(track_state, dict):
             return []
         locked = track_state.get('wheel_results_locked')
@@ -2159,13 +2217,18 @@ class EventManager:
             return []
         results = []
         for side in ('left', 'right'):
-            item = self._serialize_locked_wheel_entry(side, locked.get(side))
+            item = self._serialize_locked_wheel_entry(
+                side,
+                locked.get(side),
+                track_state=track_state,
+                track_id=track_id,
+            )
             if item:
                 results.append(item)
         return results
 
-    def _build_wheel_results_payload(self, track_state=None):
-        return self._build_locked_wheel_results_payload(track_state)
+    def _build_wheel_results_payload(self, track_state=None, track_id=None):
+        return self._build_locked_wheel_results_payload(track_state, track_id=track_id)
 
     @staticmethod
     def _is_wheel_track_active(track_state):
