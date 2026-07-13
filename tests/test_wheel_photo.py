@@ -82,7 +82,7 @@ class ConstantMapTests(unittest.TestCase):
 
 
 class WheelPhotoTests(unittest.TestCase):
-    def _manager(self, uploader=None, base_dir=None, bucket_seconds=1.0,
+    def _manager(self, uploader=None, base_dir=None, bucket_seconds=0.25,
                  min_score=0.3, wheel_provider=None):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -270,11 +270,11 @@ class WheelPhotoTests(unittest.TestCase):
             claimer=claimer,
         )
         rep = list(st['wheel_photo_history']['left'].values())[0]['representative']
-        self.assertTrue(rep['photoUrl'].startswith('box/'))
+        self.assertTrue(Path(rep['photoUrl']).is_absolute())
+        self.assertTrue(rep['photoUrl'].startswith(str(mgr.wheel_photo_base_dir)))
         self.assertIn('/143025_1_left_1.jpg', rep['photoUrl'])
-        abs_path = mgr.wheel_photo_base_dir / rep['photoUrl']
-        self.assertTrue(abs_path.exists())
-        with abs_path.open('rb') as f:
+        self.assertTrue(Path(rep['photoUrl']).exists())
+        with Path(rep['photoUrl']).open('rb') as f:
             self.assertEqual(f.read(), b'fakejpg')
 
     def test_representative_overwrites_same_seq_when_majority_shifts(self):
@@ -343,11 +343,17 @@ class WheelPhotoTests(unittest.TestCase):
         mgr._enqueue_wheel_photos(track_state)
         self.assertEqual(len(uploader.enqueued), 3)
         ordered_urls = [p['photoUrl'] for p in uploader.enqueued]
-        self.assertEqual(ordered_urls, ['box/a.jpg', 'box/c.jpg', 'box/b.jpg'])
+        self.assertEqual(ordered_urls, [
+            (mgr.wheel_photo_base_dir / 'box/a.jpg').resolve().as_posix(),
+            (mgr.wheel_photo_base_dir / 'box/c.jpg').resolve().as_posix(),
+            (mgr.wheel_photo_base_dir / 'box/b.jpg').resolve().as_posix(),
+        ])
         self.assertEqual(uploader.enqueued[0],
-                         {'photoUrl': 'box/a.jpg', 'type': '4', 'cleanValue': 2})
+                         {'photoUrl': (mgr.wheel_photo_base_dir / 'box/a.jpg').resolve().as_posix(),
+                          'type': '4', 'cleanValue': 2})
         self.assertEqual(uploader.enqueued[2],
-                         {'photoUrl': 'box/b.jpg', 'type': '4', 'cleanValue': 3})
+                         {'photoUrl': (mgr.wheel_photo_base_dir / 'box/b.jpg').resolve().as_posix(),
+                          'type': '4', 'cleanValue': 3})
 
     def test_first_lifecycle_lock_also_records_wheel_photo(self):
         uploader = _FakeWheelPhotoUploader()
@@ -452,13 +458,13 @@ class WheelPhotoTests(unittest.TestCase):
 
         self.assertEqual([item['cleanValue'] for item in uploader.enqueued], [1, 4])
 
-    def test_default_photo_bucket_seconds_is_one_second(self):
+    def test_default_photo_bucket_seconds_is_quarter_second(self):
         uploader = _FakeWheelPhotoUploader()
         mgr = self._manager(uploader=uploader)
         st = self._new_track(mgr)
         claimer = _StaticClaimer()
 
-        for idx, ts in enumerate([1000.10, 1000.90], start=1):
+        for idx, ts in enumerate([1000.10, 1000.20], start=1):
             mgr._update_wheel_photo_history(
                 track_id=1,
                 track_state=st,
@@ -490,7 +496,7 @@ class WheelPhotoTests(unittest.TestCase):
         self.assertEqual(st['wheel_photo_seq']['left'], 1)
         self.assertEqual(len(uploader.enqueued), 1)
 
-    def test_event_manager_default_photo_bucket_seconds_is_one_second(self):
+    def test_event_manager_default_photo_bucket_seconds_is_quarter_second(self):
         mgr = EventManager(
             {
                 "logic": {},
@@ -504,7 +510,7 @@ class WheelPhotoTests(unittest.TestCase):
             wheel_photo_uploader=_FakeWheelPhotoUploader(),
         )
 
-        self.assertEqual(mgr.wheel_photo_bucket_seconds, 1.0)
+        self.assertEqual(mgr.wheel_photo_bucket_seconds, 0.25)
 
     def test_representative_uses_nearest_box_to_frame_center_across_bucket(self):
         candidates = [

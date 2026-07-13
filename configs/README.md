@@ -27,8 +27,8 @@
 ### `system.wheel_photo_base_dir`
 
 - 车轮照片落盘根目录，默认 `/data/ftp`
-- `photoUrl` 上报字段是相对该目录的路径（如 `box/20260119/14/xxx.jpg`）
-- `type=5` 主事件里的 `wheelResults[].photoUrl` 同样使用该相对路径，不再上传 `imageBase64`
+- `photoUrl` 上报字段是绝对路径（如 `/data/ftp/box/20260119/14/xxx.jpg`）
+- `type=5` 主事件里的 `wheelResults[].photoUrl` 同样使用绝对路径，不再上传 `imageBase64`
 
 ### `video.source` / `video.source_mode`
 
@@ -96,7 +96,7 @@ FP 检测模型后处理模式：
 - `wheel.photo_bucket_seconds` / `wheel.photo_min_score`
   - 车轮照片批量上报（`POST /api/vehicle/wheel-photo`）的桶式参数
   - 照片在车辆生命周期内缓存和落盘，最终 `type=5` 事件触发时一次性加入上传队列，不是每次识别到车轮就立即 HTTP 上报
-  - `photo_bucket_seconds` 默认 `1.0`：每 1 秒为一个桶，每桶一张代表
+  - `photo_bucket_seconds` 当前配置为 `0.25`：每 0.25 秒为一个桶，每桶一张代表
   - `photo_min_score` 默认 `0.3`：低于此分数的检测不入桶
   - 桶内结果：`cleanValue` 按类型多数投票（同票倾向类型最低），代表图按检测框中心离画面中心最近选择
 

@@ -69,7 +69,7 @@
     "bind_require_active": true,
     "bind_wait_seconds": 2.0,
     "bind_wait_poll_seconds": 0.08,
-    "photo_bucket_seconds": 1.0,
+    "photo_bucket_seconds": 0.25,
     "photo_min_score": 0.3
   },
   "zones": {

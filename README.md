@@ -45,7 +45,7 @@ run_zone_detect.py
 - 单车视频写出顺序为：`GStreamer 硬编 -> FFmpeg 硬编`；硬编不可用时不保存该段单车视频，没有软件编码兜底
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - 车轮旁路独立于主相机冲洗检测运行，只在 `wheel.enabled=true` 时启用
-- 主事件只有 `type=5` 会附加 `wheelResults`，且只附加该车主轨迹生命周期内已锁定的左右轮结果；轮胎图片字段为 `photoUrl` 路径，不再使用 `imageBase64`
+- 主事件只有 `type=5` 会附加 `wheelResults`，且只附加该车主轨迹生命周期内已锁定的左右轮结果；轮胎图片字段为 `photoUrl` 绝对路径，不再使用 `imageBase64`
 - 同一侧短时间连续命中的车轮结果会按连续簇整串归属给同一辆车，避免同一波旁路结果拆给后车
 - 上传给接口的车轮图片为原图，不带调试标注
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
@@ -75,7 +75,7 @@ run_zone_detect.py
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - 单车视频帧源：`logic.per_id_video_source=auto`，`logic.no_draw=true` 时走原始解码帧
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
-- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=1.0`，最终 `type=5` 时一次性入上传队列
+- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.25`，最终 `type=5` 时一次性入上传队列
 - 检测 CSV：`video.csv=./video_result/test.csv`
 - 事件截图上报格式：`system.api.capture_mode=path`
 - 事件目录：`event_output_dir=events/config`

@@ -187,7 +187,7 @@ class EventManager:
         wheel_photo_uploader=None,
         wheel_photo_base_dir=None,
         session_id='',
-        wheel_photo_bucket_seconds=1.0,
+        wheel_photo_bucket_seconds=0.25,
         wheel_photo_min_score=0.3,
     ):
         self.config = config
@@ -2130,6 +2130,15 @@ class EventManager:
             payload['wheelResults'] = wheel_results
         return payload
 
+    def _absolute_wheel_photo_url(self, photo_url):
+        photo_url = str(photo_url or '').strip()
+        if not photo_url:
+            return ''
+        photo_path = Path(photo_url)
+        if photo_path.is_absolute():
+            return photo_path.as_posix()
+        return (self.wheel_photo_base_dir / photo_path).resolve().as_posix()
+
     def _find_existing_wheel_photo_url(self, track_state, side, entry):
         if not isinstance(track_state, dict) or not isinstance(entry, dict):
             return ''
@@ -2152,9 +2161,9 @@ class EventManager:
             if not photo_url:
                 continue
             if entry_id > 0 and int(rep.get('entryId', 0) or 0) == entry_id:
-                return photo_url
+                return self._absolute_wheel_photo_url(photo_url)
             if image_hash and str(rep.get('imageHash') or '') == image_hash:
-                return photo_url
+                return self._absolute_wheel_photo_url(photo_url)
         return ''
 
     def _ensure_locked_wheel_photo_url(self, side, entry, track_state=None, track_id=None):
@@ -2162,6 +2171,8 @@ class EventManager:
             return ''
         photo_url = str(entry.get('photoUrl') or '').strip()
         if photo_url:
+            photo_url = self._absolute_wheel_photo_url(photo_url)
+            entry['photoUrl'] = photo_url
             return photo_url
         photo_url = self._find_existing_wheel_photo_url(track_state, side, entry)
         if photo_url:
@@ -2294,7 +2305,7 @@ class EventManager:
         except Exception as exc:
             print(f'[wheel-photo] failed to save {abs_path}: {exc}')
             return None
-        return rel_path.as_posix()
+        return abs_path.resolve().as_posix()
 
     def _wheel_candidate_allowed_for_track(self, track_state, candidate, ref_ts):
         try:
@@ -2788,7 +2799,7 @@ class EventManager:
             seq = int(seq_map.get(side, 0)) + 1
             seq_map[side] = seq
         if duplicate_photo_url:
-            photo_url = duplicate_photo_url
+            photo_url = self._absolute_wheel_photo_url(duplicate_photo_url)
         else:
             photo_url = self._save_wheel_photo(
                 side=side, track_id=track_id, seq=seq,
@@ -2854,7 +2865,7 @@ class EventManager:
                 photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
         photos.sort(key=lambda item: item[0])
         for _, entry in photos:
-            photo_url = str(entry.get('photoUrl') or '').strip()
+            photo_url = self._absolute_wheel_photo_url(entry.get('photoUrl'))
             type_str = str(entry.get('type') or '').strip()
             clean_value = entry.get('cleanValue')
             if not photo_url or not type_str or clean_value is None:

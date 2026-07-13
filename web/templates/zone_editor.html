@@ -550,7 +550,7 @@
               bind_require_active: true,
               bind_wait_seconds: 2.0,
               bind_wait_poll_seconds: 0.08,
-              photo_bucket_seconds: 1,
+              photo_bucket_seconds: 0.25,
               photo_min_score: 0.3
             },
             logic: {
@@ -944,7 +944,7 @@
           }
           this.form.wheel.bind_wait_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_seconds, 2.0));
           this.form.wheel.bind_wait_poll_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_poll_seconds, 0.08));
-          this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 1);
+          this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 0.25);
           this.form.wheel.photo_min_score = Number(wheelValueOr(this.form.wheel.photo_min_score, 0.3));
           this.form.logic.debug_overlay = !!this.form.logic.debug_overlay;
           this.form.logic.debug_track_state = !!(this.form.logic.debug_track_state || this.form.logic.debug_overlay);

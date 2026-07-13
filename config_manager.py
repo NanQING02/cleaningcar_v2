@@ -222,7 +222,7 @@ class ConfigManager:
             bind_wait_poll = 0.08
         wheel['bind_wait_poll_seconds'] = max(0.02, bind_wait_poll)
         try:
-            photo_bucket = float(wheel.get('photo_bucket_seconds', 1.0))
+            photo_bucket = float(wheel.get('photo_bucket_seconds', 0.25))
         except (TypeError, ValueError):
             photo_bucket = 0.25
         wheel['photo_bucket_seconds'] = max(0.05, photo_bucket)

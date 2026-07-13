@@ -246,8 +246,8 @@ class WheelBindingTests(unittest.TestCase):
         )
         self.assertEqual(payload["wheelResults"][0]["side"], "left")
         self.assertEqual(payload["wheelResults"][0]["className"], "50-75")
-        self.assertTrue(payload["wheelResults"][0]["photoUrl"].startswith("box/"))
-        self.assertTrue((manager.wheel_photo_base_dir / payload["wheelResults"][0]["photoUrl"]).exists())
+        self.assertTrue(Path(payload["wheelResults"][0]["photoUrl"]).is_absolute())
+        self.assertTrue(Path(payload["wheelResults"][0]["photoUrl"]).exists())
 
     def test_type5_payload_does_not_fallback_to_provider_without_lifecycle_lock(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
@@ -321,8 +321,8 @@ class WheelBindingTests(unittest.TestCase):
         )
         self.assertEqual(event["wheelResults"][0]["side"], "left")
         self.assertEqual(event["wheelResults"][0]["className"], "50-75")
-        self.assertTrue(event["wheelResults"][0]["photoUrl"].startswith("box/"))
-        self.assertTrue((manager.wheel_photo_base_dir / event["wheelResults"][0]["photoUrl"]).exists())
+        self.assertTrue(Path(event["wheelResults"][0]["photoUrl"]).is_absolute())
+        self.assertTrue(Path(event["wheelResults"][0]["photoUrl"]).exists())
 
     def test_lifecycle_locked_wheel_results_survive_after_provider_no_longer_has_recent_items(self):
         provider = _StaticWheelProvider([

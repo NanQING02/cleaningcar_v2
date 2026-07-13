@@ -63,7 +63,7 @@
     "active_target_fps": 20.0,
     "core_mask": "",
     "imgsz": 640,
-    "photo_bucket_seconds": 1.0,
+    "photo_bucket_seconds": 0.25,
     "photo_min_score": 0.3,
     "bind_window_seconds": 30.0,
     "bind_pre_start_seconds": 3.0,
