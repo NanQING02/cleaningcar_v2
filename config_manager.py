@@ -313,6 +313,7 @@ class ConfigManager:
         logic.setdefault('wash_duration_offset_seconds', 0.0)
         logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
         logic.setdefault('enable_per_id_video', True)
+        logic.setdefault('per_id_type6_require_plate_candidate', False)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         logic.setdefault('per_id_video_queue_size', 8)
         per_id_video_source = str(logic.get('per_id_video_source', 'auto') or 'auto').strip().lower()

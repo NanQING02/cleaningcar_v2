@@ -1284,7 +1284,8 @@ def emit_per_id_video_type6(track_id, track_state, event_manager, per_id_video_e
     keep_video = bool(state.get('type2_qualified'))
     if not keep_video:
         return False
-    if not _per_id_has_valid_plate_candidate(state, event_manager):
+    require_plate_candidate = bool(getattr(event_manager, 'per_id_type6_require_plate_candidate', False))
+    if require_plate_candidate and not _per_id_has_valid_plate_candidate(state, event_manager):
         print(f'[per-id-video] suppress type6 without valid plate candidate: track={track_id}')
         return False
 

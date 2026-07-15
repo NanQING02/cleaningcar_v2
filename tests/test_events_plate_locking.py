@@ -388,6 +388,15 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(payload["lane"], "lane-a")
         self.assertFalse(payload["perIdVideoEnabled"])
 
+    def test_record_tail_frames_only_when_per_id_video_enabled(self):
+        manager = self._manager(plate_lock_frames=3)
+
+        manager.per_id_video_enabled = False
+        self.assertEqual(manager._record_tail_frames(), 0)
+
+        manager.per_id_video_enabled = True
+        self.assertEqual(manager._record_tail_frames(), 250)
+
     def test_color_lock_on_majority_high_confidence(self):
         manager = self._manager(plate_lock_frames=3)
 
@@ -663,6 +672,34 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         self.assertEqual(emitted, [])
         self.assertEqual(track_state["events"], {1, 2})
+
+    def test_flush_inactive_does_not_wait_tail_when_per_id_video_disabled(self):
+        manager = self._manager()
+        manager.per_id_video_enabled = False
+        finalized = []
+        track_state = {
+            "events": {1, 2, 5},
+            "last_frame_idx": 0,
+            "last_frame": None,
+            "record_start_frame": 0,
+            "record_stop_frame": None,
+            "type2_qualified": True,
+            "zone_a_dwell_frames": 20,
+            "vehicle_hit_frames": 20,
+            "last_vehicle_box": [0, 0, 20, 20],
+            "track_frame_count": 20,
+        }
+        manager.tracks[7] = track_state
+
+        manager.flush_inactive(
+            active_ids=set(),
+            frame_idx=manager.timeout_frames + 1,
+            on_track_timeout=lambda track_id, state: finalized.append(track_id),
+        )
+
+        self.assertEqual(finalized, [7])
+        self.assertEqual(track_state["record_stop_frame"], 0)
+        self.assertNotIn(7, manager.tracks)
 
 
 if __name__ == "__main__":

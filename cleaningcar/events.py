@@ -349,6 +349,10 @@ class EventManager:
         self.require_vehicle_type_for_events = bool(self.logic.get('require_vehicle_type_for_events', False))
         self.max_per_id_video_seconds = 600.0
         self.per_id_video_tail_seconds = 10.0
+        self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
+        self.per_id_type6_require_plate_candidate = bool(
+            self.logic.get('per_id_type6_require_plate_candidate', False)
+        )
         self.pending_events = {}
         self.upload_buffer = {}
         self.upload_qualified = set()
@@ -1526,6 +1530,8 @@ class EventManager:
         return max(0.0, seconds)
 
     def _record_tail_frames(self):
+        if not bool(getattr(self, 'per_id_video_enabled', False)):
+            return 0
         return int(max(self.fps, 1.0) * self.per_id_video_tail_seconds)
 
     def _track_avg_vehicle_conf(self, track_state):

@@ -733,6 +733,7 @@ def process_video(path, args):
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
+    event_manager.per_id_video_enabled = enable_per_id_video
     benchmark_force_recording_track_id = int(logic_cfg.get('benchmark_force_recording_track_id', 0) or 0)
     benchmark_force_capture_stride = max(0, int(logic_cfg.get('benchmark_force_capture_stride', 0) or 0))
     per_id_video_dir = None
@@ -880,13 +881,16 @@ def process_video(path, args):
 
         print(f'[per-id-video] no usable writer output path, disable per-id video for this run: track={track_id}')
         enable_per_id_video = False
+        event_manager.per_id_video_enabled = False
         return None
 
     if enable_per_id_video:
         per_id_video_dir = resolve_per_id_video_root()
         if per_id_video_dir is None:
             enable_per_id_video = False
+            event_manager.per_id_video_enabled = False
         else:
+            event_manager.per_id_video_enabled = True
             print(
                 f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
                 f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} '
