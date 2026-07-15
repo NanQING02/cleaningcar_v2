@@ -187,7 +187,7 @@ class EventManager:
         wheel_photo_uploader=None,
         wheel_photo_base_dir=None,
         session_id='',
-        wheel_photo_bucket_seconds=0.25,
+        wheel_photo_bucket_seconds=0.5,
         wheel_photo_min_score=0.3,
     ):
         self.config = config
@@ -1030,7 +1030,7 @@ class EventManager:
             prev_stop = track_state.get('record_stop_frame')
             if prev_stop is None or stop_frame > prev_stop:
                 track_state['record_stop_frame'] = stop_frame
-            self._enqueue_wheel_photos(track_state)
+            self._enqueue_wheel_photos(track_state, track_id=track_id, force=True)
         try:
             track_state[f'last_event_t{event_type}_capture_time'] = capture_time
         except Exception:
@@ -2364,7 +2364,8 @@ class EventManager:
             f"[wheel-bind] track={track_id} side={side} action={action}{reason_part} "
             f"entry={entry_id} capture={candidate.get('captureTime', '')} "
             f"age={age:.2f}s since_start={since_start:.2f}s "
-            f"class={candidate.get('className', '')} score={float(candidate.get('score', 0.0) or 0.0):.3f}"
+            f"class={candidate.get('className', '')} score={float(candidate.get('score', 0.0) or 0.0):.3f} "
+            f"center={self._wheel_candidate_center_distance(candidate):.1f}"
         )
         key_reason = reason or action
         for line in self.log_throttler.record(
@@ -2483,6 +2484,34 @@ class EventManager:
             f"{stats_part}"
         )
 
+    @staticmethod
+    def _wheel_candidate_center_distance(item, default=float('inf')):
+        if not isinstance(item, dict) or 'centerDistance' not in item:
+            return float(default)
+        try:
+            value = float(item.get('centerDistance'))
+        except (TypeError, ValueError):
+            return float(default)
+        if value != value or value < 0.0:
+            return float(default)
+        return value
+
+    @staticmethod
+    def _wheel_result_selection_key(item, ref_ts):
+        if not isinstance(item, dict):
+            return (float('inf'), 0.0, float('inf'), 0.0)
+        center_distance = EventManager._wheel_candidate_center_distance(item)
+        try:
+            score = float(item.get('score', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        try:
+            capture_ts = float(item.get('capture_ts', ref_ts) or ref_ts)
+        except (TypeError, ValueError):
+            capture_ts = float(ref_ts)
+        time_delta = abs(float(ref_ts) - capture_ts)
+        return (center_distance, -score, time_delta, -capture_ts)
+
     def _update_track_wheel_results(self, track_id, track_state, frame_ts=None):
         if not isinstance(track_state, dict):
             return
@@ -2536,7 +2565,7 @@ class EventManager:
                 'imageJpegBytes': image_bytes,
                 'className': class_name,
                 'score': float(item.get('score', 0.0) or 0.0),
-                'centerDistance': float(item.get('centerDistance', 0.0) or 0.0),
+                'centerDistance': self._wheel_candidate_center_distance(item),
                 'capture_ts': float(item.get('capture_ts', ref_ts) or ref_ts),
                 'entryId': int(item.get('entryId', 0) or 0),
             }
@@ -2563,14 +2592,8 @@ class EventManager:
                 )
                 photo_seed_candidates.append(candidate)
                 continue
-            current_key = (
-                -float(current.get('score', 0.0) or 0.0),
-                -float(current.get('capture_ts', 0.0) or 0.0),
-            )
-            candidate_key = (
-                -candidate['score'],
-                -candidate['capture_ts'],
-            )
+            current_key = self._wheel_result_selection_key(current, ref_ts)
+            candidate_key = self._wheel_result_selection_key(candidate, ref_ts)
             if candidate_key < current_key:
                 if callable(claimer) and not claimer(track_id, candidate.get('entryId')):
                     continue
@@ -2590,6 +2613,7 @@ class EventManager:
             ref_ts=ref_ts,
             fallback_candidates=photo_seed_candidates,
         )
+        self._enqueue_wheel_photos(track_state, now_ts=ref_ts, track_id=track_id, force=False)
 
     @staticmethod
     def _is_candidate_claimed_by_track(provider, track_id, entry_id):
@@ -2692,7 +2716,7 @@ class EventManager:
             'imageJpegBytes': image_bytes,
             'className': class_name,
             'score': float(item.get('score', 0.0) or 0.0),
-            'centerDistance': float(item.get('centerDistance', 0.0) or 0.0),
+            'centerDistance': self._wheel_candidate_center_distance(item),
             'capture_ts': float(item.get('capture_ts', ref_ts) or ref_ts),
             'entryId': int(item.get('entryId', 0) or 0),
         }
@@ -2759,7 +2783,7 @@ class EventManager:
         bucket['candidates'].append({
             'className': candidate.get('className', ''),
             'score': float(candidate.get('score', 0.0) or 0.0),
-            'centerDistance': float(candidate.get('centerDistance', 0.0) or 0.0),
+            'centerDistance': self._wheel_candidate_center_distance(candidate),
             'imageJpegBytes': image_bytes,
             'imageHash': image_hash,
             'capture_ts': float(candidate.get('capture_ts', 0.0) or 0.0),
@@ -2850,31 +2874,102 @@ class EventManager:
     def _select_bucket_representative(candidates):
         if not candidates:
             return None
-        return min(candidates, key=lambda c: float(c.get('centerDistance', 0.0) or 0.0))
+        return min(candidates, key=EventManager._wheel_candidate_center_distance)
 
-    def _enqueue_wheel_photos(self, track_state):
+    @staticmethod
+    def _wheel_photo_uploaded_urls(track_state):
+        uploaded = track_state.setdefault('wheel_photo_uploaded_urls', set())
+        if isinstance(uploaded, set):
+            return uploaded
+        if isinstance(uploaded, (list, tuple)):
+            uploaded = {str(item) for item in uploaded if str(item)}
+        else:
+            uploaded = set()
+        track_state['wheel_photo_uploaded_urls'] = uploaded
+        return uploaded
+
+    def _wheel_photo_bucket_ready(self, bucket_key, rep, now_ts):
+        try:
+            bucket_end = (int(bucket_key) + 1) * self.wheel_photo_bucket_seconds
+        except (TypeError, ValueError):
+            try:
+                bucket_end = float(rep.get('capture_ts', 0.0) or 0.0) + self.wheel_photo_bucket_seconds
+            except (TypeError, ValueError):
+                return False
+        return float(now_ts) >= bucket_end
+
+    def _collect_wheel_photo_entries(self, track_state, now_ts=None, force=True, track_id=None):
+        if not isinstance(track_state, dict):
+            return []
         if not self.wheel_photo_uploader:
-            return
-        history = track_state.get('wheel_photo_history') if isinstance(track_state, dict) else None
-        if not isinstance(history, dict):
-            return
+            return []
+        now_ref = time.time() if now_ts is None else float(now_ts)
+        history = track_state.get('wheel_photo_history')
         photos = []
-        for side in ('left', 'right'):
-            side_history = history.get(side)
-            if not isinstance(side_history, dict):
-                continue
-            for bucket in side_history.values():
-                if not isinstance(bucket, dict):
+        sides_with_history_photos = set()
+        if isinstance(history, dict):
+            for side in ('left', 'right'):
+                side_history = history.get(side)
+                if not isinstance(side_history, dict):
                     continue
-                rep = bucket.get('representative')
-                if not isinstance(rep, dict):
-                    continue
-                if rep.get('duplicatePhoto'):
-                    continue
-                photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
+                for bucket_key, bucket in side_history.items():
+                    if not isinstance(bucket, dict):
+                        continue
+                    rep = bucket.get('representative')
+                    if not isinstance(rep, dict):
+                        continue
+                    if rep.get('duplicatePhoto'):
+                        continue
+                    if not force and not self._wheel_photo_bucket_ready(bucket_key, rep, now_ref):
+                        continue
+                    sides_with_history_photos.add(side)
+                    photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
+        if force:
+            locked = track_state.get('wheel_results_locked')
+            if isinstance(locked, dict):
+                for side in ('left', 'right'):
+                    if side in sides_with_history_photos:
+                        continue
+                    entry = locked.get(side)
+                    if not isinstance(entry, dict):
+                        continue
+                    photo_url = self._ensure_locked_wheel_photo_url(
+                        side=side,
+                        entry=entry,
+                        track_state=track_state,
+                        track_id=track_id,
+                    )
+                    class_name = str(entry.get('className') or '').strip()
+                    clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(class_name, 0)
+                    if not photo_url or not clean_value:
+                        continue
+                    photos.append((
+                        float(entry.get('capture_ts', 0.0) or 0.0),
+                        {
+                            'photoUrl': photo_url,
+                            'type': WHEEL_SIDE_TO_PHOTO_TYPE.get(side, ''),
+                            'cleanValue': clean_value,
+                            'capture_ts': float(entry.get('capture_ts', 0.0) or 0.0),
+                            '_sourceEntry': entry,
+                        },
+                    ))
         photos.sort(key=lambda item: item[0])
+        return photos
+
+    def _enqueue_wheel_photos(self, track_state, now_ts=None, force=True, track_id=None):
+        if not self.wheel_photo_uploader or not isinstance(track_state, dict):
+            return
+        uploaded_urls = self._wheel_photo_uploaded_urls(track_state)
+        photos = self._collect_wheel_photo_entries(
+            track_state,
+            now_ts=now_ts,
+            force=force,
+            track_id=track_id,
+        )
         for _, entry in photos:
             photo_url = self._absolute_wheel_photo_url(entry.get('photoUrl'))
+            if not photo_url or photo_url in uploaded_urls:
+                continue
             type_str = str(entry.get('type') or '').strip()
             clean_value = entry.get('cleanValue')
             if not photo_url or not type_str or clean_value is None:
@@ -2889,6 +2984,13 @@ class EventManager:
                     'type': type_str,
                     'cleanValue': clean_value_int,
                 })
+                uploaded_urls.add(photo_url)
+                entry['wheelPhotoUploaded'] = True
+                entry['wheelPhotoUploadedAt'] = time.time()
+                source_entry = entry.get('_sourceEntry')
+                if isinstance(source_entry, dict):
+                    source_entry['wheelPhotoUploaded'] = True
+                    source_entry['wheelPhotoUploadedAt'] = entry['wheelPhotoUploadedAt']
             except Exception as exc:
                 print(f'[wheel-photo] failed to enqueue ({photo_url}): {exc}')
 

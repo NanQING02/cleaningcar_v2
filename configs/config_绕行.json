@@ -63,7 +63,7 @@
     "active_target_fps": 20.0,
     "core_mask": "",
     "imgsz": 640,
-    "photo_bucket_seconds": 0.25,
+    "photo_bucket_seconds": 0.5,
     "photo_min_score": 0.3,
     "bind_window_seconds": 30.0,
     "bind_pre_start_seconds": 3.0,
@@ -216,7 +216,7 @@
     "copy_track_last_frame": false,
     "copy_raw_frame_cache": false,
     "plate_core_mask": "1",
-    "plate_infer_stride": 2,
+    "plate_infer_stride": 1,
     "enable_event_disk": false,
     "vehicle_tracker_impl": "bytetrack"
   },

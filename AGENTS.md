@@ -120,7 +120,7 @@ run_zone_detect.py
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - `logic.no_draw=true`
 - `logic.draw_plate_boxes=false`
-- `logic.plate_infer_stride=1`
+- `logic.plate_infer_stride=2`
 - `logic.enable_per_id_video=true`
 - `logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - `wheel.enabled=true`

@@ -70,12 +70,12 @@ run_zone_detect.py
 - 画面叠加：`logic.no_draw=true`
 - 车牌框绘制：`logic.draw_plate_boxes=false`
 - 调试帧：`video.debug_frame_path=off`
-- 车牌副链路降频：`logic.plate_infer_stride=1`
+- 车牌副链路降频：`logic.plate_infer_stride=2`
 - 单车视频：`logic.enable_per_id_video=true`
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - 单车视频帧源：`logic.per_id_video_source=auto`，`logic.no_draw=true` 时走原始解码帧
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
-- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.25`，最终 `type=5` 时一次性入上传队列
+- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.5`，稳定桶实时入上传队列，最终 `type=5` 前强制 flush 未上传照片
 - 检测 CSV：`video.csv=./video_result/test.csv`
 - 事件截图上报格式：`system.api.capture_mode=path`
 - 事件目录：`event_output_dir=events/config`

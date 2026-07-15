@@ -9,7 +9,12 @@ import numpy as np
 
 from cleaningcar.events import EventManager
 from cleaningcar.runtime_config import load_config
-from cleaningcar.wheel import WheelResultCache, resolve_wheel_class_name, resolve_wheel_settings
+from cleaningcar.wheel import (
+    WheelResultCache,
+    resolve_wheel_class_name,
+    resolve_wheel_settings,
+    select_best_detection,
+)
 
 
 class _DummyZoneManager:
@@ -181,7 +186,22 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(results[0]["className"], "75-100")
         self.assertTrue(results[0]["imageBase64"])
 
-    def test_window_prefers_highest_score(self):
+    def test_single_frame_prefers_detection_nearest_frame_center(self):
+        best = select_best_detection(
+            boxes=np.array([
+                [0.0, 0.0, 20.0, 20.0],
+                [35.0, 35.0, 65.0, 65.0],
+            ], dtype=np.float32),
+            classes=np.array([0, 3], dtype=np.int64),
+            scores=np.array([0.99, 0.60], dtype=np.float32),
+            frame_shape=(100, 100, 3),
+            class_names=["0-25", "25-50", "50-75", "75-100"],
+        )
+
+        self.assertEqual(best["className"], "75-100")
+        self.assertEqual(best["centerDistance"], 0.0)
+
+    def test_window_prefers_nearest_frame_center_before_score(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
         frame = np.full((100, 100, 3), 150, dtype=np.uint8)
         class_names = ["0-25", "25-50", "50-75", "75-100"]
@@ -216,7 +236,7 @@ class WheelBindingTests(unittest.TestCase):
 
         results = cache.get_recent_results(now_ts=1002.0, reference_ts=1002.0)
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["className"], "0-25")
+        self.assertEqual(results[0]["className"], "50-75")
 
     def test_type5_payload_only_attaches_simplified_wheel_fields(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
@@ -348,7 +368,7 @@ class WheelBindingTests(unittest.TestCase):
         self.assertIn("wheelResults", payload)
         self.assertEqual(payload["wheelResults"][0]["className"], "25-50")
 
-    def test_lifecycle_locked_wheel_results_upgrade_to_better_candidate(self):
+    def test_lifecycle_locked_wheel_results_upgrade_to_more_centered_candidate(self):
         provider = _StaticWheelProvider([
             {
                 "entryId": 1,
@@ -357,6 +377,7 @@ class WheelBindingTests(unittest.TestCase):
                 "imageJpegBytes": b"first",
                 "className": "0-25",
                 "score": 0.95,
+                "centerDistance": 80.0,
                 "capture_ts": 1000.0,
             }
         ])
@@ -372,14 +393,50 @@ class WheelBindingTests(unittest.TestCase):
                 "imageJpegBytes": b"second",
                 "className": "50-75",
                 "score": 0.62,
+                "centerDistance": 5.0,
                 "capture_ts": 1005.0,
             }
         ]
         manager._update_track_wheel_results(1, track_state, frame_ts=1005.0)
 
         locked = track_state.get("wheel_results_locked", {}).get("left", {})
-        self.assertEqual(locked.get("className"), "0-25")
-        self.assertEqual(locked.get("imageJpegBytes"), b"first")
+        self.assertEqual(locked.get("className"), "50-75")
+        self.assertEqual(locked.get("imageJpegBytes"), b"second")
+
+    def test_lifecycle_locked_wheel_results_keep_centered_candidate_over_newer(self):
+        provider = _StaticWheelProvider([
+            {
+                "entryId": 1,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"centered",
+                "className": "25-50",
+                "score": 0.70,
+                "centerDistance": 2.0,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state = self._track_state()
+
+        manager._update_track_wheel_results(1, track_state, frame_ts=1000.0)
+        provider.items = [
+            {
+                "entryId": 2,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:45",
+                "imageJpegBytes": b"newer-off-center",
+                "className": "75-100",
+                "score": 0.99,
+                "centerDistance": 80.0,
+                "capture_ts": 1005.0,
+            }
+        ]
+        manager._update_track_wheel_results(1, track_state, frame_ts=1005.0)
+
+        locked = track_state.get("wheel_results_locked", {}).get("left", {})
+        self.assertEqual(locked.get("entryId"), 1)
+        self.assertEqual(locked.get("imageJpegBytes"), b"centered")
 
     def test_type5_payload_omits_wheel_results_when_provider_absent(self):
         manager = self._manager(wheel_provider=None)

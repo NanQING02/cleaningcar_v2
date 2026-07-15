@@ -622,7 +622,7 @@ def process_video(path, args):
                                  wheel_photo_uploader=wheel_photo_uploader,
                                  wheel_photo_base_dir=wheel_photo_base_dir,
                                  session_id=session_id,
-                                 wheel_photo_bucket_seconds=float(wheel_cfg.get('photo_bucket_seconds', 0.25)),
+                                 wheel_photo_bucket_seconds=float(wheel_cfg.get('photo_bucket_seconds', 0.5)),
                                  wheel_photo_min_score=float(wheel_cfg.get('photo_min_score', 0.3)))
     wheel_service = None
     candidate_wheel_service = None

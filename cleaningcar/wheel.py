@@ -171,13 +171,17 @@ def select_best_detection(
         x1, y1, x2, y2 = [float(v) for v in box[:4]]
         score_f = float(score)
         cls_id_int = int(cls_id)
-        candidate_key = (cls_id_int, -score_f)
+        center_x = (x1 + x2) * 0.5
+        center_y = (y1 + y2) * 0.5
+        has_frame_center = frame_w > 0 and frame_h > 0
+        distance = (center_x - frame_cx) ** 2 + (center_y - frame_cy) ** 2 if has_frame_center else 0.0
+        if has_frame_center:
+            candidate_key = (distance, -score_f, cls_id_int)
+        else:
+            candidate_key = (-score_f, cls_id_int)
         if best_key is not None and candidate_key >= best_key:
             continue
         best_key = candidate_key
-        center_x = (x1 + x2) * 0.5
-        center_y = (y1 + y2) * 0.5
-        distance = (center_x - frame_cx) ** 2 + (center_y - frame_cy) ** 2
         best_item = {
             "box": [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))],
             "classId": cls_id_int,
@@ -304,6 +308,7 @@ class WheelResultCache:
                     capture_ts = float(entry.get("capture_ts", 0.0) or 0.0)
                     time_delta = abs(match_ref_ts - capture_ts)
                     candidate_key = (
+                        float(entry.get("centerDistance", 0.0) or 0.0),
                         -float(entry.get("score", 0.0) or 0.0),
                         time_delta,
                         -capture_ts,

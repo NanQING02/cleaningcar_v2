@@ -8,11 +8,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 class SiteConfigRuntimeTests(unittest.TestCase):
     def test_main_and_bypass_plate_stride_match_runtime_configs(self):
-        for relative in ("configs/config.json", "configs/config_绕行.json"):
+        expected_plate_stride = {
+            "configs/config.json": 2,
+            "configs/config_绕行.json": 1,
+        }
+        for relative, plate_stride in expected_plate_stride.items():
             with self.subTest(config=relative):
                 data = json.loads((PROJECT_ROOT / relative).read_text(encoding="utf-8"))
                 self.assertEqual(data["video"]["decode_backend"], "auto")
-                self.assertEqual(data["logic"]["plate_infer_stride"], 1)
+                self.assertEqual(data["logic"]["plate_infer_stride"], plate_stride)
                 self.assertNotIn("run_mode", data["wheel"])
                 self.assertNotIn("service_url", data["wheel"])
                 self.assertNotIn("service_timeout_seconds", data["wheel"])
