@@ -368,6 +368,26 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertTrue(payload["isAbnormal"])
         self.assertIn("PLATE_NOT_LOCKED", str(payload.get("abnormalReason", "")))
 
+    def test_build_api_payload_type6_includes_per_id_video_enabled(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=3, uploader=uploader)
+
+        payload = manager._build_api_payload(
+            {
+                "id": "session-1",
+                "trackId": 1,
+                "type": 6,
+                "perIdVideoEnabled": False,
+            },
+            {},
+            frame_idx=2,
+        )
+
+        self.assertEqual(payload["id"], "session-1")
+        self.assertEqual(payload["type"], 6)
+        self.assertEqual(payload["lane"], "lane-a")
+        self.assertFalse(payload["perIdVideoEnabled"])
+
     def test_color_lock_on_majority_high_confidence(self):
         manager = self._manager(plate_lock_frames=3)
 

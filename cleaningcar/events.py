@@ -1092,6 +1092,8 @@ class EventManager:
             event['videoDuration'] = video_duration
             event['cleanliness'] = self.default_cleanliness
             self._attach_wheel_results(event, track_state=track_state, track_id=track_id)
+        if event_type == 6:
+            event['perIdVideoEnabled'] = bool(payload.get('perIdVideoEnabled', False))
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
         capture_ts_val = None
@@ -2013,6 +2015,7 @@ class EventManager:
                 'id': event['id'],
                 'type': evt_type,
                 'lane': self.lane_name,
+                'perIdVideoEnabled': bool(event.get('perIdVideoEnabled', False)),
             }
         plate_conf = round(self._avg(track_state.get('plate_conf_history')), 3)
         vehicle_conf = round(self._avg(track_state.get('vehicle_conf_history')), 3)

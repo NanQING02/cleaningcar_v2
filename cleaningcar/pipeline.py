@@ -49,6 +49,7 @@ from .video_io import (
     create_h264_video_writer,
     create_video_reader,
     detect_source_mode,
+    emit_per_id_video_type6,
     finalize_per_id_recording,
     parse_core_mask,
     resolve_auto_plate_core_mask,
@@ -1432,11 +1433,26 @@ def process_video(path, args):
     def close_per_id_writer(track_id, track_state):
         writer = per_id_writers.pop(track_id, None)
         if writer is None:
-            return
-        finalize_per_id_recording(writer, track_id, track_state, event_manager)
+            return False
+        return finalize_per_id_recording(
+            writer,
+            track_id,
+            track_state,
+            event_manager,
+            per_id_video_enabled=True,
+        )
 
     def finalize_per_id_for_track(track_id, track_state):
-        close_per_id_writer(track_id, track_state)
+        emitted = close_per_id_writer(track_id, track_state)
+        if emitted:
+            return
+        if not enable_per_id_video:
+            emit_per_id_video_type6(
+                track_id,
+                track_state,
+                event_manager,
+                per_id_video_enabled=False,
+            )
 
     cleanup_done = False
 
@@ -1450,6 +1466,14 @@ def process_video(path, args):
             for tid in list(per_id_writers.keys()):
                 track_state = event_manager.tracks.get(tid) or {}
                 close_per_id_writer(tid, track_state)
+        elif not enable_per_id_video:
+            for tid, track_state in list(event_manager.tracks.items()):
+                emit_per_id_video_type6(
+                    tid,
+                    track_state,
+                    event_manager,
+                    per_id_video_enabled=False,
+                )
 
         if csv_f:
             try:

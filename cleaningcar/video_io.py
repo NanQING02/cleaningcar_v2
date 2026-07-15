@@ -1277,7 +1277,37 @@ def _per_id_has_valid_plate_candidate(track_state, event_manager):
     )
 
 
-def finalize_per_id_recording(writer, track_id, track_state, event_manager):
+def emit_per_id_video_type6(track_id, track_state, event_manager, per_id_video_enabled):
+    state = track_state or {}
+    if state.get('per_id_type6_emitted'):
+        return False
+    keep_video = bool(state.get('type2_qualified'))
+    if not keep_video:
+        return False
+    if not _per_id_has_valid_plate_candidate(state, event_manager):
+        print(f'[per-id-video] suppress type6 without valid plate candidate: track={track_id}')
+        return False
+
+    frame_idx = state.get('record_stop_frame')
+    if frame_idx is None:
+        frame_idx = state.get('last_frame_idx', 0)
+    frame = state.get('last_frame')
+    try:
+        event_manager.emit_event(
+            track_id,
+            6,
+            frame_idx,
+            frame,
+            {'perIdVideoEnabled': bool(per_id_video_enabled)},
+            state,
+        )
+    except Exception:
+        return False
+    state['per_id_type6_emitted'] = True
+    return True
+
+
+def finalize_per_id_recording(writer, track_id, track_state, event_manager, per_id_video_enabled=True):
     if writer is None:
         return False
     finalized = False
@@ -1301,19 +1331,7 @@ def finalize_per_id_recording(writer, track_id, track_state, event_manager):
 
     if output_path and not output_path.exists():
         return False
-    if not _per_id_has_valid_plate_candidate(state, event_manager):
-        print(f'[per-id-video] suppress type6 without valid plate candidate: track={track_id}')
-        return False
-
-    frame_idx = state.get('record_stop_frame')
-    if frame_idx is None:
-        frame_idx = state.get('last_frame_idx', 0)
-    frame = state.get('last_frame')
-    try:
-        event_manager.emit_event(track_id, 6, frame_idx, frame, {}, state)
-    except Exception:
-        return False
-    return True
+    return emit_per_id_video_type6(track_id, state, event_manager, per_id_video_enabled)
 
 
 def detect_source_mode(path, override='auto', base_dir=None):
