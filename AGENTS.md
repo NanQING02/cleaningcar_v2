@@ -74,7 +74,7 @@ run_zone_detect.py
 ## 关键模块
 
 - `cleaningcar/pipeline.py`：主调度层，串联视频 I/O、worker、跟踪、事件、车轮旁路、单车视频和运行信号。
-- `cleaningcar/video_io.py`：视频读写与回退链路。读流按 `GStreamer+mpp direct-BGR -> FFmpeg rkmpp`，两级硬解都不可用时按读流失败处理；单车视频写出按 `GStreamer 硬编 -> FFmpeg 硬编`，硬编不可用时不保存视频。
+- `cleaningcar/video_io.py`：视频读写与回退链路。读流按 `GStreamer+mpp direct-BGR -> FFmpeg rkmpp`，两级硬解都不可用时按读流失败处理；单车视频仅使用 `FFmpeg` 硬编，硬编不可用时不保存视频。
 - `cleaningcar/worker.py`：RKNN worker 线程，负责检测推理、后处理、车牌识别和基础绘制。
 - `cleaningcar/tracking.py`：车辆跟踪，默认 `vehicle_tracker_impl=bytetrack`，内部使用 Kalman 预测和匹配。
 - `cleaningcar/events.py`：事件状态机、事件 JSON、截图、上报 payload；`type=5` 事件会附加已锁定的 `wheelResults`。

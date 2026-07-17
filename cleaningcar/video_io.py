@@ -12,7 +12,6 @@ import cv2
 import numpy as np
 
 FFMPEG_HW_ENCODERS = ('h264_rkmpp', 'h264_v4l2m2m', 'h264_omx')
-GSTREAMER_HW_ENCODERS = ('mpph264enc', 'v4l2h264enc', 'omxh264enc')
 FFMPEG_HW_DECODER_CANDIDATES = (
     'h264_rkmpp',
     'hevc_rkmpp',
@@ -592,118 +591,6 @@ class FfmpegH264Writer:
         return finalized
 
 
-class GstreamerH264Writer:
-    def __init__(self, path, width, height, fps, encoders=None):
-        self.path = str(path)
-        p = Path(self.path)
-        if p.suffix:
-            temp_name = p.stem + '_temp' + p.suffix
-        else:
-            temp_name = p.name + '_temp'
-        self._output_path = str(p.with_name(temp_name))
-        self.width = int(width)
-        self.height = int(height)
-        self.fps = float(fps)
-        self.encoder = None
-        self.backend = 'gstreamer'
-        self._encoders = tuple(encoders or GSTREAMER_HW_ENCODERS)
-        self._writer = None
-        self._opened = False
-        self._frames_total = 0
-        self._frames_since_log = 0
-        self._start_time = time.time()
-        self._last_log_time = self._start_time
-        self._log_interval = 10.0
-        self._start()
-
-    def _build_pipeline(self, encoder):
-        out_path = self._output_path.replace('\\', '/').replace('"', '\\"')
-        return (
-            'appsrc '
-            f'caps=video/x-raw,format=BGR,width={self.width},height={self.height},framerate={max(int(round(self.fps)), 1)}/1 '
-            '! videoconvert '
-            f'! {encoder} '
-            '! h264parse ! qtmux faststart=true '
-            f'! filesink location="{out_path}" sync=false'
-        )
-
-    def _try_start(self, encoder):
-        self._writer = None
-        self.encoder = None
-        self._opened = False
-        pipeline = self._build_pipeline(encoder)
-        try:
-            writer = cv2.VideoWriter(
-                pipeline,
-                cv2.CAP_GSTREAMER,
-                0,
-                self.fps,
-                (self.width, self.height),
-                True,
-            )
-            if not writer.isOpened():
-                writer.release()
-                print(f'[per-id-video] gstreamer encoder {encoder} not available for {self.path}, falling back')
-                return False
-            self._writer = writer
-            self.encoder = encoder
-            self._opened = True
-            print(f'[per-id-video] using gstreamer encoder={encoder} path={self.path}')
-            return True
-        except Exception as exc:
-            self._writer = None
-            self.encoder = None
-            self._opened = False
-            print(f'[per-id-video] failed to start gstreamer encoder {encoder} for {self.path}: {exc}')
-            return False
-
-    def _start(self):
-        for enc in self._encoders:
-            if self._try_start(enc):
-                return
-        print(f'[per-id-video] no available GStreamer H.264 encoder for {self.path}')
-
-    def is_opened(self):
-        return bool(self._opened and self._writer is not None and self._writer.isOpened())
-
-    def write(self, frame):
-        if not self.is_opened() or frame is None:
-            return
-        try:
-            self._writer.write(frame)
-            self._frames_total += 1
-            self._frames_since_log += 1
-            now = time.time()
-            if self._log_interval > 0 and now - self._last_log_time >= self._log_interval:
-                elapsed = now - self._last_log_time
-                fps = self._frames_since_log / max(elapsed, 1e-6)
-                print(f'[per-id-video] encoder={self.encoder} fps={fps:.2f} window={elapsed:.1f}s total_frames={self._frames_total} path={self.path}')
-                self._frames_since_log = 0
-                self._last_log_time = now
-        except Exception as exc:
-            print(f'[per-id-video] write failed for {self.path}: {exc}')
-            self.release()
-
-    def release(self):
-        finalized = False
-        if self._writer is not None:
-            try:
-                self._writer.release()
-            except Exception:
-                pass
-            self._writer = None
-        self._opened = False
-        if getattr(self, '_output_path', None) and self.path:
-            try:
-                if os.path.exists(self._output_path):
-                    os.replace(self._output_path, self.path)
-                    print(f'[per-id-video] finalized video: {self.path}')
-                    finalized = True
-            except Exception as exc:
-                print(f'[per-id-video] rename failed {self._output_path} -> {self.path}: {exc}')
-        return finalized
-
-
 class AsyncPerIdVideoWriter:
     """Bounded async wrapper so video encoding never blocks the main result path."""
 
@@ -839,26 +726,15 @@ def create_h264_video_writer(path, width, height, fps):
         'attempt_order': attempt_order,
     }
 
-    attempt_order.append('gstreamer_hw')
-    writer = GstreamerH264Writer(path, width, height, fps, encoders=GSTREAMER_HW_ENCODERS)
-    if writer.is_opened():
-        meta['writer_mode'] = 'hw'
-        meta['writer_backend'] = 'gstreamer'
-        return writer, meta
-    _safe_release_writer(writer)
-
     attempt_order.append('ffmpeg_hw')
     writer = FfmpegH264Writer(path, width, height, fps, encoders=FFMPEG_HW_ENCODERS)
     if writer.is_opened():
         meta['writer_mode'] = 'hw'
         meta['writer_backend'] = 'ffmpeg'
-        meta['fallback_used'] = True
-        meta['fallback_reason'] = 'gstreamer_hw_open_failed'
         return writer, meta
     _safe_release_writer(writer)
 
-    meta['fallback_used'] = True
-    meta['fallback_reason'] = 'hardware_writer_open_failed'
+    meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
     return None, meta
 
 def parse_core_mask(text: str):
