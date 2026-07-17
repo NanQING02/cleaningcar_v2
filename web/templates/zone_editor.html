@@ -410,19 +410,16 @@
             <input type="number" min="10" v-model.number="form.logic.shadow_plate_pool.max_candidates" />
           </label>
           <label>
-            <input type="checkbox" v-model="form.logic.no_draw" />
+            <input type="checkbox" v-model="form.logic.no_draw" @change="onNoDrawChange" />
             禁用所有绘制（仅原始画面，用于性能优化）
           </label>
           <label>
             <input type="checkbox" v-model="form.logic.draw_plate_boxes" />
             绘制车牌框与识别文字（关闭时事件截图保持原图优先）
           </label>
-          <label>单车录像帧来源
-            <select v-model="form.logic.per_id_video_source">
-              <option value="auto">auto（关闭绘制时原始帧）</option>
-              <option value="raw">raw（原始解码帧）</option>
-              <option value="annotated">annotated（绘制帧）</option>
-            </select>
+          <label>
+            <input type="checkbox" v-model="perIdAnnotatedVideo" />
+            单车录像保存绘制后的调试画面
           </label>
           <label>
             <input type="checkbox" v-model="form.logic.debug_overlay" />
@@ -672,6 +669,18 @@
         activeInferenceKey() {
           return this.activeConfig || this.selectedConfig || 'config.json';
         },
+        perIdAnnotatedVideo: {
+          get() {
+            const source = String(this.form.logic.per_id_video_source || '').trim().toLowerCase();
+            return !this.form.logic.no_draw && ['annotated', 'draw', 'debug'].includes(source);
+          },
+          set(enabled) {
+            this.form.logic.per_id_video_source = enabled ? 'annotated' : 'raw';
+            if (enabled) {
+              this.form.logic.no_draw = false;
+            }
+          }
+        },
         canvasStyle() {
           const bg = this.backgroundUrl ? `url(${this.backgroundUrl})` : 'none';
           return {
@@ -705,6 +714,11 @@
         if (this.inferenceLogTimer) clearInterval(this.inferenceLogTimer);
       },
       methods: {
+        onNoDrawChange() {
+          if (this.form.logic.no_draw) {
+            this.form.logic.per_id_video_source = 'raw';
+          }
+        },
         normalizeConfigName(name) {
           const text = String(name || '').trim();
           if (!text) return '';
@@ -956,7 +970,14 @@
           if (typeof this.form.logic.enable_per_id_video === 'undefined') {
             this.form.logic.enable_per_id_video = false;
           }
-          this.form.logic.per_id_video_source = this.form.logic.per_id_video_source || 'auto';
+          const perIdVideoSource = String(this.form.logic.per_id_video_source || 'auto').trim().toLowerCase();
+          if (['annotated', 'draw', 'debug'].includes(perIdVideoSource)) {
+            this.form.logic.per_id_video_source = 'annotated';
+          } else if (['raw', 'source', 'original', 'origin'].includes(perIdVideoSource)) {
+            this.form.logic.per_id_video_source = 'raw';
+          } else {
+            this.form.logic.per_id_video_source = 'auto';
+          }
           this.form.logic.debug_water_boxes = !!(this.form.logic.debug_water_boxes || this.form.logic.debug_overlay);
           if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
             this.form.logic.anchor_offset_ratio = 0;

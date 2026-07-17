@@ -98,6 +98,34 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertNotIn("save_video", text)
         self.assertNotIn("enable_global_video", text)
 
+    def test_zone_editor_exposes_simple_annotated_per_id_video_toggle(self):
+        template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
+        text = template_path.read_text(encoding="utf-8")
+
+        self.assertIn('v-model="perIdAnnotatedVideo"', text)
+        self.assertIn("单车录像保存绘制后的调试画面", text)
+        self.assertIn("this.form.logic.per_id_video_source = enabled ? 'annotated' : 'raw'", text)
+        self.assertIn("this.form.logic.no_draw = false", text)
+
+    def test_developer_config_can_enable_annotated_per_id_video(self):
+        active = self.write_config("config.json", "camera-a")
+        state.set_config_path(active)
+
+        result = server.update_developer_config(
+            server.ConfigPayload(
+                logic={
+                    "no_draw": False,
+                    "per_id_video_source": "annotated",
+                }
+            )
+        )
+        saved = json.loads(active.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tier"], "developer")
+        self.assertFalse(saved["logic"]["no_draw"])
+        self.assertEqual(saved["logic"]["per_id_video_source"], "annotated")
+
 
 if __name__ == "__main__":
     unittest.main()
