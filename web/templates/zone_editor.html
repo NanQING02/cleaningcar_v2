@@ -410,32 +410,8 @@
             <input type="number" min="10" v-model.number="form.logic.shadow_plate_pool.max_candidates" />
           </label>
           <label>
-            <input type="checkbox" v-model="form.logic.no_draw" @change="onNoDrawChange" />
-            禁用所有绘制（仅原始画面，用于性能优化）
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.draw_plate_boxes" />
-            绘制车牌框与识别文字（关闭时事件截图保持原图优先）
-          </label>
-          <label>
-            <input type="checkbox" v-model="perIdAnnotatedVideo" />
-            单车录像保存绘制后的调试画面
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.debug_overlay" />
-            开启调试覆盖（Zone/水雾/锚点）
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.debug_track_state" />
-            绘制跟踪状态文本
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.debug_anchor_points" />
-            显示底部锚点
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.debug_water_boxes" />
-            显示水雾/人工清洗检测框
+            <input type="checkbox" v-model="perIdDebugVideo" />
+            单车录像使用完整调试画面
           </label>
           <div>
             <button @click="saveDeveloperConfig" :disabled="busy">保存开发者参数</button>
@@ -669,16 +645,13 @@
         activeInferenceKey() {
           return this.activeConfig || this.selectedConfig || 'config.json';
         },
-        perIdAnnotatedVideo: {
+        perIdDebugVideo: {
           get() {
             const source = String(this.form.logic.per_id_video_source || '').trim().toLowerCase();
             return !this.form.logic.no_draw && ['annotated', 'draw', 'debug'].includes(source);
           },
           set(enabled) {
-            this.form.logic.per_id_video_source = enabled ? 'annotated' : 'raw';
-            if (enabled) {
-              this.form.logic.no_draw = false;
-            }
+            this.applyPerIdVideoDisplayMode(enabled);
           }
         },
         canvasStyle() {
@@ -714,10 +687,16 @@
         if (this.inferenceLogTimer) clearInterval(this.inferenceLogTimer);
       },
       methods: {
-        onNoDrawChange() {
-          if (this.form.logic.no_draw) {
-            this.form.logic.per_id_video_source = 'raw';
-          }
+        applyPerIdVideoDisplayMode(enabled) {
+          const debugEnabled = !!enabled;
+          this.form.logic.per_id_video_source = debugEnabled ? 'annotated' : 'raw';
+          this.form.logic.no_draw = !debugEnabled;
+          this.form.logic.draw_plate_boxes = debugEnabled;
+          this.form.logic.plate_draw_stable_only = !debugEnabled;
+          this.form.logic.debug_overlay = debugEnabled;
+          this.form.logic.debug_track_state = debugEnabled;
+          this.form.logic.debug_anchor_points = debugEnabled;
+          this.form.logic.debug_water_boxes = debugEnabled;
         },
         normalizeConfigName(name) {
           const text = String(name || '').trim();
@@ -979,6 +958,9 @@
             this.form.logic.per_id_video_source = 'auto';
           }
           this.form.logic.debug_water_boxes = !!(this.form.logic.debug_water_boxes || this.form.logic.debug_overlay);
+          this.applyPerIdVideoDisplayMode(
+            this.form.logic.per_id_video_source === 'annotated' && !this.form.logic.no_draw
+          );
           if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
             this.form.logic.anchor_offset_ratio = 0;
           }
@@ -1156,7 +1138,9 @@
               require_vehicle_type_for_events: this.form.logic.require_vehicle_type_for_events,
               anchor_offset_ratio: this.form.logic.anchor_offset_ratio,
               zone_b_anchor_min_frames: this.form.logic.zone_b_anchor_min_frames,
-              shadow_plate_pool: this.form.logic.shadow_plate_pool,
+              shadow_plate_pool: {
+                max_candidates: this.form.logic.shadow_plate_pool.max_candidates
+              },
               event_track_quality: this.form.logic.event_track_quality,
               debug_overlay: this.form.logic.debug_overlay,
               debug_track_state: this.form.logic.debug_track_state,

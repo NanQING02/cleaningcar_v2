@@ -63,6 +63,7 @@ FP 检测模型后处理模式：
 - 当前只保留单车视频留存开关 `logic.enable_per_id_video`
 - 单车视频仅使用 `FFmpeg` 硬编写出；FFmpeg 硬编不可用时不保存该段单车视频
 - `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 默认写主路原始解码帧；`logic.no_draw=false` 时写绘制后的帧
+- Web 开发者参数只保留一个录像画面开关：关闭时写 `raw` 原始帧并禁用绘制；开启时写 `annotated`，同时启用 Zone、轨迹、锚点、水雾和双模型车牌结果绘制
 - `logic.per_id_type6_require_plate_candidate=false` 时，Type6 不再因缺少有效车牌候选被拦截；需要恢复旧门槛时可改为 `true`
 - Web 端不再浏览这些单车录像，但后台仍会继续保存
 - 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效

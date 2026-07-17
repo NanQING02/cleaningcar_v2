@@ -44,17 +44,25 @@ def _split_plate_tail(text):
     return text, ''
 
 
+def _has_numeric_serial(text):
+    body_with_prefix, _tail = _split_plate_tail(text)
+    return any(ch in '0123456789' for ch in body_with_prefix[2:])
+
+
 def _is_valid_plate_normalized(text):
     if not text:
         return False
-    if PLATE_REGEX.match(text):
-        return True
-    if PLATE_REGEX_NE.match(text):
-        return True
     if len(text) < 7 or len(text) > 9:
         return False
     if text[0] not in PROVINCE_CHARS or text[1] not in PLATE_LETTERS:
         return False
+    if not _has_numeric_serial(text):
+        return False
+
+    if PLATE_REGEX.match(text):
+        return True
+    if PLATE_REGEX_NE.match(text):
+        return True
 
     body_with_prefix, tail = _split_plate_tail(text)
     if not tail:
@@ -70,6 +78,8 @@ def _is_valid_plate_normalized(text):
 
 def normalize_plate_candidate_text(text):
     text = _normalize_plate_ocr_text(text)
+    if len(text) >= 2 and not _has_numeric_serial(text):
+        return text
     if not text or _is_valid_plate_normalized(text):
         body_with_prefix, tail = _split_plate_tail(text)
         chars = list(body_with_prefix)

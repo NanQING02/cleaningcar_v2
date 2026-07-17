@@ -12,6 +12,19 @@ class PlateTextNormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_plate_candidate_text("0A12345"), "0A12345")
         self.assertFalse(is_valid_plate("0A12345"))
 
+    def test_all_letter_serial_is_rejected_as_obvious_ocr_noise(self):
+        self.assertEqual(normalize_plate_candidate_text("吉MEJWUN"), "吉MEJWUN")
+        self.assertFalse(is_valid_plate("吉MEJWUN"))
+        self.assertFalse(is_valid_plate("京AABCDE"))
+
+    def test_all_letter_serial_is_not_synthesized_from_confusion_chars(self):
+        self.assertEqual(normalize_plate_candidate_text("吉MEOIUN"), "吉MEOIUN")
+        self.assertFalse(is_valid_plate("吉MEOIUN"))
+
+    def test_standard_and_new_energy_plates_with_digits_remain_valid(self):
+        self.assertTrue(is_valid_plate("京AAB1DE"))
+        self.assertTrue(is_valid_plate("粤BDF1234"))
+
 
 if __name__ == "__main__":
     unittest.main()

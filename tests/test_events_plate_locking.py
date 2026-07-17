@@ -252,6 +252,46 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(track_state.get("plate_text_latest"), "粤B98765")
         self.assertEqual(track_state.get("plate_text_locked"), "鲁A12345")
 
+    def test_all_letter_plate_never_enters_lock_or_report(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=3, uploader=uploader)
+
+        for frame_idx in range(1, 6):
+            self._update(manager, frame_idx, plate_text="吉MEJWUN", plate_is_guess=False)
+
+        track_state = manager.tracks[1]
+        text, is_guess = manager._resolve_plate_with_shadow(1, track_state, 5)
+
+        self.assertEqual(track_state.get("plate_text_latest"), "")
+        self.assertEqual(track_state.get("plate_text_locked"), "")
+        self.assertEqual(text, "")
+        self.assertFalse(is_guess)
+
+        manager._emit_event_core(
+            track_id=1,
+            event_type=1,
+            frame_idx=5,
+            frame=None,
+            payload={"captureTime": "2026-07-18 10:00:00"},
+            track_state=track_state,
+            vehicle_type="car",
+        )
+        manager._emit_event_core(
+            track_id=1,
+            event_type=2,
+            frame_idx=6,
+            frame=None,
+            payload={"captureTime": "2026-07-18 10:00:01"},
+            track_state=track_state,
+            vehicle_type="car",
+        )
+
+        self.assertEqual(len(uploader.payloads), 2)
+        for payload in uploader.payloads:
+            self.assertEqual(payload["plateNumber"], "")
+            self.assertTrue(payload["plateRecognitionAbnormal"])
+            self.assertIn("PLATE_NOT_DETECTED", str(payload.get("abnormalReason", "")))
+
     def test_text_can_switch_after_stronger_consecutive_candidate(self):
         manager = self._manager(plate_lock_frames=3)
 
