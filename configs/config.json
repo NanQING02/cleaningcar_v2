@@ -40,7 +40,8 @@
     "debug_frame_interval": 30,
     "segment_minutes": 60,
     "debug_frame_max_width": 960,
-    "debug_frame_quality": 80
+    "debug_frame_quality": 80,
+    "reader_frame_timeout_seconds": 5.0
   },
   "wheel": {
     "enabled": true,
@@ -70,7 +71,10 @@
     "bind_wait_seconds": 2.0,
     "bind_wait_poll_seconds": 0.08,
     "photo_bucket_seconds": 0.5,
-    "photo_min_score": 0.3
+    "photo_min_score": 0.3,
+    "reader_stale_seconds": 5.0,
+    "reader_stale_check_interval_frames": 15,
+    "reader_stale_hash_size": 16
   },
   "zones": {
     "zone_a_detection": [
@@ -122,15 +126,15 @@
   },
   "logic": {
     "class_thresholds": {
-      "car": 0.74,
-      "blue truck": 0.4,
-      "yellow truck": 0.63,
-      "dump truck": 0.6,
-      "wuxiao": 0.4,
-      "wheel": 0.55,
+      "car": 0.8,
+      "blue truck": 0.8,
+      "yellow truck": 0.8,
+      "dump truck": 0.8,
+      "wuxiao": 0.8,
+      "wheel": 0.8,
       "cleaning table": 0.35,
       "manual": 0.36,
-      "license": 0.1
+      "license": 0.8
     },
     "detection_anchor": "bottom_center",
     "zone_a_mask_enable": false,
@@ -206,7 +210,7 @@
     "min_track_frames_for_type1": 5,
     "require_vehicle_type_for_events": true,
     "min_zone_b_dwell_frames_for_type4": 60,
-    "enable_per_id_video": true,
+    "enable_per_id_video": false,
     "per_id_video_dir": "/data/ftp/per_id",
     "per_id_video_queue_size": 8,
     "per_id_video_source": "auto",
@@ -214,8 +218,12 @@
     "copy_raw_frame_cache": false,
     "plate_core_mask": "0",
     "plate_infer_stride": 2,
-    "enable_event_disk": false,
-    "vehicle_tracker_impl": "bytetrack"
+    "enable_event_disk": true,
+    "vehicle_tracker_impl": "bytetrack",
+    "plate_requires_vehicle": null,
+    "pending_plate_cache_ttl_frames": 40,
+    "pending_plate_cache_max_entries": 30,
+    "per_id_type6_require_plate_candidate": false
   },
   "event_output_dir": "events/config",
   "event_capture_dir": "/data/ftp/event_captures/config",
