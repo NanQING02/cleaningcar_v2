@@ -62,6 +62,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "video.debug_frame_max_width", "tier": TIER_DEVELOPER, "group": "video", "label": "调试帧最大宽度"},
     {"path": "video.debug_frame_quality", "tier": TIER_DEVELOPER, "group": "video", "label": "调试帧质量"},
     {"path": "video.reader_frame_timeout_seconds", "tier": TIER_DEVELOPER, "group": "video", "label": "读流卡死超时"},
+    {"path": "video.reader_target_fps", "tier": TIER_DEVELOPER, "group": "video", "label": "读流输出 FPS"},
     {"path": "video.segment_minutes", "tier": TIER_DEVELOPER, "group": "video", "label": "切片分钟数"},
     {"path": "video.worker_core_strategy", "tier": TIER_DEVELOPER, "group": "video", "label": "Worker Core 策略"},
     {"path": "wheel.model", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮模型路径"},

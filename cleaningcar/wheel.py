@@ -96,6 +96,10 @@ def resolve_wheel_settings(config, base_dir=None):
     if active_target_fps < 0.0:
         active_target_fps = 0.0
 
+    reader_idle_fps = _safe_float(raw.get("reader_idle_fps", 0.0), 0.0)
+    if reader_idle_fps < 0.0:
+        reader_idle_fps = 0.0
+
     bind_window_seconds = _safe_float(raw.get("bind_window_seconds", 30.0), 30.0)
     if bind_window_seconds <= 0.0:
         bind_window_seconds = 30.0
@@ -117,6 +121,8 @@ def resolve_wheel_settings(config, base_dir=None):
     return {
         "enabled": _safe_bool(raw.get("enabled", False)),
         "event_driven": _safe_bool(raw.get("event_driven", True), True),
+        "reader_event_driven": _safe_bool(raw.get("reader_event_driven", False), False),
+        "reader_idle_fps": reader_idle_fps,
         "left_source": str(raw.get("left_source", "") or "").strip(),
         "right_source": str(raw.get("right_source", "") or "").strip(),
         "model": str(model_path),
@@ -511,6 +517,8 @@ class WheelReaderThread(threading.Thread):
         stale_seconds=5.0,
         stale_check_interval_frames=15,
         stale_hash_size=16,
+        active_event=None,
+        idle_fps=0.0,
     ):
         super().__init__(daemon=True)
         self.side = str(side)
@@ -523,10 +531,18 @@ class WheelReaderThread(threading.Thread):
         self.stale_seconds = max(0.0, float(stale_seconds))
         self.stale_check_interval_frames = max(1, int(stale_check_interval_frames))
         self.stale_hash_size = max(4, min(int(stale_hash_size), 64))
+        self.active_event = active_event
+        try:
+            self.idle_fps = max(0.0, float(idle_fps or 0.0))
+        except (TypeError, ValueError):
+            self.idle_fps = 0.0
+        self.idle_interval = 0.0 if self.idle_fps <= 0.0 else (1.0 / self.idle_fps)
         self.frames = 0
+        self.idle_throttle_count = 0
         self.open_count = 0
         self.reconnect_count = 0
         self.frames_since_open = 0
+        self.last_reader_mode = "active"
         self.last_open_reason = "initial"
         self.last_reconnect_reason = ""
         self.last_frame_gap = -1.0
@@ -535,6 +551,9 @@ class WheelReaderThread(threading.Thread):
         self.last_frame_ts = 0.0
         self.last_stale_seconds = 0.0
         self._log_throttle = WindowedLogThrottle()
+
+    def _is_idle(self):
+        return bool(self.active_event is not None and not self.active_event.is_set())
 
     def _log(self, key, message, window_seconds=10.0):
         self._log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
@@ -584,8 +603,11 @@ class WheelReaderThread(threading.Thread):
         frames_since_open = 0
         stale_signature = None
         stale_since_ts = 0.0
+        next_idle_read_ts = 0.0
         try:
             while not self.stop_event.is_set():
+                idle_now = self._is_idle()
+                self.last_reader_mode = "idle" if idle_now else "active"
                 cap_is_open = bool(cap is not None and hasattr(cap, "isOpened") and cap.isOpened())
                 if cap is not None and not cap_is_open:
                     now = time.time()
@@ -662,6 +684,18 @@ class WheelReaderThread(threading.Thread):
                     )
                     consecutive_fails = 0
 
+                idle_now = self._is_idle()
+                self.last_reader_mode = "idle" if idle_now else "active"
+                if idle_now and self.idle_interval > 0.0:
+                    now = time.time()
+                    if next_idle_read_ts > now:
+                        self.idle_throttle_count += 1
+                        if self.stop_event.wait(min(next_idle_read_ts - now, 0.2)):
+                            break
+                        continue
+                elif not idle_now:
+                    next_idle_read_ts = 0.0
+
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     failure_summary = self._capture_failure_summary(cap)
@@ -706,6 +740,8 @@ class WheelReaderThread(threading.Thread):
                 self.frames += 1
                 frames_since_open += 1
                 last_frame_ts = time.time()
+                if idle_now and self.idle_interval > 0.0:
+                    next_idle_read_ts = last_frame_ts + self.idle_interval
                 if self.stale_seconds > 0.0 and frames_since_open % self.stale_check_interval_frames == 0:
                     signature = self._frame_signature(frame)
                     if signature is not None:
@@ -929,6 +965,8 @@ class WheelDetectionService:
         self.settings = resolve_wheel_settings(self.config, base_dir=base_dir)
         self.enabled = bool(self.settings.get("enabled"))
         self.event_driven = bool(self.settings.get("event_driven", True))
+        self.reader_event_driven = bool(self.settings.get("reader_event_driven", False))
+        self.reader_idle_fps = float(self.settings.get("reader_idle_fps", 0.0) or 0.0)
         self.result_cache = WheelResultCache(
             bind_window_seconds=self.settings["bind_window_seconds"],
             image_quality=image_quality,
@@ -936,9 +974,13 @@ class WheelDetectionService:
         self.stop_event = threading.Event()
         self.inference_active_event = threading.Event()
         self.boost_active_event = threading.Event()
+        reader_config = dict(self.config)
+        reader_video_cfg = dict((self.config or {}).get("video", {}) or {})
+        reader_video_cfg["reader_target_fps"] = 0.0
+        reader_config["video"] = reader_video_cfg
         self.reader_args = SimpleNamespace(
             hw_decode=bool(hw_decode),
-            _config=self.config,
+            _config=reader_config,
         )
         wheel_cfg = (self.config or {}).get("wheel", {}) or {}
         self.reader_fail_threshold = max(1, int(wheel_cfg.get("reader_fail_threshold", 5)))
@@ -1028,6 +1070,8 @@ class WheelDetectionService:
                 stale_seconds=self.reader_stale_seconds,
                 stale_check_interval_frames=self.reader_stale_check_interval_frames,
                 stale_hash_size=self.reader_stale_hash_size,
+                active_event=self.inference_active_event if self.reader_event_driven else None,
+                idle_fps=self.reader_idle_fps,
             )
             processor = WheelProcessorThread(
                 side=side,
@@ -1063,6 +1107,8 @@ class WheelDetectionService:
         print(
             f"[wheel] enabled sides={','.join(self.active_sides)} "
             f"event_driven={self.event_driven} "
+            f"reader_event_driven={self.reader_event_driven} "
+            f"reader_idle_fps={self.reader_idle_fps:.2f} "
             f"target_fps={self.settings['target_fps']:.2f} "
             f"active_target_fps={self.settings['active_target_fps']:.2f} "
             f"imgsz={self.imgsz} core_mask={self.core_mask}"
@@ -1149,12 +1195,16 @@ class WheelDetectionService:
                 "reader_last_open_age": float(getattr(reader, "last_open_age", -1.0) or -1.0),
                 "reader_last_open_delay": float(getattr(reader, "last_open_delay", 0.0) or 0.0),
                 "reader_last_stale_seconds": float(getattr(reader, "last_stale_seconds", 0.0) or 0.0),
+                "reader_mode": str(getattr(reader, "last_reader_mode", "") or ""),
+                "reader_idle_throttle_count": int(getattr(reader, "idle_throttle_count", 0) or 0),
                 "reader_alive": bool(reader.is_alive()) if reader is not None else False,
                 "processor_alive": bool(processor.is_alive()) if processor is not None else False,
             }
         stats["_cache"] = self.result_cache.snapshot_stats()
         stats["_service"] = {
             "event_driven": bool(self.event_driven),
+            "reader_event_driven": bool(self.reader_event_driven),
+            "reader_idle_fps": float(self.reader_idle_fps),
             "inference_active": inference_active,
             "boost_active": boost_active,
             "target_fps": float(self.settings.get("target_fps", 0.0) or 0.0),

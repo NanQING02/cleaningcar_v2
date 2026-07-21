@@ -28,6 +28,7 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         video = {
             "rtsp_latency_ms": 200,
             "reader_frame_timeout_seconds": 7.5,
+            "reader_target_fps": 20.0,
         }
         if decode_backend is not None:
             video["decode_backend"] = decode_backend
@@ -49,11 +50,13 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         self.assertEqual(meta["source_kind"], "rtsp")
         self.assertEqual(meta["attempt_order"], ["ffmpeg_hw"])
         self.assertEqual(meta["reader_frame_timeout_seconds"], 7.5)
+        self.assertEqual(meta["reader_target_fps"], 20.0)
         self.assertEqual(meta["requested_backend"], "ffmpeg")
         ffmpeg_hw_open.assert_called_once_with(
             "rtsp://camera",
             rtsp_latency_ms=200,
             read_timeout_seconds=7.5,
+            output_fps=20.0,
         )
 
     @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
@@ -99,7 +102,48 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         self.assertFalse(meta["fallback_used"])
         self.assertEqual(meta["fallback_reason"], "hardware_decode_disabled")
         self.assertEqual(meta["attempt_order"], [])
+        self.assertEqual(meta["reader_target_fps"], 20.0)
         ffmpeg_hw_open.assert_not_called()
+
+    @patch("cleaningcar.video_io.subprocess.Popen")
+    def test_ffmpeg_rawvideo_capture_adds_output_fps_filter_and_keeps_bgr24(self, popen):
+        class _Stdout:
+            def close(self):
+                return None
+
+        class _Proc:
+            stdout = _Stdout()
+            stderr = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                return None
+
+        popen.return_value = _Proc()
+
+        cap = video_io.FfmpegRawVideoCapture(
+            "rtsp://camera",
+            "h264_rkmpp",
+            {"codec_name": "h264", "width": 1920, "height": 1080, "fps": 25.0},
+            output_fps=20.0,
+        )
+        try:
+            cmd = popen.call_args.args[0]
+            self.assertIn("-vf", cmd)
+            self.assertEqual(cmd[cmd.index("-vf") + 1], "fps=20")
+            self.assertIn("-pix_fmt", cmd)
+            self.assertEqual(cmd[cmd.index("-pix_fmt") + 1], "bgr24")
+            self.assertEqual(cap.diagnostics()["output_fps"], 20.0)
+        finally:
+            cap.release()
 
     def test_ffmpeg_rawvideo_timeout_returns_failure_and_records_diagnostics(self):
         cap = video_io.FfmpegRawVideoCapture.__new__(video_io.FfmpegRawVideoCapture)

@@ -106,7 +106,7 @@ def _probe_ffmpeg_stream(src):
 class FfmpegRawVideoCapture:
     STDERR_HISTORY_LIMIT = 80
 
-    def __init__(self, src, decoder, stream_info, rtsp_latency_ms=200, read_timeout_seconds=5.0):
+    def __init__(self, src, decoder, stream_info, rtsp_latency_ms=200, read_timeout_seconds=5.0, output_fps=0.0):
         self.src = str(src)
         self.decoder = str(decoder or '').strip()
         self.width = int((stream_info or {}).get('width') or 0)
@@ -115,6 +115,10 @@ class FfmpegRawVideoCapture:
         self.codec_name = str((stream_info or {}).get('codec_name') or '').strip().lower()
         self.frame_bytes = max(0, self.width * self.height * 3)
         self.read_timeout_seconds = max(0.0, float(read_timeout_seconds or 0.0))
+        try:
+            self.output_fps = max(0.0, float(output_fps or 0.0))
+        except (TypeError, ValueError):
+            self.output_fps = 0.0
         self.proc = None
         self.backend = 'ffmpeg_rawvideo'
         self._opened = False
@@ -150,6 +154,14 @@ class FfmpegRawVideoCapture:
             '-i',
             self.src,
             '-an',
+        ])
+        if self.output_fps > 0.0:
+            fps_value = f'{self.output_fps:.3f}'.rstrip('0').rstrip('.')
+            cmd.extend([
+                '-vf',
+                f'fps={fps_value}',
+            ])
+        cmd.extend([
             '-pix_fmt',
             'bgr24',
             '-f',
@@ -224,6 +236,7 @@ class FfmpegRawVideoCapture:
             'backend': self.backend,
             'decoder': self.decoder,
             'codec_name': self.codec_name,
+            'output_fps': self.output_fps,
             'read_timeout_seconds': self.read_timeout_seconds,
             'last_read_error': self._last_read_error,
             'last_read_error_ts': self._last_read_error_ts,
@@ -867,7 +880,7 @@ def _ordered_ffmpeg_hw_decoders(src):
     return FFMPEG_HW_DECODER_CANDIDATES
 
 
-def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, read_timeout_seconds=5.0):
+def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, read_timeout_seconds=5.0, output_fps=0.0):
     if not isinstance(src, str):
         return None
     stream_info = _probe_ffmpeg_stream(src)
@@ -879,9 +892,11 @@ def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, read_timeout_seconds
             stream_info,
             rtsp_latency_ms=rtsp_latency_ms,
             read_timeout_seconds=read_timeout_seconds,
+            output_fps=output_fps,
         )
         if _is_capture_opened(cap):
-            print(f'[reader] Using FFmpeg rawvideo hardware decoder {decoder_name} for {src}')
+            fps_note = f' output_fps={cap.output_fps:.2f}' if getattr(cap, 'output_fps', 0.0) > 0.0 else ''
+            print(f'[reader] Using FFmpeg rawvideo hardware decoder {decoder_name}{fps_note} for {src}')
             return cap
         _safe_release_capture(cap)
 
@@ -911,12 +926,13 @@ def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, read_timeout_seconds
     return None
 
 
-def open_video_capture(src, hw_decode=True, rtsp_latency_ms=200, read_timeout_seconds=5.0, **_legacy_options):
+def open_video_capture(src, hw_decode=True, rtsp_latency_ms=200, read_timeout_seconds=5.0, output_fps=0.0, **_legacy_options):
     if hw_decode:
         cap = _open_ffmpeg_hardware_capture(
             src,
             rtsp_latency_ms=rtsp_latency_ms,
             read_timeout_seconds=read_timeout_seconds,
+            output_fps=output_fps,
         )
         if _is_capture_opened(cap):
             return cap
@@ -971,6 +987,12 @@ def create_video_reader(path, args):
         except (TypeError, ValueError):
             return int(default)
 
+    def _safe_float(value, default):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
     hw = bool(getattr(args, 'hw_decode', True))
     config = getattr(args, '_config', {}) or {}
     video_cfg = config.get('video', {}) or {}
@@ -981,6 +1003,7 @@ def create_video_reader(path, args):
     except (TypeError, ValueError):
         reader_frame_timeout_seconds = 5.0
     reader_frame_timeout_seconds = max(0.0, reader_frame_timeout_seconds)
+    reader_target_fps = max(0.0, _safe_float(video_cfg.get('reader_target_fps', 0.0), 0.0))
     decode_meta = {
         'decode_mode': 'none',
         'decode_backend': 'none',
@@ -989,6 +1012,7 @@ def create_video_reader(path, args):
         'source_kind': _source_kind_for_decode(path),
         'attempt_order': [],
         'reader_frame_timeout_seconds': reader_frame_timeout_seconds,
+        'reader_target_fps': reader_target_fps,
         'requested_backend': decode_backend,
     }
 
@@ -1003,6 +1027,7 @@ def create_video_reader(path, args):
             path,
             rtsp_latency_ms=rtsp_latency_ms,
             read_timeout_seconds=reader_frame_timeout_seconds,
+            output_fps=reader_target_fps,
         )
         if _is_capture_opened(cap_hw):
             decode_meta['decode_mode'] = 'hw'

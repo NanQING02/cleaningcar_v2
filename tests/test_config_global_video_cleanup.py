@@ -133,6 +133,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.data["event_capture_quality"], 70)
 
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
+            self.assertEqual(manager.video["reader_target_fps"], 0.0)
             self.assertFalse(manager.data["wheel"]["pause_bypass_during_wash_enabled"])
             self.assertEqual(manager.data["wheel"]["pause_bypass_config_key"], "config_绕行.json")
             self.assertEqual(manager.data["wheel"]["pause_bypass_resume_delay_seconds"], 0.5)
@@ -142,6 +143,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertIn("video.reader_frame_timeout_seconds", field_paths)
+        self.assertIn("video.reader_target_fps", field_paths)
 
     def test_config_manager_defaults_plate_and_event_quality_controls(self):
         with tempfile.TemporaryDirectory() as tmpdir:

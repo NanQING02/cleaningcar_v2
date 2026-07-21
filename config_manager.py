@@ -123,6 +123,11 @@ class ConfigManager:
             reader_frame_timeout = 5.0
         video['reader_frame_timeout_seconds'] = max(0.0, reader_frame_timeout)
         try:
+            reader_target_fps = float(video.get('reader_target_fps', 0.0))
+        except (TypeError, ValueError):
+            reader_target_fps = 0.0
+        video['reader_target_fps'] = max(0.0, reader_target_fps)
+        try:
             segment_minutes = int(video.get('segment_minutes', 60))
         except (TypeError, ValueError):
             segment_minutes = 0
