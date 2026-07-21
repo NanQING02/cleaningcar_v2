@@ -116,10 +116,6 @@
             <input v-model="form.wheel.right_source" placeholder="rtsp://right-wheel" />
           </label>
           <label>
-            <input type="checkbox" v-model="form.video.hw_decode" />
-            启用硬件解码 (GStreamer+mpp)
-          </label>
-          <label>
             <input type="checkbox" v-model="form.logic.enable_per_id_video" />
             启用按车辆ID录像保存
           </label>
@@ -490,7 +486,6 @@
             video: {
               source: '',
               source_mode: 'auto',
-              hw_decode: true,
               workers: 1,
               core_mask: '0',
               worker_core_strategy: 'auto',
@@ -860,7 +855,6 @@
           this.form.system.api.capture_mode = this.form.system.api.capture_mode || 'path';
           this.form.video.source = this.form.video.source || '';
           this.form.video.source_mode = this.form.video.source_mode || 'auto';
-          this.form.video.hw_decode = !!this.form.video.hw_decode;
           this.form.video.workers = Number(this.form.video.workers || 1);
           this.form.video.core_mask = this.form.video.core_mask || '0';
           this.form.video.worker_core_strategy = this.form.video.worker_core_strategy || 'auto';
@@ -1030,7 +1024,6 @@
             video: {
               source: this.form.video.source,
               source_mode: this.form.video.source_mode,
-              hw_decode: this.form.video.hw_decode,
               workers: this.form.video.workers,
               core_mask: this.form.video.core_mask
             },

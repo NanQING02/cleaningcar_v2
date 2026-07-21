@@ -129,7 +129,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             self.assertEqual(manager.video["debug_frame_path"], "off")
             self.assertTrue(manager.video["hw_decode"])
-            self.assertEqual(manager.video["decode_backend"], "auto")
+            self.assertEqual(manager.video["decode_backend"], "ffmpeg")
             self.assertEqual(manager.data["event_capture_quality"], 70)
 
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
@@ -215,7 +215,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             manager = ConfigManager(path)
 
-            self.assertEqual(manager.video["decode_backend"], "auto")
+            self.assertTrue(manager.video["hw_decode"])
+            self.assertEqual(manager.video["decode_backend"], "ffmpeg")
 
     def test_web_config_registry_exposes_wash_priority_pause_fields(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}

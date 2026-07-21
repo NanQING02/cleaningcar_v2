@@ -41,8 +41,8 @@ run_zone_detect.py
 ## 当前运行口径
 
 - 当前只保留双模型车牌链路，旧单模型 LPR 不再参与主链路
-- 当 `video.hw_decode=true` 时，读流顺序为：`GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解`；两级硬解都不可用时按读流失败处理，不再切软件解码
-- 单车视频写出顺序为：`GStreamer 硬编 -> FFmpeg 硬编`；硬编不可用时不保存该段单车视频，没有软件编码兜底
+- 读流只使用 `FFmpeg rkmpp` 硬解；打开失败时按读流失败处理，不使用 GStreamer 或软件解码兜底
+- 单车视频只使用 `FFmpeg` 硬编；硬编不可用时不保存该段单车视频，没有软件编码兜底
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - 车轮旁路独立于主相机冲洗检测运行，只在 `wheel.enabled=true` 时启用
 - 主事件只有 `type=5` 会附加 `wheelResults`，且只附加该车主轨迹生命周期内已锁定的左右轮结果；轮胎图片字段为 `photoUrl` 绝对路径，不再使用 `imageBase64`
@@ -61,7 +61,7 @@ run_zone_detect.py
 
 - 设备 ID：`system.device_id=RK3588-DEV`
 - 视频源：RTSP，`video.source_mode=camera`
-- 解码：`video.hw_decode=true`、`video.decode_backend=auto`
+- 解码：`video.hw_decode=true`、`video.decode_backend=ffmpeg`
 - 推理并发：`video.workers=1`，`video.core_mask=0`，`video.worker_core_strategy=auto`
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - 板端定频：`system.performance_lock_enabled=true`，推理启动前默认尝试定频
@@ -84,7 +84,7 @@ run_zone_detect.py
 说明：
 
 - 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
-- 程序优先使用 `GStreamer+mpp direct-BGR`；短测显示该路径资源占用最低。排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式在 1080p RTSP 上帧率明显偏低。
+- 程序只使用 `FFmpeg rkmpp` 硬解读流。旧配置里的 `auto`、`gstreamer` 或 `software` 会在加载时统一归一为 `ffmpeg`。
 - 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
 
 ## 运行时命名空间

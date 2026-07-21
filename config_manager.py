@@ -104,12 +104,11 @@ class ConfigManager:
             raise ConfigError('video.source missing')
         video.pop('save_video', None)
         video.pop('rga_enable', None)
+        video.pop('gstreamer_bgr_mode', None)
+        video.pop('rtsp_appsink_max_buffers', None)
         video.setdefault('source_mode', 'auto')
-        video.setdefault('hw_decode', True)
-        decode_backend = str(video.get('decode_backend', 'auto') or 'auto').strip().lower()
-        if decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
-            decode_backend = 'auto'
-        video['decode_backend'] = decode_backend
+        video['hw_decode'] = True
+        video['decode_backend'] = 'ffmpeg'
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
         video.setdefault('fp_output_mode', '6')

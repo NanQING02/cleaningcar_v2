@@ -220,18 +220,6 @@ is_venv_functional() {
   "$python_bin" -V >/dev/null 2>&1 || return 1
 }
 
-has_opencv_gstreamer() {
-  local python_bin="$1"
-  "$python_bin" -c '
-import cv2
-info = cv2.getBuildInformation()
-for line in info.splitlines():
-    if "GStreamer:" in line and "YES" in line:
-        raise SystemExit(0)
-raise SystemExit(1)
-' 2>/dev/null
-}
-
 is_file_same() {
   [ -f "$1" ] && [ -f "$2" ] && cmp -s "$1" "$2"
 }
@@ -284,11 +272,7 @@ ensure_apt_dependencies() {
     python3-venv
     python3-pip
     python3-opencv
-    gstreamer1.0-tools
-    gstreamer1.0-plugins-base
-    gstreamer1.0-plugins-good
-    gstreamer1.0-plugins-bad
-    gstreamer1.0-libav
+    ffmpeg
   )
 
   local missing=()
@@ -360,29 +344,28 @@ ensure_venv() {
   log_setup "[venv] ready"
 }
 
-ensure_opencv_gstreamer() {
+ensure_opencv_available() {
   local python_bin="$1"
-  log_setup "[opencv] checking cv2 GStreamer support..."
-  if has_opencv_gstreamer "$python_bin"; then
-    log_setup "[opencv] GStreamer support ok"
+  log_setup "[opencv] checking cv2 import..."
+  if can_import "$python_bin" "cv2"; then
+    log_setup "[opencv] cv2 import ok"
     return 0
   fi
 
-  log_error "[opencv] cv2 has no GStreamer support"
-  log_error "  possible cause 1: python3-opencv installed but built without GStreamer (common on non-RK boards)"
-  log_error "  possible cause 2: opencv was replaced by pip-installed version (pip opencv-python has no GStreamer)"
-  log_error "  diagnostic: $python_bin -c 'import cv2; print(cv2.getBuildInformation())' | grep GStreamer"
+  log_error "[opencv] cv2 import failed"
+  log_error "  possible cause 1: python3-opencv is missing or broken"
+  log_error "  possible cause 2: virtualenv cannot see system site packages"
+  log_error "  diagnostic: $python_bin -c 'import cv2; print(cv2.__version__)'"
   log_setup "[opencv] attempting reinstall of python3-opencv..."
   local sudo_prefix
   sudo_prefix="$(ensure_sudo_prefix)" || sudo_prefix=""
   install_apt_packages "$sudo_prefix" --reinstall python3-opencv 2>&1 || true
-  if ! has_opencv_gstreamer "$python_bin"; then
-    log_error "[opencv] GStreamer support still unavailable after reinstall"
-    log_error "  this usually means the OS's python3-opencv package was not compiled with GStreamer"
-    log_error "  fix: use an OS image that includes GStreamer-enabled opencv, or build opencv from source"
-    fail "opencv" "GStreamer support not available after reinstall"
+  if ! can_import "$python_bin" "cv2"; then
+    log_error "[opencv] cv2 still unavailable after reinstall"
+    log_error "  fix: ensure python3-opencv is installed for the system Python used by this venv"
+    fail "opencv" "cv2 import failed after reinstall"
   fi
-  log_setup "[opencv] GStreamer support restored after reinstall"
+  log_setup "[opencv] cv2 import restored after reinstall"
 }
 
 ensure_native_libs() {
@@ -569,7 +552,7 @@ ensure_environment() {
   ensure_apt_dependencies
   ensure_venv "$python_sys"
   local python_bin="$VENV_DIR/bin/python"
-  ensure_opencv_gstreamer "$python_bin"
+  ensure_opencv_available "$python_bin"
   ensure_native_libs
   ensure_rknn_wheel "$python_bin" "$python_sys"
   ensure_pip_requirements "$python_bin"

@@ -32,15 +32,6 @@ FFMPEG_CODEC_TO_RKMPP_DECODER = {
     'vp9': 'vp9_rkmpp',
 }
 
-def _gstreamer_bgr_mode(value=None):
-    raw = str(value or os.environ.get('CLEANINGCAR_GSTREAMER_BGR_MODE', '') or '').strip().lower()
-    if raw in {'safe', 'safe_bgr', 'videoconvert'}:
-        return 'safe'
-    if raw in {'direct', 'direct_bgr'}:
-        return 'direct'
-    return 'direct'
-
-
 def _parse_avg_frame_rate(text):
     raw = str(text or '').strip()
     if not raw or raw in ('0/0', 'N/A'):
@@ -876,7 +867,7 @@ def _ordered_ffmpeg_hw_decoders(src):
     return FFMPEG_HW_DECODER_CANDIDATES
 
 
-def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1, read_timeout_seconds=5.0):
+def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, read_timeout_seconds=5.0):
     if not isinstance(src, str):
         return None
     stream_info = _probe_ffmpeg_stream(src)
@@ -920,87 +911,11 @@ def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buf
     return None
 
 
-def _open_gstreamer_hardware_capture(
-    src,
-    rtsp_latency_ms=200,
-    rtsp_appsink_max_buffers=1,
-    read_timeout_seconds=5.0,
-    bgr_mode='direct',
-):
-    if not isinstance(src, str):
-        return None
-    pipelines = []
-    if src.startswith(('rtsp://', 'rtsps://')):
-        rtsp_latency_ms = max(0, int(rtsp_latency_ms))
-        rtsp_appsink_max_buffers = max(1, int(rtsp_appsink_max_buffers))
-        stream_info = _probe_ffmpeg_stream(src) or {}
-        codec_name = str(stream_info.get('codec_name') or '').strip().lower()
-        if codec_name in ('hevc', 'h265'):
-            depay = 'rtph265depay'
-            parser = 'h265parse'
-        else:
-            depay = 'rtph264depay'
-            parser = 'h264parse'
-        direct_pipeline = (
-            f'rtspsrc location="{src}" latency={rtsp_latency_ms} protocols=tcp ! '
-            f'{depay} ! {parser} config-interval=-1 ! '
-            'mppvideodec format=BGR ! video/x-raw,format=BGR ! '
-            f'appsink sync=false drop=true max-buffers={rtsp_appsink_max_buffers}',
-            '[reader] Using GStreamer+mpp direct-BGR RTSP TCP pipeline for {src}',
-        )
-        safe_pipeline = (
-            f'rtspsrc location="{src}" latency={rtsp_latency_ms} protocols=tcp ! '
-            f'{depay} ! {parser} config-interval=-1 ! '
-            'mppvideodec ! videoconvert ! video/x-raw,format=BGR ! '
-            f'appsink sync=false drop=true max-buffers={rtsp_appsink_max_buffers}',
-            '[reader] Using GStreamer+mpp safe-BGR RTSP TCP pipeline for {src}',
-        )
-        pipelines.extend([safe_pipeline, direct_pipeline] if _gstreamer_bgr_mode(bgr_mode) == 'safe' else [direct_pipeline, safe_pipeline])
-    elif not src.startswith(('http://', 'https://')):
-        stream_info = _probe_ffmpeg_stream(src) or {}
-        codec_name = str(stream_info.get('codec_name') or '').strip().lower()
-        parser = 'h265parse' if codec_name in ('hevc', 'h265') else 'h264parse'
-        direct_pipeline = (
-            f'filesrc location="{src}" ! qtdemux ! {parser} ! '
-            'mppvideodec format=BGR ! video/x-raw,format=BGR ! appsink',
-            '[reader] Using GStreamer+mpp direct-BGR file pipeline for {src}',
-        )
-        safe_pipeline = (
-            f'filesrc location="{src}" ! qtdemux ! {parser} ! '
-            'mppvideodec ! videoconvert ! video/x-raw,format=BGR ! appsink',
-            '[reader] Using GStreamer+mpp safe-BGR file pipeline for {src}',
-        )
-        pipelines.extend([safe_pipeline, direct_pipeline] if _gstreamer_bgr_mode(bgr_mode) == 'safe' else [direct_pipeline, safe_pipeline])
-    for pipeline, msg in pipelines:
-        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-        if _is_capture_opened(cap):
-            print(msg.format(src=src))
-            return TimedVideoCapture(
-                cap,
-                read_timeout_seconds=read_timeout_seconds,
-                backend='gstreamer_hw',
-                source=src,
-            )
-        _safe_release_capture(cap)
-    print(f'[reader] gstreamer hardware decode open failed, source={src}')
-    return None
-
-
-def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1, read_timeout_seconds=5.0):
+def open_video_capture(src, hw_decode=True, rtsp_latency_ms=200, read_timeout_seconds=5.0, **_legacy_options):
     if hw_decode:
-        cap = _open_gstreamer_hardware_capture(
-            src,
-            rtsp_latency_ms=rtsp_latency_ms,
-            rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
-            read_timeout_seconds=read_timeout_seconds,
-        )
-        if _is_capture_opened(cap):
-            return cap
-        _safe_release_capture(cap)
         cap = _open_ffmpeg_hardware_capture(
             src,
             rtsp_latency_ms=rtsp_latency_ms,
-            rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
             read_timeout_seconds=read_timeout_seconds,
         )
         if _is_capture_opened(cap):
@@ -1056,15 +971,11 @@ def create_video_reader(path, args):
         except (TypeError, ValueError):
             return int(default)
 
-    hw = bool(getattr(args, 'hw_decode', False))
+    hw = bool(getattr(args, 'hw_decode', True))
     config = getattr(args, '_config', {}) or {}
     video_cfg = config.get('video', {}) or {}
-    decode_backend = str(video_cfg.get('decode_backend', 'auto') or 'auto').strip().lower()
-    if decode_backend not in {'auto', 'ffmpeg', 'gstreamer'}:
-        decode_backend = 'auto'
+    decode_backend = 'ffmpeg'
     rtsp_latency_ms = _safe_int(video_cfg.get('rtsp_latency_ms', 200), 200)
-    rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
-    gstreamer_bgr_mode = _gstreamer_bgr_mode(video_cfg.get('gstreamer_bgr_mode', 'direct'))
     try:
         reader_frame_timeout_seconds = float(video_cfg.get('reader_frame_timeout_seconds', 5.0))
     except (TypeError, ValueError):
@@ -1087,53 +998,23 @@ def create_video_reader(path, args):
         return None, decode_meta
 
     if hw:
-        if decode_backend in {'auto', 'gstreamer'}:
-            attempt_order.append('gstreamer_hw')
-            cap_hw = _open_gstreamer_hardware_capture(
-                path,
-                rtsp_latency_ms=rtsp_latency_ms,
-                rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
-                read_timeout_seconds=reader_frame_timeout_seconds,
-                bgr_mode=gstreamer_bgr_mode,
-            )
-            if _is_capture_opened(cap_hw):
-                decode_meta['decode_mode'] = 'hw'
-                decode_meta['decode_backend'] = 'gstreamer'
-                return cap_hw, decode_meta
-            _safe_release_capture(cap_hw)
-            if decode_backend == 'gstreamer':
-                decode_meta['fallback_used'] = True
-                decode_meta['fallback_reason'] = 'gstreamer_hw_open_failed'
-        if decode_backend in {'auto', 'ffmpeg'}:
-            attempt_order.append('ffmpeg_hw')
-            cap_hw = _open_ffmpeg_hardware_capture(
-                path,
-                rtsp_latency_ms=rtsp_latency_ms,
-                rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
-                read_timeout_seconds=reader_frame_timeout_seconds,
-            )
-            if _is_capture_opened(cap_hw):
-                decode_meta['decode_mode'] = 'hw'
-                decode_meta['decode_backend'] = 'ffmpeg'
-                if decode_backend == 'auto':
-                    decode_meta['fallback_used'] = True
-                    decode_meta['fallback_reason'] = 'gstreamer_hw_open_failed'
-                return cap_hw, decode_meta
-            _safe_release_capture(cap_hw)
-            if decode_backend == 'ffmpeg':
-                decode_meta['fallback_used'] = True
-                decode_meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
+        attempt_order.append('ffmpeg_hw')
+        cap_hw = _open_ffmpeg_hardware_capture(
+            path,
+            rtsp_latency_ms=rtsp_latency_ms,
+            read_timeout_seconds=reader_frame_timeout_seconds,
+        )
+        if _is_capture_opened(cap_hw):
+            decode_meta['decode_mode'] = 'hw'
+            decode_meta['decode_backend'] = 'ffmpeg'
+            return cap_hw, decode_meta
+        _safe_release_capture(cap_hw)
 
     decode_meta['decode_mode'] = 'none'
     decode_meta['decode_backend'] = 'none'
-    decode_meta['fallback_used'] = bool(decode_backend == 'auto' and len(attempt_order) > 1)
+    decode_meta['fallback_used'] = False
     if not decode_meta['fallback_reason']:
-        if decode_backend == 'ffmpeg':
-            decode_meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
-        elif decode_backend == 'gstreamer':
-            decode_meta['fallback_reason'] = 'gstreamer_hw_open_failed'
-        else:
-            decode_meta['fallback_reason'] = 'hardware_open_failed'
+        decode_meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
     return None, decode_meta
 
 

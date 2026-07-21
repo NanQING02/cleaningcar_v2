@@ -33,7 +33,7 @@ def parse_args():
     ap.add_argument('--workers', type=int, default=2, help='Number of inference workers.')
     ap.add_argument('--queue_size', type=int, default=32)
     ap.add_argument('--core_mask', default='all', help="Which NPU cores to use: e.g. '0-2', '0,2', '1', 'all', 'auto'.")
-    ap.add_argument('--hw_decode', action='store_true', help='Use hardware decode: GStreamer+mpp direct-BGR first, then FFmpeg rkmpp fallback.')
+    ap.add_argument('--hw_decode', action='store_true', help='使用 FFmpeg rkmpp 硬解；不使用 GStreamer 或软件解码兜底。')
     ap.add_argument('--csv', help='CSV path, append per detection.')
     ap.add_argument('--output_dir', help='When batch processing, auto-save mp4/csv into this directory using video stem names.')
     ap.add_argument('--no_draw', action='store_true', help='Do not draw boxes on frames.')

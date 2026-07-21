@@ -21,7 +21,6 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "system.wheel_photo_base_dir", "tier": TIER_USER, "group": "system", "label": "车轮照片根目录"},
     {"path": "video.source", "tier": TIER_USER, "group": "video", "label": "视频源"},
     {"path": "video.source_mode", "tier": TIER_USER, "group": "video", "label": "视频源模式"},
-    {"path": "video.hw_decode", "tier": TIER_USER, "group": "video", "label": "硬解"},
     {"path": "video.workers", "tier": TIER_USER, "group": "video", "label": "推理线程数"},
     {"path": "video.core_mask", "tier": TIER_USER, "group": "video", "label": "NPU Core Mask"},
     {"path": "wheel.enabled", "tier": TIER_USER, "group": "wheel", "label": "启用车轮旁路"},
