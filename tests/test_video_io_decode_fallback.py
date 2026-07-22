@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cleaningcar import video_io
 
@@ -23,18 +23,142 @@ class _DummyCapture:
 
 
 class VideoIoDecodeFallbackTests(unittest.TestCase):
+    def setUp(self):
+        video_io._FFMPEG_RGA_BREAKER_STATE.clear()
+
     @staticmethod
-    def _args(hw_decode=True):
+    def _args(hw_decode=True, **video_overrides):
+        video = {
+            "rtsp_latency_ms": 200,
+            "rtsp_appsink_max_buffers": 1,
+            "reader_frame_timeout_seconds": 7.5,
+        }
+        video.update(video_overrides)
         return SimpleNamespace(
             hw_decode=hw_decode,
-            _config={
-                "video": {
-                    "rtsp_latency_ms": 200,
-                    "rtsp_appsink_max_buffers": 1,
-                    "reader_frame_timeout_seconds": 7.5,
+            _config={"video": video},
+        )
+
+    @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
+    @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
+    @patch("cleaningcar.video_io._open_ffmpeg_rga_capture")
+    def test_create_video_reader_uses_only_explicit_ffmpeg_rga_backend(
+        self,
+        ffmpeg_rga_open,
+        ffmpeg_hw_open,
+        gstreamer_hw_open,
+    ):
+        ffmpeg_rga_open.return_value = _DummyCapture(True)
+
+        cap, meta = video_io.create_video_reader(
+            "rtsp://camera",
+            self._args(hw_decode=True, decode_backend="ffmpeg_rga"),
+        )
+
+        self.assertIsNotNone(cap)
+        self.assertEqual(meta["decode_backend"], "ffmpeg_rga")
+        self.assertEqual(meta["attempt_order"], ["ffmpeg_rga"])
+        self.assertFalse(meta["fallback_used"])
+        ffmpeg_hw_open.assert_not_called()
+        gstreamer_hw_open.assert_not_called()
+
+    def test_ffmpeg_rga_options_never_select_rga2(self):
+        options = video_io._ffmpeg_rga_options(
+            {
+                "ffmpeg_rga": {
+                    "core": "rga2_core0",
+                    "width": 640,
+                    "height": 360,
+                    "async_depth": 9,
                 }
             },
+            "rtsp://camera",
         )
+
+        self.assertIn(options["core"], {"rga3_core0", "rga3_core1"})
+        self.assertEqual(options["async_depth"], 4)
+        filter_text = video_io._build_ffmpeg_rga_filter(
+            options["width"],
+            options["height"],
+            options["core"],
+            options["async_depth"],
+        )
+        self.assertIn("scale_rkrga=", filter_text)
+        self.assertNotIn("rga2", filter_text)
+
+    @patch("cleaningcar.video_io.subprocess.Popen")
+    def test_ffmpeg_rga_capture_builds_explicit_drm_rga_command(self, popen):
+        proc = Mock()
+        proc.stdout = Mock()
+        proc.stderr = None
+        proc.poll.return_value = None
+        popen.return_value = proc
+
+        cap = video_io.FfmpegRawVideoCapture(
+            "rtsp://camera",
+            "h264_rkmpp",
+            {"width": 1920, "height": 1080, "fps": 25.0, "codec_name": "h264"},
+            output_width=640,
+            output_height=360,
+            video_filter="scale_rkrga=w=640:h=360:format=bgr24:core=rga3_core0",
+            use_drm_prime=True,
+            backend="ffmpeg_rga",
+        )
+
+        self.assertEqual(cap.backend, "ffmpeg_rga")
+        self.assertEqual(cap.width, 640)
+        self.assertEqual(cap.height, 360)
+        self.assertIn("-hwaccel_output_format", cap.command)
+        self.assertIn("drm_prime", cap.command)
+        self.assertIn("-vf", cap.command)
+        self.assertIn("scale_rkrga=w=640:h=360:format=bgr24:core=rga3_core0", cap.command)
+        cap.release()
+
+    def test_rga_stderr_classifier_ignores_unrelated_invalid_packets(self):
+        self.assertTrue(video_io.FfmpegRawVideoCapture._is_fatal_rga_stderr_line("RGA blit failed: -22"))
+        self.assertTrue(
+            video_io.FfmpegRawVideoCapture._is_fatal_rga_stderr_line(
+                "RGA_MMU unsupported memory larger than 4G"
+            )
+        )
+        self.assertTrue(
+            video_io.FfmpegRawVideoCapture._is_fatal_rga_stderr_line(
+                "rga2_submit: submit failed"
+            )
+        )
+        self.assertFalse(
+            video_io.FfmpegRawVideoCapture._is_fatal_rga_stderr_line(
+                "Invalid NAL unit, skipping packet"
+            )
+        )
+
+    @patch("cleaningcar.video_io.subprocess.Popen")
+    def test_ffmpeg_rga_error_trips_source_circuit_breaker(self, popen):
+        proc = Mock()
+        proc.stdout = Mock()
+        proc.stderr = None
+        proc.poll.return_value = None
+        popen.return_value = proc
+        source = "rtsp://camera"
+        cap = video_io.FfmpegRawVideoCapture(
+            source,
+            "h264_rkmpp",
+            {"width": 1920, "height": 1080, "fps": 25.0, "codec_name": "h264"},
+            backend="ffmpeg_rga",
+            rga_breaker={
+                "enabled": True,
+                "error_threshold": 1,
+                "window_seconds": 60.0,
+                "cooldown_seconds": 300.0,
+            },
+        )
+
+        cap._record_rga_error("RGA blit failed: -22")
+
+        self.assertTrue(cap.diagnostics()["circuit_breaker_tripped"])
+        self.assertTrue(video_io._ffmpeg_rga_breaker_status(source)["open"])
+        proc.terminate.assert_called()
+        cap.release()
 
     @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
     @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")

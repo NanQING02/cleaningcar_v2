@@ -3,6 +3,7 @@ import select
 import subprocess
 import threading
 import time
+import zlib
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,6 +32,103 @@ FFMPEG_CODEC_TO_RKMPP_DECODER = {
     'vp8': 'vp8_rkmpp',
     'vp9': 'vp9_rkmpp',
 }
+
+_FFMPEG_RGA_BREAKER_LOCK = threading.Lock()
+_FFMPEG_RGA_BREAKER_STATE = {}
+
+
+def _safe_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _as_bool(value, default=False):
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+    if value is None:
+        return bool(default)
+    return bool(value)
+
+
+def _choose_ffmpeg_rga_core(src, configured_core):
+    core = str(configured_core or 'auto').strip().lower()
+    if core in {'rga3_core0', 'rga3_core1'}:
+        return core
+    source_bytes = str(src or '').encode('utf-8', errors='replace')
+    return 'rga3_core0' if zlib.crc32(source_bytes) % 2 == 0 else 'rga3_core1'
+
+
+def _ffmpeg_rga_breaker_status(src):
+    now = time.monotonic()
+    key = str(src or '')
+    with _FFMPEG_RGA_BREAKER_LOCK:
+        state = dict(_FFMPEG_RGA_BREAKER_STATE.get(key) or {})
+    remaining = max(0.0, float(state.get('tripped_until', 0.0) or 0.0) - now)
+    state['remaining_seconds'] = remaining
+    state['open'] = remaining > 0.0
+    return state
+
+
+def _trip_ffmpeg_rga_breaker(src, reason, cooldown_seconds):
+    key = str(src or '')
+    now_mono = time.monotonic()
+    now_wall = time.time()
+    cooldown = max(1.0, float(cooldown_seconds or 0.0))
+    with _FFMPEG_RGA_BREAKER_LOCK:
+        previous = _FFMPEG_RGA_BREAKER_STATE.get(key) or {}
+        state = {
+            'tripped_until': now_mono + cooldown,
+            'tripped_at': now_wall,
+            'reason': str(reason or 'ffmpeg_rga_error'),
+            'trip_count': int(previous.get('trip_count', 0) or 0) + 1,
+        }
+        _FFMPEG_RGA_BREAKER_STATE[key] = state
+    return dict(state)
+
+
+def _ffmpeg_rga_options(video_cfg, src):
+    raw = video_cfg.get('ffmpeg_rga', {}) if isinstance(video_cfg, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+    width = max(0, _safe_int(raw.get('width', 0), 0))
+    height = max(0, _safe_int(raw.get('height', 0), 0))
+    if bool(width) != bool(height):
+        width = 0
+        height = 0
+    if width and (width < 68 or width > 8128 or width % 16 != 0):
+        raise ValueError('ffmpeg_rga.width must be 68..8128 and 16-pixel aligned')
+    if height and (height < 2 or height > 8128 or height % 2 != 0):
+        raise ValueError('ffmpeg_rga.height must be 2..8128 and even')
+    return {
+        'width': width,
+        'height': height,
+        'core': _choose_ffmpeg_rga_core(src, raw.get('core', 'auto')),
+        'async_depth': min(4, max(0, _safe_int(raw.get('async_depth', 1), 1))),
+        'afbc': _as_bool(raw.get('afbc', False), False),
+        'breaker_enabled': _as_bool(raw.get('breaker_enabled', True), True),
+        'breaker_error_threshold': max(1, _safe_int(raw.get('breaker_error_threshold', 1), 1)),
+        'breaker_window_seconds': max(1.0, _safe_float(raw.get('breaker_window_seconds', 60.0), 60.0)),
+        'breaker_cooldown_seconds': max(1.0, _safe_float(raw.get('breaker_cooldown_seconds', 300.0), 300.0)),
+    }
+
+
+def _build_ffmpeg_rga_filter(width, height, core, async_depth=1, afbc=False):
+    return (
+        'scale_rkrga='
+        f'w={int(width)}:h={int(height)}:format=bgr24:'
+        f'force_original_aspect_ratio=disable:core={core}:'
+        f'async_depth={int(async_depth)}:afbc={1 if afbc else 0},'
+        'hwdownload,format=bgr24'
+    )
 
 def _gstreamer_bgr_mode(value=None):
     raw = str(value or os.environ.get('CLEANINGCAR_GSTREAMER_BGR_MODE', '') or '').strip().lower()
@@ -115,17 +213,34 @@ def _probe_ffmpeg_stream(src):
 class FfmpegRawVideoCapture:
     STDERR_HISTORY_LIMIT = 80
 
-    def __init__(self, src, decoder, stream_info, rtsp_latency_ms=200, read_timeout_seconds=5.0):
+    def __init__(
+        self,
+        src,
+        decoder,
+        stream_info,
+        rtsp_latency_ms=200,
+        read_timeout_seconds=5.0,
+        output_width=0,
+        output_height=0,
+        video_filter='',
+        use_drm_prime=False,
+        backend='ffmpeg_rawvideo',
+        rga_breaker=None,
+    ):
         self.src = str(src)
         self.decoder = str(decoder or '').strip()
-        self.width = int((stream_info or {}).get('width') or 0)
-        self.height = int((stream_info or {}).get('height') or 0)
+        self.input_width = int((stream_info or {}).get('width') or 0)
+        self.input_height = int((stream_info or {}).get('height') or 0)
+        self.width = int(output_width or self.input_width)
+        self.height = int(output_height or self.input_height)
         self.fps = float((stream_info or {}).get('fps') or 0.0)
         self.codec_name = str((stream_info or {}).get('codec_name') or '').strip().lower()
         self.frame_bytes = max(0, self.width * self.height * 3)
         self.read_timeout_seconds = max(0.0, float(read_timeout_seconds or 0.0))
         self.proc = None
-        self.backend = 'ffmpeg_rawvideo'
+        self.backend = str(backend or 'ffmpeg_rawvideo')
+        self.video_filter = str(video_filter or '').strip()
+        self.use_drm_prime = bool(use_drm_prime)
         self._opened = False
         self._stderr_thread = None
         self._stderr_stop = threading.Event()
@@ -134,6 +249,16 @@ class FfmpegRawVideoCapture:
         self._recent_error_match_count = 0
         self._last_read_error = ''
         self._last_read_error_ts = 0.0
+        breaker = rga_breaker if isinstance(rga_breaker, dict) else {}
+        self._rga_breaker_enabled = _as_bool(breaker.get('enabled', False), False)
+        self._rga_breaker_error_threshold = max(1, _safe_int(breaker.get('error_threshold', 1), 1))
+        self._rga_breaker_window_seconds = max(1.0, _safe_float(breaker.get('window_seconds', 60.0), 60.0))
+        self._rga_breaker_cooldown_seconds = max(1.0, _safe_float(breaker.get('cooldown_seconds', 300.0), 300.0))
+        self._rga_error_timestamps = deque()
+        self._breaker_lock = threading.Lock()
+        self._breaker_tripped = False
+        self._breaker_reason = ''
+        self._breaker_tripped_at = 0.0
         if self.width <= 0 or self.height <= 0 or self.frame_bytes <= 0 or not self.decoder:
             return
         cmd = [
@@ -153,18 +278,30 @@ class FfmpegRawVideoCapture:
                 '-max_delay',
                 str(max(0, int(rtsp_latency_ms)) * 1000),
             ])
+        if self.use_drm_prime:
+            cmd.extend([
+                '-hwaccel',
+                'rkmpp',
+                '-hwaccel_output_format',
+                'drm_prime',
+            ])
         cmd.extend([
             '-c:v',
             self.decoder,
             '-i',
             self.src,
             '-an',
+        ])
+        if self.video_filter:
+            cmd.extend(['-vf', self.video_filter])
+        cmd.extend([
             '-pix_fmt',
             'bgr24',
             '-f',
             'rawvideo',
             'pipe:1',
         ])
+        self.command = list(cmd)
         try:
             self.proc = subprocess.Popen(
                 cmd,
@@ -181,7 +318,13 @@ class FfmpegRawVideoCapture:
             self._opened = False
 
     def isOpened(self):
-        return bool(self._opened and self.proc is not None and self.proc.poll() is None and self.proc.stdout is not None)
+        return bool(
+            not getattr(self, '_breaker_tripped', False)
+            and self._opened
+            and self.proc is not None
+            and self.proc.poll() is None
+            and self.proc.stdout is not None
+        )
 
     @staticmethod
     def _is_error_stderr_line(line):
@@ -203,9 +346,64 @@ class FfmpegRawVideoCapture:
         )
         return any(marker in text for marker in markers)
 
+    @staticmethod
+    def _is_fatal_rga_stderr_line(line):
+        text = str(line or '').strip().lower()
+        if not text:
+            return False
+        direct_markers = (
+            'rga_mmu',
+            'memory larger than 4g',
+            'rga_job_commit',
+            'job buffer map failed',
+            'request commit failed',
+            'rga blit failed',
+            'rgablit fail',
+            'failed to call rockchiprga',
+        )
+        if any(marker in text for marker in direct_markers):
+            return True
+        return 'rga' in text and any(
+            marker in text
+            for marker in (
+                'invalid argument',
+                'error -22',
+                'failed: -22',
+                'submit failed',
+                'commit failed',
+                'buffer map failed',
+            )
+        )
+
     def _remember_read_error(self, message):
         self._last_read_error = str(message or '').strip()
         self._last_read_error_ts = time.time()
+
+    def _trip_rga_breaker(self, line):
+        reason = f'ffmpeg_rga_circuit_breaker: {str(line or "").strip()}'
+        with self._breaker_lock:
+            if self._breaker_tripped:
+                return
+            self._breaker_tripped = True
+            self._breaker_reason = reason
+            self._breaker_tripped_at = time.time()
+        self._remember_read_error(reason)
+        _trip_ffmpeg_rga_breaker(self.src, reason, self._rga_breaker_cooldown_seconds)
+        proc = self.proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def _record_rga_error(self, line):
+        now = time.monotonic()
+        self._rga_error_timestamps.append(now)
+        cutoff = now - self._rga_breaker_window_seconds
+        while self._rga_error_timestamps and self._rga_error_timestamps[0] < cutoff:
+            self._rga_error_timestamps.popleft()
+        if len(self._rga_error_timestamps) >= self._rga_breaker_error_threshold:
+            self._trip_rga_breaker(line)
 
     def _drain_stderr(self):
         proc = self.proc
@@ -225,6 +423,10 @@ class FfmpegRawVideoCapture:
                 if self._is_error_stderr_line(text):
                     self._recent_error_lines.append(text)
                     self._recent_error_match_count += 1
+                if self._rga_breaker_enabled and self._is_fatal_rga_stderr_line(text):
+                    self._record_rga_error(text)
+                    if self._breaker_tripped:
+                        break
         except Exception:
             return
 
@@ -233,15 +435,26 @@ class FfmpegRawVideoCapture:
             'backend': self.backend,
             'decoder': self.decoder,
             'codec_name': self.codec_name,
+            'input_width': getattr(self, 'input_width', self.width),
+            'input_height': getattr(self, 'input_height', self.height),
+            'output_width': self.width,
+            'output_height': self.height,
+            'video_filter': getattr(self, 'video_filter', ''),
             'read_timeout_seconds': self.read_timeout_seconds,
             'last_read_error': self._last_read_error,
             'last_read_error_ts': self._last_read_error_ts,
             'recent_stderr_lines': list(self._stderr_lines)[-8:],
             'recent_error_lines': list(self._recent_error_lines),
             'recent_error_match_count': int(self._recent_error_match_count),
+            'circuit_breaker_tripped': bool(getattr(self, '_breaker_tripped', False)),
+            'circuit_breaker_reason': getattr(self, '_breaker_reason', ''),
+            'circuit_breaker_tripped_at': getattr(self, '_breaker_tripped_at', 0.0),
         }
 
     def read(self):
+        if getattr(self, '_breaker_tripped', False):
+            self.release()
+            return False, None
         if not self.isOpened():
             return False, None
         try:
@@ -311,7 +524,11 @@ class FfmpegRawVideoCapture:
                 proc.kill()
             except Exception:
                 pass
-        if self._stderr_thread is not None and self._stderr_thread.is_alive():
+        if (
+            self._stderr_thread is not None
+            and self._stderr_thread.is_alive()
+            and threading.current_thread() is not self._stderr_thread
+        ):
             self._stderr_thread.join(timeout=0.2)
 
     def get(self, prop_id):
@@ -920,6 +1137,72 @@ def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buf
     return None
 
 
+def _open_ffmpeg_rga_capture(src, video_cfg, rtsp_latency_ms=200, read_timeout_seconds=5.0):
+    if not isinstance(src, str):
+        return None
+    try:
+        options = _ffmpeg_rga_options(video_cfg, src)
+    except ValueError as exc:
+        print(f'[reader] FFmpeg RGA configuration rejected: {exc}')
+        return None
+
+    breaker_state = _ffmpeg_rga_breaker_status(src)
+    if options['breaker_enabled'] and breaker_state.get('open'):
+        print(
+            '[reader] FFmpeg RGA circuit breaker open '
+            f'cooldown={breaker_state["remaining_seconds"]:.1f}s '
+            f'trips={int(breaker_state.get("trip_count", 0) or 0)}'
+        )
+        return None
+
+    stream_info = _probe_ffmpeg_stream(src)
+    decoder_name = FFMPEG_CODEC_TO_RKMPP_DECODER.get(
+        str((stream_info or {}).get('codec_name') or '').strip().lower(),
+        '',
+    )
+    if not decoder_name:
+        print('[reader] FFmpeg RGA stream probe or RKMPP decoder selection failed')
+        return None
+
+    output_width = int(options['width'] or stream_info['width'])
+    output_height = int(options['height'] or stream_info['height'])
+    video_filter = _build_ffmpeg_rga_filter(
+        output_width,
+        output_height,
+        options['core'],
+        async_depth=options['async_depth'],
+        afbc=options['afbc'],
+    )
+    cap = FfmpegRawVideoCapture(
+        src,
+        decoder_name,
+        stream_info,
+        rtsp_latency_ms=rtsp_latency_ms,
+        read_timeout_seconds=read_timeout_seconds,
+        output_width=output_width,
+        output_height=output_height,
+        video_filter=video_filter,
+        use_drm_prime=True,
+        backend='ffmpeg_rga',
+        rga_breaker={
+            'enabled': options['breaker_enabled'],
+            'error_threshold': options['breaker_error_threshold'],
+            'window_seconds': options['breaker_window_seconds'],
+            'cooldown_seconds': options['breaker_cooldown_seconds'],
+        },
+    )
+    if _is_capture_opened(cap):
+        print(
+            '[reader] Using FFmpeg RKMPP+RGA '
+            f'decoder={decoder_name} core={options["core"]} '
+            f'output={output_width}x{output_height} async_depth={options["async_depth"]}'
+        )
+        return cap
+    _safe_release_capture(cap)
+    print('[reader] FFmpeg RKMPP+RGA open failed')
+    return None
+
+
 def _open_gstreamer_hardware_capture(
     src,
     rtsp_latency_ms=200,
@@ -1060,7 +1343,7 @@ def create_video_reader(path, args):
     config = getattr(args, '_config', {}) or {}
     video_cfg = config.get('video', {}) or {}
     decode_backend = str(video_cfg.get('decode_backend', 'auto') or 'auto').strip().lower()
-    if decode_backend not in {'auto', 'ffmpeg', 'gstreamer'}:
+    if decode_backend not in {'auto', 'ffmpeg', 'ffmpeg_rga', 'gstreamer'}:
         decode_backend = 'auto'
     rtsp_latency_ms = _safe_int(video_cfg.get('rtsp_latency_ms', 200), 200)
     rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
@@ -1087,6 +1370,22 @@ def create_video_reader(path, args):
         return None, decode_meta
 
     if hw:
+        if decode_backend == 'ffmpeg_rga':
+            attempt_order.append('ffmpeg_rga')
+            cap_hw = _open_ffmpeg_rga_capture(
+                path,
+                video_cfg=video_cfg,
+                rtsp_latency_ms=rtsp_latency_ms,
+                read_timeout_seconds=reader_frame_timeout_seconds,
+            )
+            if _is_capture_opened(cap_hw):
+                decode_meta['decode_mode'] = 'hw'
+                decode_meta['decode_backend'] = 'ffmpeg_rga'
+                return cap_hw, decode_meta
+            _safe_release_capture(cap_hw)
+            decode_meta['fallback_used'] = False
+            decode_meta['fallback_reason'] = 'ffmpeg_rga_open_failed_or_circuit_open'
+            return None, decode_meta
         if decode_backend in {'auto', 'gstreamer'}:
             attempt_order.append('gstreamer_hw')
             cap_hw = _open_gstreamer_hardware_capture(
@@ -1128,7 +1427,9 @@ def create_video_reader(path, args):
     decode_meta['decode_backend'] = 'none'
     decode_meta['fallback_used'] = bool(decode_backend == 'auto' and len(attempt_order) > 1)
     if not decode_meta['fallback_reason']:
-        if decode_backend == 'ffmpeg':
+        if decode_backend == 'ffmpeg_rga':
+            decode_meta['fallback_reason'] = 'ffmpeg_rga_open_failed_or_circuit_open'
+        elif decode_backend == 'ffmpeg':
             decode_meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
         elif decode_backend == 'gstreamer':
             decode_meta['fallback_reason'] = 'gstreamer_hw_open_failed'

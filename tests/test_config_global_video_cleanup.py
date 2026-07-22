@@ -217,6 +217,40 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             self.assertEqual(manager.video["decode_backend"], "auto")
 
+    def test_config_manager_accepts_and_normalizes_ffmpeg_rga_backend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {
+                    "source": "demo.mp4",
+                    "decode_backend": "ffmpeg_rga",
+                    "ffmpeg_rga": {
+                        "core": "rga3_core1",
+                        "width": 640,
+                        "height": 360,
+                        "async_depth": 9,
+                        "breaker_enabled": True,
+                    },
+                },
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertEqual(manager.video["decode_backend"], "ffmpeg_rga")
+            self.assertEqual(manager.video["ffmpeg_rga"]["core"], "rga3_core1")
+            self.assertEqual(manager.video["ffmpeg_rga"]["width"], 640)
+            self.assertEqual(manager.video["ffmpeg_rga"]["height"], 360)
+            self.assertEqual(manager.video["ffmpeg_rga"]["async_depth"], 4)
+            self.assertEqual(manager.video["ffmpeg_rga"]["breaker_error_threshold"], 1)
+            self.assertEqual(manager.video["ffmpeg_rga"]["breaker_cooldown_seconds"], 300.0)
+
     def test_web_config_registry_exposes_wash_priority_pause_fields(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
