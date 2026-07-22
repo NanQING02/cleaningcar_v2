@@ -193,21 +193,28 @@ if [ -z "$PYTHON_BIN" ]; then
     python3-venv
     python3-pip
     python3-opencv
-    ffmpeg
+    gstreamer1.0-tools
+    gstreamer1.0-plugins-base
+    gstreamer1.0-plugins-good
+    gstreamer1.0-plugins-bad
+    gstreamer1.0-libav
   )
 
   if [ -n "$SUDO_PREFIX" ]; then
-    run_apt "install python/opencv/ffmpeg packages" \
+    run_apt "install python/opencv/gstreamer packages" \
       install_system_packages "$SUDO_PREFIX" "${APT_PACKAGES[@]}"
   else
-    run_apt "install python/opencv/ffmpeg packages" \
+    run_apt "install python/opencv/gstreamer packages" \
       install_system_packages "" "${APT_PACKAGES[@]}"
   fi
 
   CV2_STATUS="$("$PYTHON_SYS" - <<'EOF'
 try:
     import cv2
-    print("OK")
+    info = cv2.getBuildInformation()
+    lines = [line for line in info.splitlines() if "GStreamer" in line]
+    ok = any(("GStreamer:" in line and "YES" in line) for line in lines)
+    print("OK" if ok else "NO_GST")
 except Exception:
     print("NO_CV2")
 EOF
@@ -216,6 +223,11 @@ EOF
     echo "[setup] cv2 not available in system python"
     exit 1
   fi
+  if [ "$CV2_STATUS" = "NO_GST" ]; then
+    echo "[setup] system cv2 has no GStreamer support"
+    exit 1
+  fi
+
   "$PYTHON_SYS" -m venv --system-site-packages "$VENV_DIR"
   PYTHON_BIN="$VENV_DIR/bin/python"
   "$PYTHON_BIN" -m pip install --upgrade pip

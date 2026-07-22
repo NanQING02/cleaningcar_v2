@@ -104,11 +104,12 @@ class ConfigManager:
             raise ConfigError('video.source missing')
         video.pop('save_video', None)
         video.pop('rga_enable', None)
-        video.pop('gstreamer_bgr_mode', None)
-        video.pop('rtsp_appsink_max_buffers', None)
         video.setdefault('source_mode', 'auto')
-        video['hw_decode'] = True
-        video['decode_backend'] = 'ffmpeg'
+        video.setdefault('hw_decode', True)
+        decode_backend = str(video.get('decode_backend', 'auto') or 'auto').strip().lower()
+        if decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
+            decode_backend = 'auto'
+        video['decode_backend'] = decode_backend
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
         video.setdefault('fp_output_mode', '6')
@@ -122,11 +123,6 @@ class ConfigManager:
         except (TypeError, ValueError):
             reader_frame_timeout = 5.0
         video['reader_frame_timeout_seconds'] = max(0.0, reader_frame_timeout)
-        try:
-            reader_target_fps = float(video.get('reader_target_fps', 0.0))
-        except (TypeError, ValueError):
-            reader_target_fps = 0.0
-        video['reader_target_fps'] = max(0.0, reader_target_fps)
         try:
             segment_minutes = int(video.get('segment_minutes', 60))
         except (TypeError, ValueError):

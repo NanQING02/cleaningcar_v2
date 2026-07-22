@@ -38,14 +38,10 @@
 
 ### `video.hw_decode`
 
-- 读流只使用 `FFmpeg rkmpp` 硬解
-- 当前配置固定为 `video.decode_backend=ffmpeg`；旧配置里的 `auto`、`gstreamer` 或 `software` 会在加载时统一归一为 `ffmpeg`
-- 不使用 GStreamer，也不切软件解码；FFmpeg rkmpp 打开失败时主链路会按读流失败处理并重连或退出
-
-### `video.reader_target_fps`
-
-- FFmpeg rawvideo 输出限帧；`0` 表示不限制
-- 当前主路配置为 `20.0`，绕行配置为 `15.0`，用于减少进入 Python 的 BGR 裸帧数量
+- `true` 时，读流按 `GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解` 依次尝试
+- 当前配置建议 `video.decode_backend=auto`；只在排查特定链路时临时改成 `gstreamer` 或 `ffmpeg`
+- 排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式会明显降低 1080p RTSP 读流帧率
+- 若两级硬解都不可用，不再切软件解码；主链路会按读流失败处理并重连或退出
 
 ### `video.fp_output_mode`
 
@@ -85,11 +81,9 @@ FP 检测模型后处理模式：
 - `wheel.left_source` / `wheel.right_source`
   - 左右车轮视频源
 - `wheel.target_fps`
-  - 每路非活动状态节流推理频率；`wheel.event_driven=true` 且无 Zone A 活跃轨迹时，车轮 processor 暂停推理
+  - 每路非活动状态节流推理频率；`wheel.event_driven=true` 且无 Zone A 活跃轨迹时，车轮 processor 暂停推理，reader 仍持续拉流
 - `wheel.active_target_fps`
   - 主轨迹进入/经过 Zone A 后的车轮推理频率；`0` 表示活动窗口内不额外节流，只受模型推理耗时限制
-- `wheel.reader_event_driven` / `wheel.reader_idle_fps`
-  - 开启后，无 Zone A 活跃轨迹时车轮 reader 按空闲 FPS 节流拉流；当前配置空闲为 `1.0fps`
 - `wheel.classes`
   - 当前默认：`0-25`、`25-50`、`50-75`、`75-100`
   - `type=5` 上传时直接透传为 `wheelResults[].className`

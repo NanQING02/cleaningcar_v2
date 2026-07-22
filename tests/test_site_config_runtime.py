@@ -10,15 +10,13 @@ class SiteConfigRuntimeTests(unittest.TestCase):
     def test_main_and_bypass_plate_stride_match_runtime_configs(self):
         expected_plate_stride = {
             "configs/config.json": 2,
-            "configs/config_绕行.json": 2,
+            "configs/config_绕行.json": 1,
         }
         for relative, plate_stride in expected_plate_stride.items():
             with self.subTest(config=relative):
                 data = json.loads((PROJECT_ROOT / relative).read_text(encoding="utf-8"))
-                self.assertEqual(data["video"]["decode_backend"], "ffmpeg")
+                self.assertEqual(data["video"]["decode_backend"], "auto")
                 self.assertEqual(data["logic"]["plate_infer_stride"], plate_stride)
-                self.assertTrue(data["wheel"]["reader_event_driven"])
-                self.assertEqual(data["wheel"]["reader_idle_fps"], 1.0)
                 self.assertNotIn("run_mode", data["wheel"])
                 self.assertNotIn("service_url", data["wheel"])
                 self.assertNotIn("service_timeout_seconds", data["wheel"])
@@ -31,12 +29,10 @@ class SiteConfigRuntimeTests(unittest.TestCase):
         self.assertEqual(main["video"]["core_mask"], "0")
         self.assertEqual(main["logic"]["plate_core_mask"], "0")
         self.assertEqual(main["wheel"]["core_mask"], "2")
-        self.assertEqual(main["video"]["reader_target_fps"], 20.0)
 
         self.assertEqual(bypass["video"]["workers"], 1)
         self.assertEqual(bypass["video"]["core_mask"], "1")
         self.assertEqual(bypass["logic"]["plate_core_mask"], "1")
-        self.assertEqual(bypass["video"]["reader_target_fps"], 15.0)
         self.assertFalse(bypass["logic"]["zone_a_mask_enable"])
         self.assertFalse(bypass["logic"]["plate_requires_vehicle"])
         self.assertTrue(bypass["logic"]["disable_plate_only_events"])

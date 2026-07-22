@@ -68,7 +68,7 @@ def parse_args():
     parser.add_argument("--flush-timeout", type=float, default=10.0, help="Wait for upload queue to drain on exit.")
     parser.add_argument("--track-id", type=int, default=1, help="Fake main-camera track id used for binding.")
     parser.add_argument("--image-quality", type=int, default=85, help="JPEG quality for cached wheel frames.")
-    parser.add_argument("--hw-decode", action="store_true", default=True, help="使用 FFmpeg rkmpp 硬解读取车轮 RTSP。")
+    parser.add_argument("--hw-decode", action="store_true", help="Prefer hardware decode for wheel RTSP readers.")
     parser.add_argument("--force-event-driven", choices=["keep", "true", "false"], default="keep")
     parser.add_argument("--target-fps", type=float, default=0.0, help="Override wheel.target_fps when > 0.")
     parser.add_argument("--photo-bucket-seconds", type=float, default=0.0, help="Override wheel.photo_bucket_seconds when > 0.")
