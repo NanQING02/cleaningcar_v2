@@ -28,7 +28,7 @@
     "source": "rtsp://admin:yanya999@192.168.1.222:8557/h264",
     "source_mode": "camera",
     "hw_decode": true,
-    "decode_backend": "auto",
+    "decode_backend": "gstreamer",
     "rtsp_latency_ms": 100,
     "rtsp_appsink_max_buffers": 1,
     "workers": 1,
