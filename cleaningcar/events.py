@@ -347,7 +347,7 @@ class EventManager:
         self.disable_plate_only_events = True
         self.single_lifecycle_events = True
         self.require_vehicle_type_for_events = bool(self.logic.get('require_vehicle_type_for_events', False))
-        self.max_per_id_video_seconds = 600.0
+        self.max_per_id_video_seconds = 1500.0
         self.per_id_video_tail_seconds = 10.0
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
         self.per_id_type6_require_plate_candidate = bool(
