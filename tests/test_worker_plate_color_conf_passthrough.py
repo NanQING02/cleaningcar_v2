@@ -74,6 +74,23 @@ class _FakeWaterOnlyPostprocessor:
         return boxes
 
 
+class _FakeNoDetectionsPostprocessor:
+    @staticmethod
+    def prepare(frame):
+        return np.zeros((1, 16, 16, 3), dtype=np.uint8), {"dummy": 1}
+
+    @staticmethod
+    def postprocess(outputs):
+        boxes = np.array([[0.0, 0.0, 20.0, 20.0]], dtype=np.float32)
+        classes = np.array([0], dtype=np.int32)
+        scores = np.array([0.01], dtype=np.float32)
+        return boxes, classes, scores
+
+    @staticmethod
+    def map_boxes_to_original(boxes, lb_info):
+        return boxes
+
+
 class _FakeDualLpr:
     @staticmethod
     def infer_frame(frame, conf_thresh, iou_thresh):
@@ -223,6 +240,39 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         worker.run()
 
         self.assertEqual(dual_lpr.calls, 1)
+
+    def test_worker_runs_plate_inference_without_main_detections_when_vehicle_gate_disabled(self):
+        worker = self._build_worker(
+            postprocessor=_FakeNoDetectionsPostprocessor(),
+            dual_lpr=_FakeDualLpr(),
+            plate_requires_vehicle=False,
+        )
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        worker.task_q.put((5, frame))
+        worker.task_q.put(None)
+
+        worker.run()
+
+        result = worker.result_q.get_nowait()
+        self.assertIsNotNone(result)
+        _, _, _, _, det_payload = result
+        plate_items = [item for item in det_payload if int(item.get("cls", -1)) == int(LICENSE_CLASS)]
+        self.assertEqual(len(plate_items), 1)
+
+    def test_worker_skips_plate_inference_without_main_detections_when_vehicle_gate_enabled(self):
+        dual_lpr = _CountingDualLpr()
+        worker = self._build_worker(
+            postprocessor=_FakeNoDetectionsPostprocessor(),
+            dual_lpr=dual_lpr,
+            plate_requires_vehicle=True,
+        )
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        worker.task_q.put((6, frame))
+        worker.task_q.put(None)
+
+        worker.run()
+
+        self.assertEqual(dual_lpr.calls, 0)
 
 
 if __name__ == "__main__":

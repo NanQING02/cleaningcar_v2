@@ -39,6 +39,13 @@ def _safe_bool(value, default=False):
     return bool(value)
 
 
+def _safe_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _resolve_wheel_model_path(model_value, base_dir=None):
     raw = str(model_value or "").strip()
     if not raw:
@@ -122,6 +129,12 @@ def resolve_wheel_settings(config, base_dir=None):
         "nms_thresh": nms_thresh,
         "imgsz": imgsz,
         "core_mask": str(raw.get("core_mask", "") or "").strip(),
+        "reader_stale_seconds": max(0.0, _safe_float(raw.get("reader_stale_seconds", 5.0), 5.0)),
+        "reader_stale_check_interval_frames": max(
+            1,
+            _safe_int(raw.get("reader_stale_check_interval_frames", 15), 15),
+        ),
+        "reader_stale_hash_size": max(4, min(_safe_int(raw.get("reader_stale_hash_size", 16), 16), 64)),
     }
 
 
@@ -158,13 +171,17 @@ def select_best_detection(
         x1, y1, x2, y2 = [float(v) for v in box[:4]]
         score_f = float(score)
         cls_id_int = int(cls_id)
-        candidate_key = (cls_id_int, -score_f)
+        center_x = (x1 + x2) * 0.5
+        center_y = (y1 + y2) * 0.5
+        has_frame_center = frame_w > 0 and frame_h > 0
+        distance = (center_x - frame_cx) ** 2 + (center_y - frame_cy) ** 2 if has_frame_center else 0.0
+        if has_frame_center:
+            candidate_key = (distance, -score_f, cls_id_int)
+        else:
+            candidate_key = (-score_f, cls_id_int)
         if best_key is not None and candidate_key >= best_key:
             continue
         best_key = candidate_key
-        center_x = (x1 + x2) * 0.5
-        center_y = (y1 + y2) * 0.5
-        distance = (center_x - frame_cx) ** 2 + (center_y - frame_cy) ** 2
         best_item = {
             "box": [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))],
             "classId": cls_id_int,
@@ -291,6 +308,7 @@ class WheelResultCache:
                     capture_ts = float(entry.get("capture_ts", 0.0) or 0.0)
                     time_delta = abs(match_ref_ts - capture_ts)
                     candidate_key = (
+                        float(entry.get("centerDistance", 0.0) or 0.0),
                         -float(entry.get("score", 0.0) or 0.0),
                         time_delta,
                         -capture_ts,
@@ -490,6 +508,9 @@ class WheelReaderThread(threading.Thread):
         stop_event,
         reader_fail_threshold=5,
         reconnect_delay=2.0,
+        stale_seconds=5.0,
+        stale_check_interval_frames=15,
+        stale_hash_size=16,
     ):
         super().__init__(daemon=True)
         self.side = str(side)
@@ -499,6 +520,9 @@ class WheelReaderThread(threading.Thread):
         self.stop_event = stop_event
         self.reader_fail_threshold = max(1, int(reader_fail_threshold))
         self.reconnect_delay = max(0.2, float(reconnect_delay))
+        self.stale_seconds = max(0.0, float(stale_seconds))
+        self.stale_check_interval_frames = max(1, int(stale_check_interval_frames))
+        self.stale_hash_size = max(4, min(int(stale_hash_size), 64))
         self.frames = 0
         self.open_count = 0
         self.reconnect_count = 0
@@ -509,10 +533,46 @@ class WheelReaderThread(threading.Thread):
         self.last_open_age = -1.0
         self.last_open_delay = 0.0
         self.last_frame_ts = 0.0
+        self.last_stale_seconds = 0.0
         self._log_throttle = WindowedLogThrottle()
 
     def _log(self, key, message, window_seconds=10.0):
         self._log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
+
+    @staticmethod
+    def _capture_failure_summary(cap):
+        if cap is None or not hasattr(cap, "diagnostics"):
+            return ""
+        try:
+            diag = cap.diagnostics() or {}
+        except Exception:
+            return ""
+        parts = []
+        last_error = str(diag.get("last_read_error") or "").strip()
+        if last_error:
+            parts.append(f"last_error={last_error}")
+        recent_error_count = int(diag.get("recent_error_match_count") or 0)
+        if recent_error_count:
+            parts.append(f"recent_decode_errors={recent_error_count}")
+        recent_error_lines = diag.get("recent_error_lines") or []
+        if recent_error_lines:
+            parts.append(f"error_tail={recent_error_lines[-4:]}")
+        return " ".join(parts)
+
+    def _frame_signature(self, frame):
+        if frame is None or not hasattr(frame, "shape"):
+            return None
+        try:
+            sample = cv2.resize(
+                frame,
+                (self.stale_hash_size, self.stale_hash_size),
+                interpolation=cv2.INTER_AREA,
+            )
+            if sample.ndim == 3:
+                sample = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+            return sample.tobytes()
+        except Exception:
+            return None
 
     def run(self):
         cap = None
@@ -522,6 +582,8 @@ class WheelReaderThread(threading.Thread):
         last_open_reason = "initial"
         last_open_started_ts = 0.0
         frames_since_open = 0
+        stale_signature = None
+        stale_since_ts = 0.0
         try:
             while not self.stop_event.is_set():
                 cap_is_open = bool(cap is not None and hasattr(cap, "isOpened") and cap.isOpened())
@@ -578,11 +640,13 @@ class WheelReaderThread(threading.Thread):
                         if self.stop_event.wait(self.reconnect_delay):
                             break
                         continue
-                    mode = str((decode_meta or {}).get("decode_mode") or "sw")
-                    backend = str((decode_meta or {}).get("decode_backend") or "software")
+                    mode = str((decode_meta or {}).get("decode_mode") or "none")
+                    backend = str((decode_meta or {}).get("decode_backend") or "none")
                     self.open_count += 1
                     open_started_ts = time.time()
                     frames_since_open = 0
+                    stale_signature = None
+                    stale_since_ts = 0.0
                     open_delay = open_started_ts - last_open_started_ts if last_open_started_ts > 0.0 else 0.0
                     last_gap = open_started_ts - last_frame_ts if last_frame_ts > 0.0 else -1.0
                     self.frames_since_open = 0
@@ -600,6 +664,7 @@ class WheelReaderThread(threading.Thread):
 
                 ok, frame = cap.read()
                 if not ok or frame is None:
+                    failure_summary = self._capture_failure_summary(cap)
                     consecutive_fails += 1
                     if consecutive_fails < self.reader_fail_threshold:
                         if self.stop_event.wait(0.05):
@@ -620,6 +685,7 @@ class WheelReaderThread(threading.Thread):
                             f"reason=read_fail_threshold consecutive_fails={consecutive_fails} "
                             f"threshold={self.reader_fail_threshold} frames_since_open={frames_since_open} "
                             f"last_frame_gap={last_gap:.2f}s open_age={open_age:.2f}s source={self.source}"
+                            f"{(' ' + failure_summary) if failure_summary else ''}"
                         ),
                         window_seconds=10.0,
                     )
@@ -640,6 +706,47 @@ class WheelReaderThread(threading.Thread):
                 self.frames += 1
                 frames_since_open += 1
                 last_frame_ts = time.time()
+                if self.stale_seconds > 0.0 and frames_since_open % self.stale_check_interval_frames == 0:
+                    signature = self._frame_signature(frame)
+                    if signature is not None:
+                        if stale_signature is None or signature != stale_signature:
+                            stale_signature = signature
+                            stale_since_ts = last_frame_ts
+                            self.last_stale_seconds = 0.0
+                        else:
+                            stale_age = max(0.0, last_frame_ts - stale_since_ts)
+                            self.last_stale_seconds = stale_age
+                            if stale_age >= self.stale_seconds:
+                                next_reconnect = self.reconnect_count + 1
+                                open_age = last_frame_ts - open_started_ts if open_started_ts > 0.0 else -1.0
+                                self.last_reconnect_reason = "stale_frame"
+                                self.last_frame_gap = 0.0
+                                self.last_open_age = open_age
+                                self.frames_since_open = frames_since_open
+                                self._log(
+                                    key=f"wheel.reader.stale.{self.side}",
+                                    message=(
+                                        f"[wheel:{self.side}] reader frame stale, reconnect #{next_reconnect} "
+                                        f"reason=stale_frame stale_age={stale_age:.2f}s "
+                                        f"threshold={self.stale_seconds:.2f}s frames_since_open={frames_since_open} "
+                                        f"open_age={open_age:.2f}s source={self.source}"
+                                    ),
+                                    window_seconds=10.0,
+                                )
+                                try:
+                                    cap.release()
+                                except Exception:
+                                    pass
+                                cap = None
+                                consecutive_fails = 0
+                                self.reconnect_count = next_reconnect
+                                last_open_reason = "stale_frame"
+                                self.last_open_reason = last_open_reason
+                                stale_signature = None
+                                stale_since_ts = 0.0
+                                if self.stop_event.wait(self.reconnect_delay):
+                                    break
+                                continue
                 self.frames_since_open = frames_since_open
                 self.last_frame_ts = last_frame_ts
                 self.last_open_age = last_frame_ts - open_started_ts if open_started_ts > 0.0 else -1.0
@@ -833,8 +940,12 @@ class WheelDetectionService:
             hw_decode=bool(hw_decode),
             _config=self.config,
         )
-        self.reader_fail_threshold = max(1, int((self.config or {}).get("reader_fail_threshold", 5)))
-        self.reader_reconnect_delay = max(0.2, float((self.config or {}).get("reader_reconnect_delay", 2.0)))
+        wheel_cfg = (self.config or {}).get("wheel", {}) or {}
+        self.reader_fail_threshold = max(1, int(wheel_cfg.get("reader_fail_threshold", 5)))
+        self.reader_reconnect_delay = max(0.2, float(wheel_cfg.get("reader_reconnect_delay", 2.0)))
+        self.reader_stale_seconds = float(self.settings.get("reader_stale_seconds", 5.0))
+        self.reader_stale_check_interval_frames = int(self.settings.get("reader_stale_check_interval_frames", 15))
+        self.reader_stale_hash_size = int(self.settings.get("reader_stale_hash_size", 16))
         configured_imgsz = self.settings.get("imgsz")
         self.imgsz = max(64, int(configured_imgsz if configured_imgsz else imgsz))
         self.core_mask = parse_core_mask(self.settings.get("core_mask"))
@@ -914,6 +1025,9 @@ class WheelDetectionService:
                 stop_event=self.stop_event,
                 reader_fail_threshold=self.reader_fail_threshold,
                 reconnect_delay=self.reader_reconnect_delay,
+                stale_seconds=self.reader_stale_seconds,
+                stale_check_interval_frames=self.reader_stale_check_interval_frames,
+                stale_hash_size=self.reader_stale_hash_size,
             )
             processor = WheelProcessorThread(
                 side=side,
@@ -1034,6 +1148,7 @@ class WheelDetectionService:
                 "reader_last_frame_gap": float(getattr(reader, "last_frame_gap", -1.0) or -1.0),
                 "reader_last_open_age": float(getattr(reader, "last_open_age", -1.0) or -1.0),
                 "reader_last_open_delay": float(getattr(reader, "last_open_delay", 0.0) or 0.0),
+                "reader_last_stale_seconds": float(getattr(reader, "last_stale_seconds", 0.0) or 0.0),
                 "reader_alive": bool(reader.is_alive()) if reader is not None else False,
                 "processor_alive": bool(processor.is_alive()) if processor is not None else False,
             }

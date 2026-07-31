@@ -1,3 +1,4 @@
+import atexit
 import csv
 import os
 import threading
@@ -29,7 +30,7 @@ from .events import EventManager, EventUploader, WheelPhotoUploader
 from .log_throttle import WindowedLogThrottle
 from .monitoring import monitor_loop
 from .npu_monitor import format_npu_status, npu_status_flags, snapshot_npu_status
-from .plate import PlateTextTracker
+from .plate import PlateTextTracker, is_valid_plate, normalize_plate_candidate_text
 from .resize_accel import resize_backend_name, resize_bgr
 from .runtime_config import load_config
 from .runtime_signals import (
@@ -48,6 +49,7 @@ from .video_io import (
     create_h264_video_writer,
     create_video_reader,
     detect_source_mode,
+    emit_per_id_video_type6,
     finalize_per_id_recording,
     parse_core_mask,
     resolve_auto_plate_core_mask,
@@ -100,6 +102,16 @@ def _resolve_per_id_recording_params(width, height, source_fps, logic_cfg=None):
         'fps': resolved_fps,
         'frame_stride': 1,
     }
+
+
+def _resolve_per_id_video_source(logic_cfg=None, no_draw=False, draw_enabled=False):
+    logic_cfg = logic_cfg or {}
+    raw_value = str(logic_cfg.get('per_id_video_source', 'auto') or 'auto').strip().lower()
+    if raw_value in {'raw', 'source', 'original', 'origin'}:
+        return 'raw'
+    if raw_value in {'annotated', 'draw', 'debug'}:
+        return 'annotated'
+    return 'annotated' if (not no_draw and draw_enabled) else 'raw'
 
 
 def _ensure_plate_binding_state(frame_idx, state=None):
@@ -279,11 +291,108 @@ def _refresh_car_plate_cache_from_locked(
     return locked_car_to_plate
 
 
+def _append_pending_plate_candidate(
+    pending_plate_cache,
+    plate_id,
+    text,
+    frame_idx,
+    conf=None,
+    box=None,
+    plate_color='',
+    plate_color_conf=None,
+    plate_type='',
+    trusted=True,
+    max_entries=30,
+):
+    plate_id = _normalize_track_id(plate_id)
+    if plate_id is None:
+        return False
+    text = normalize_plate_candidate_text(text)
+    if not text or not is_valid_plate(text):
+        return False
+    try:
+        frame_idx = int(frame_idx)
+    except (TypeError, ValueError):
+        frame_idx = 0
+    history = pending_plate_cache.setdefault(plate_id, deque(maxlen=max(1, int(max_entries))))
+    history.append({
+        'text': text,
+        'conf': conf,
+        'frame': frame_idx,
+        'box': list(box) if box is not None else None,
+        'plate_color': str(plate_color or ''),
+        'plate_color_conf': plate_color_conf,
+        'plate_type': str(plate_type or ''),
+        'trusted': bool(trusted),
+    })
+    return True
+
+
+def _valid_pending_plate_candidates(pending_plate_cache, plate_id, frame_idx, ttl_frames):
+    plate_id = _normalize_track_id(plate_id)
+    if plate_id is None:
+        return []
+    try:
+        frame_idx = int(frame_idx)
+    except (TypeError, ValueError):
+        frame_idx = 0
+    ttl_frames = max(0, int(ttl_frames))
+    history = pending_plate_cache.get(plate_id) or ()
+    entries = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            entry_frame = int(entry.get('frame', frame_idx))
+        except (TypeError, ValueError):
+            continue
+        age = frame_idx - entry_frame
+        if 0 <= age <= ttl_frames:
+            entries.append(dict(entry))
+    return entries
+
+
+def _consume_pending_plate_candidates(pending_plate_cache, plate_id, frame_idx, ttl_frames):
+    entries = _valid_pending_plate_candidates(pending_plate_cache, plate_id, frame_idx, ttl_frames)
+    if entries:
+        pending_plate_cache.pop(int(plate_id), None)
+    return entries
+
+
+def _cleanup_pending_plate_cache(pending_plate_cache, frame_idx, ttl_frames):
+    try:
+        frame_idx = int(frame_idx)
+    except (TypeError, ValueError):
+        frame_idx = 0
+    ttl_frames = max(0, int(ttl_frames))
+    for plate_id in list(pending_plate_cache.keys()):
+        history = pending_plate_cache.get(plate_id)
+        if not history:
+            pending_plate_cache.pop(plate_id, None)
+            continue
+        maxlen = getattr(history, 'maxlen', None)
+        kept = deque(maxlen=maxlen)
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                entry_frame = int(entry.get('frame', frame_idx))
+            except (TypeError, ValueError):
+                continue
+            age = frame_idx - entry_frame
+            if 0 <= age <= ttl_frames:
+                kept.append(entry)
+        if kept:
+            pending_plate_cache[plate_id] = kept
+        else:
+            pending_plate_cache.pop(plate_id, None)
+
+
 def process_video(path, args):
     cap, decode_meta = create_video_reader(path, args)
 
     def _log_decode_open_result(stage, meta, success):
-        mode = str((meta or {}).get('decode_mode') or 'sw')
+        mode = str((meta or {}).get('decode_mode') or 'none')
         fallback_used = bool((meta or {}).get('fallback_used'))
         fallback_reason = str((meta or {}).get('fallback_reason') or '')
         source_kind = str((meta or {}).get('source_kind') or 'other')
@@ -291,7 +400,7 @@ def process_video(path, args):
             if mode == 'hw':
                 if fallback_used:
                     print(
-                        f'[reader] {stage}成功：硬解回退成功 '
+                        f'[reader] {stage}成功：硬解备用链路成功 '
                         f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
                     )
                 else:
@@ -299,19 +408,22 @@ def process_video(path, args):
                 return
             if fallback_used:
                 print(
-                    f'[reader] {stage}成功：硬解失败已切软解 '
+                    f'[reader] {stage}成功：解码备用链路成功 '
                     f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
                 )
                 return
-            print(f'[reader] {stage}成功：软解成功 source_kind={source_kind}')
+            print(f'[reader] {stage}成功：解码成功 source_kind={source_kind}')
             return
         if fallback_used:
             print(
-                f'[reader] {stage}失败：硬解失败已切软解，但软解也失败 '
+                f'[reader] {stage}失败：硬解链路不可用 '
                 f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
             )
             return
-        print(f'[reader] {stage}失败：软解失败 source_kind={source_kind}')
+        print(
+            f'[reader] {stage}失败：没有可用硬解链路 '
+            f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
+        )
 
     if cap is None or not hasattr(cap, 'isOpened') or not cap.isOpened():
         _log_decode_open_result('首次打开', decode_meta, False)
@@ -356,6 +468,36 @@ def process_video(path, args):
 
     def _throttled_log(key, message, window_seconds=10.0):
         log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
+
+    def _capture_failure_extra(cap_obj):
+        if cap_obj is None or not hasattr(cap_obj, 'diagnostics'):
+            return {}
+        try:
+            diag = cap_obj.diagnostics() or {}
+        except Exception:
+            return {}
+        recent_errors = diag.get('recent_error_lines') or []
+        extra = {
+            'reader_last_error': str(diag.get('last_read_error') or ''),
+            'reader_recent_error_count': int(diag.get('recent_error_match_count') or 0),
+        }
+        if recent_errors:
+            extra['reader_recent_error_tail'] = recent_errors[-4:]
+        return extra
+
+    def _capture_failure_summary(cap_obj):
+        extra = _capture_failure_extra(cap_obj)
+        last_error = str(extra.get('reader_last_error') or '')
+        recent_error_count = int(extra.get('reader_recent_error_count') or 0)
+        error_tail = extra.get('reader_recent_error_tail') or []
+        parts = []
+        if last_error:
+            parts.append(f'last_error={last_error}')
+        if recent_error_count:
+            parts.append(f'recent_decode_errors={recent_error_count}')
+        if error_tail:
+            parts.append(f'error_tail={error_tail}')
+        return ' '.join(parts), extra
 
     config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
     config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
@@ -480,7 +622,7 @@ def process_video(path, args):
                                  wheel_photo_uploader=wheel_photo_uploader,
                                  wheel_photo_base_dir=wheel_photo_base_dir,
                                  session_id=session_id,
-                                 wheel_photo_bucket_seconds=float(wheel_cfg.get('photo_bucket_seconds', 1.0)),
+                                 wheel_photo_bucket_seconds=float(wheel_cfg.get('photo_bucket_seconds', 0.5)),
                                  wheel_photo_min_score=float(wheel_cfg.get('photo_min_score', 0.3)))
     wheel_service = None
     candidate_wheel_service = None
@@ -523,7 +665,9 @@ def process_video(path, args):
     debug_tracks = getattr(args, 'debug_tracks', False) or debug_tracks_cfg or debug_overlay_flag
     draw_plate_boxes = bool(getattr(args, 'draw_plate_boxes', False) or logic_cfg.get('draw_plate_boxes', False))
     setattr(args, 'draw_plate_boxes', draw_plate_boxes)
+    plate_draw_stable_only = bool(logic_cfg.get('plate_draw_stable_only', True))
     event_use_annotated_frame = bool(not args.no_draw and (draw_plate_boxes or debug_water_boxes))
+    per_id_draw_enabled = bool(not args.no_draw)
 
     if debug_frame_file:
         debug_frame_file = Path(debug_frame_file)
@@ -535,7 +679,16 @@ def process_video(path, args):
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
     copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
-    if args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points):
+    per_id_video_source = _resolve_per_id_video_source(
+        logic_cfg,
+        no_draw=args.no_draw,
+        draw_enabled=per_id_draw_enabled,
+    )
+    if (
+        args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points)
+    ) or (
+        bool(logic_cfg.get('enable_per_id_video', False)) and per_id_video_source == 'raw'
+    ):
         copy_raw_frame_cache = True
     debug_frame_max_width = max(0, int(video_cfg.get('debug_frame_max_width', 960) or 0))
     debug_frame_quality = min(max(int(video_cfg.get('debug_frame_quality', 80) or 80), 1), 100)
@@ -558,6 +711,12 @@ def process_video(path, args):
     last_heartbeat_write = 0.0
     startup_emitted = False
     last_command_poll = 0.0
+    runtime_paused = False
+    runtime_pause_reason = ''
+    runtime_pause_changed_ts = None
+    wash_priority_active = False
+    wash_priority_active_tracks = []
+    wash_priority_last_change_ts = None
     task_q = Queue(maxsize=args.queue_size)
     result_q = Queue()
     dropped_frame_count = 0
@@ -568,9 +727,13 @@ def process_video(path, args):
     plate_binding_states = {}
     plate_binding_timeout_frames = max(1, int(config.get('track_timeout_frames', 60)))
     plate_binding_vehicle_missing_frames = max(1, int(config.get('track_timeout_frames', 60)))
+    pending_plate_cache = {}
+    pending_plate_cache_ttl_frames = max(1, int(logic_cfg.get('pending_plate_cache_ttl_frames', 40) or 40))
+    pending_plate_cache_max_entries = max(1, int(logic_cfg.get('pending_plate_cache_max_entries', 30) or 30))
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
+    event_manager.per_id_video_enabled = enable_per_id_video
     benchmark_force_recording_track_id = int(logic_cfg.get('benchmark_force_recording_track_id', 0) or 0)
     benchmark_force_capture_stride = max(0, int(logic_cfg.get('benchmark_force_capture_stride', 0) or 0))
     per_id_video_dir = None
@@ -702,8 +865,6 @@ def process_video(path, args):
                         f'[per-id-video] writer selected backend={writer_meta.get("writer_backend")} '
                         f'mode={writer_meta.get("writer_mode")} path={target_path}'
                     )
-                    if writer_meta.get("writer_mode") == "sw":
-                        print(f'[per-id-video] WARNING: software encoder fallback active path={target_path}')
                 if is_fallback_root:
                     print(f'[per-id-video] switched to local fallback directory: {root}')
                     per_id_video_dir = root
@@ -720,17 +881,21 @@ def process_video(path, args):
 
         print(f'[per-id-video] no usable writer output path, disable per-id video for this run: track={track_id}')
         enable_per_id_video = False
+        event_manager.per_id_video_enabled = False
         return None
 
     if enable_per_id_video:
         per_id_video_dir = resolve_per_id_video_root()
         if per_id_video_dir is None:
             enable_per_id_video = False
+            event_manager.per_id_video_enabled = False
         else:
+            event_manager.per_id_video_enabled = True
             print(
                 f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
                 f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} '
-                f'queue={per_id_video_queue_size} resize_backend={resize_backend_label}'
+                f'source={per_id_video_source} queue={per_id_video_queue_size} '
+                f'resize_backend={resize_backend_label}'
             )
 
     def collect_per_id_cleanup_roots():
@@ -861,6 +1026,7 @@ def process_video(path, args):
         return True
 
     def write_startup_heartbeat(stage='booting'):
+        _refresh_wash_priority_state()
         now = time.time()
         payload = {
             'timestamp': now,
@@ -887,6 +1053,12 @@ def process_video(path, args):
             'config_name': config_name,
             'source': str(path),
             'startup_stage': stage,
+            'runtime_paused': runtime_paused,
+            'runtime_pause_reason': runtime_pause_reason,
+            'runtime_pause_changed_ts': runtime_pause_changed_ts,
+            'wash_priority_active': wash_priority_active,
+            'wash_priority_active_tracks': wash_priority_active_tracks,
+            'wash_priority_last_change_ts': wash_priority_last_change_ts,
         }
         try:
             write_json_atomic(heartbeat_path, payload)
@@ -898,6 +1070,7 @@ def process_video(path, args):
         now = time.time()
         if not force and (now - last_heartbeat_write) < heartbeat_interval_seconds:
             return
+        _refresh_wash_priority_state()
         payload = {
             'timestamp': now,
             'pid': os.getpid(),
@@ -922,6 +1095,12 @@ def process_video(path, args):
             'config_path': config_path,
             'config_name': config_name,
             'source': str(path),
+            'runtime_paused': runtime_paused,
+            'runtime_pause_reason': runtime_pause_reason,
+            'runtime_pause_changed_ts': runtime_pause_changed_ts,
+            'wash_priority_active': wash_priority_active,
+            'wash_priority_active_tracks': wash_priority_active_tracks,
+            'wash_priority_last_change_ts': wash_priority_last_change_ts,
         }
         if extra:
             payload.update(extra)
@@ -930,6 +1109,27 @@ def process_video(path, args):
             last_heartbeat_write = now
         except Exception:
             pass
+
+    def _refresh_wash_priority_state():
+        nonlocal wash_priority_active, wash_priority_active_tracks, wash_priority_last_change_ts
+        active_tracks = []
+        for tid, st in list(getattr(event_manager, 'tracks', {}).items()):
+            if not isinstance(st, dict):
+                continue
+            events = st.get('events') or set()
+            if st.get('closed') or 5 in events:
+                continue
+            zone_active = bool(st.get('zone_a_enter_frame', -1) is not None and int(st.get('zone_a_enter_frame', -1) or -1) >= 0)
+            can_type1_fn = getattr(event_manager, '_can_emit_type1', None)
+            stable_zone_active = bool(zone_active and callable(can_type1_fn) and can_type1_fn(st))
+            if 1 in events or stable_zone_active:
+                active_tracks.append(int(tid))
+        active_tracks.sort()
+        active_now = bool(active_tracks)
+        if active_now != wash_priority_active or active_tracks != wash_priority_active_tracks:
+            wash_priority_active = active_now
+            wash_priority_active_tracks = active_tracks
+            wash_priority_last_change_ts = time.time()
 
     def emit_startup_signal_if_needed():
         nonlocal startup_emitted
@@ -990,6 +1190,29 @@ def process_video(path, args):
         print(f'[snapshot] kept frame={latest_frame_idx} tag={tag} files={saved}')
         return saved
 
+    def handle_set_runtime_pause(command_payload):
+        nonlocal cap, runtime_paused, runtime_pause_reason, runtime_pause_changed_ts, last_progress_ts
+        paused = command_payload.get('paused', False)
+        if isinstance(paused, str):
+            paused = paused.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            paused = bool(paused)
+        reason = str(command_payload.get('reason') or 'runtime_command').strip() or 'runtime_command'
+        if runtime_paused == paused and runtime_pause_reason == reason:
+            return {'paused': runtime_paused, 'reason': runtime_pause_reason}
+        runtime_paused = paused
+        runtime_pause_reason = reason if paused else ''
+        runtime_pause_changed_ts = time.time()
+        last_progress_ts = runtime_pause_changed_ts
+        if paused and cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+            cap = None
+        print(f'[runtime-pause] paused={int(runtime_paused)} reason={reason}')
+        return {'paused': runtime_paused, 'reason': reason}
+
     def _command_result_path(command_path, suffix):
         name = command_path.name
         if name.endswith('.cmd.json'):
@@ -1019,19 +1242,26 @@ def process_video(path, args):
                 if not payload:
                     raise ValueError('invalid command payload')
                 command_name = str(payload.get('cmd', '')).strip().lower()
-                if command_name != 'keep_snapshot':
-                    raise ValueError(f'unsupported command: {command_name or "empty"}')
-                saved = handle_keep_snapshot(payload)
-                write_json_atomic(
-                    _command_result_path(command_path, 'done'),
-                    {
+                if command_name == 'keep_snapshot':
+                    saved = handle_keep_snapshot(payload)
+                    result_payload = {
                         **meta,
                         'status': 'done',
                         'cmd': command_name,
                         'frame_idx': latest_frame_idx,
                         'captures': saved,
-                    },
-                )
+                    }
+                elif command_name == 'set_runtime_pause':
+                    pause_result = handle_set_runtime_pause(payload)
+                    result_payload = {
+                        **meta,
+                        'status': 'done',
+                        'cmd': command_name,
+                        **pause_result,
+                    }
+                else:
+                    raise ValueError(f'unsupported command: {command_name or "empty"}')
+                write_json_atomic(_command_result_path(command_path, 'done'), result_payload)
             except Exception as exc:
                 write_json_atomic(
                     _command_result_path(command_path, 'failed'),
@@ -1207,11 +1437,93 @@ def process_video(path, args):
     def close_per_id_writer(track_id, track_state):
         writer = per_id_writers.pop(track_id, None)
         if writer is None:
-            return
-        finalize_per_id_recording(writer, track_id, track_state, event_manager)
+            return False
+        return finalize_per_id_recording(
+            writer,
+            track_id,
+            track_state,
+            event_manager,
+            per_id_video_enabled=True,
+        )
 
     def finalize_per_id_for_track(track_id, track_state):
-        close_per_id_writer(track_id, track_state)
+        emitted = close_per_id_writer(track_id, track_state)
+        if emitted:
+            return
+        if not enable_per_id_video:
+            emit_per_id_video_type6(
+                track_id,
+                track_state,
+                event_manager,
+                per_id_video_enabled=False,
+            )
+
+    cleanup_done = False
+
+    def cleanup_runtime():
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+
+        if enable_per_id_video and per_id_writers:
+            for tid in list(per_id_writers.keys()):
+                track_state = event_manager.tracks.get(tid) or {}
+                close_per_id_writer(tid, track_state)
+        elif not enable_per_id_video:
+            for tid, track_state in list(event_manager.tracks.items()):
+                emit_per_id_video_type6(
+                    tid,
+                    track_state,
+                    event_manager,
+                    per_id_video_enabled=False,
+                )
+
+        if csv_f:
+            try:
+                csv_f.close()
+            except Exception:
+                pass
+        if wheel_service is not None:
+            try:
+                wheel_service.stop()
+            except Exception:
+                pass
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        monitor_stop.set()
+        if monitor_thread:
+            try:
+                monitor_thread.join(timeout=0.5)
+            except Exception:
+                pass
+        try:
+            event_manager.flush_inactive(
+                set(),
+                total_frames + int(config.get('track_timeout_frames', 60)) + 1,
+                finalize_per_id_for_track,
+            )
+        except Exception:
+            pass
+        try:
+            cleanup_alias_confirm(total_frames + alias_timeout + 1)
+        except Exception:
+            pass
+        if uploader:
+            try:
+                uploader.close()
+            except Exception:
+                pass
+        if wheel_photo_uploader:
+            try:
+                wheel_photo_uploader.close()
+            except Exception:
+                pass
+
+    atexit.register(cleanup_runtime)
 
     def mark_alias_confirm(alias_id, has_plate_text, frame_idx, require_text):
         if alias_id <= 0:
@@ -1267,6 +1579,71 @@ def process_video(path, args):
                     cv2.circle(frame_img, (ax, ay), 4, (255, 140, 0), -1)
                     cv2.putText(frame_img, f'A{track_id}', (ax + 4, ay - 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+    def apply_stable_plate_fields(track_id, det_ref, rows_ref):
+        if det_ref is None or det_ref.get('cls') != LICENSE_CLASS:
+            return
+        raw_text = str(det_ref.get('raw_text', det_ref.get('text', '')) or '').strip()
+        det_ref['raw_text'] = raw_text
+        locked_info = event_manager.get_locked_plate(track_id) if track_id and track_id > 0 else {}
+        locked_text = str((locked_info or {}).get('text') or '').strip()
+        locked_color = str((locked_info or {}).get('plate_color') or '').strip()
+        locked_color_conf = (locked_info or {}).get('plate_color_conf')
+        if plate_draw_stable_only or locked_text:
+            det_ref['text'] = locked_text
+            det_ref['plate_color'] = locked_color
+            det_ref['plate_color_conf'] = locked_color_conf if locked_color else None
+        row_idx = det_ref.get('row_idx', -1)
+        if row_idx is not None and 0 <= row_idx < len(rows_ref):
+            rows_ref[row_idx][-2] = str(det_ref.get('text') or '')
+            rows_ref[row_idx][-1] = raw_text
+
+    def draw_stable_plate_overlay(frame_img, det_items):
+        if args.no_draw or frame_img is None or not draw_plate_boxes:
+            return
+        for det in det_items or []:
+            if det.get('cls') != LICENSE_CLASS:
+                continue
+            box = det.get('box')
+            if not box or len(box) != 4:
+                continue
+            try:
+                x1, y1, x2, y2 = [int(round(v)) for v in box]
+            except Exception:
+                continue
+            label_name = CLASS_NAMES[LICENSE_CLASS]
+            score = det.get('score')
+            plate_text = str(det.get('text') or '').strip()
+            plate_color = str(det.get('plate_color') or '').strip()
+            label = plate_text or label_name
+            if plate_color and plate_text:
+                label = f'{label} {plate_color}'
+            try:
+                if score is not None:
+                    label = f'{label} {float(score):.2f}'
+            except Exception:
+                pass
+            color = select_box_color(label_name)
+            cv2.rectangle(frame_img, (x1, y1), (x2, y2), color, 2)
+            draw_text(
+                frame_img,
+                label,
+                (x1, max(0, y1 - 12)),
+                font_scale=0.65,
+                color=(255, 255, 255),
+                thickness=2,
+                anchor='lb',
+            )
+            for pt in det.get('landmarks', []) or []:
+                if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                    continue
+                cv2.circle(
+                    frame_img,
+                    (int(round(pt[0])), int(round(pt[1]))),
+                    3,
+                    (0, 255, 255),
+                    -1,
+                )
 
     def draw_debug_detections(frame_img, det_items):
         if frame_img is None:
@@ -1523,7 +1900,7 @@ def process_video(path, args):
                     if event_use_annotated_frame and frame_out is not None
                     else (raw_frame_for_idx if raw_frame_for_idx is not None else frame_out)
                 )
-                assignments = vehicle_tracker.update(next_frame_to_write, vehicle_dets) if vehicle_dets else []
+                assignments = vehicle_tracker.update(next_frame_to_write, vehicle_dets)
                 for det_ref, track_id in zip(vehicle_payload_refs, assignments):
                     det_ref['track_id'] = track_id
                     car_boxes[track_id] = det_ref['box']
@@ -1531,6 +1908,11 @@ def process_video(path, args):
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = track_id
                 active_car_ids = {det_ref.get('track_id', -1) for det_ref in vehicle_payload_refs if det_ref.get('track_id', -1) > 0}
+                _cleanup_pending_plate_cache(
+                    pending_plate_cache,
+                    next_frame_to_write,
+                    pending_plate_cache_ttl_frames,
+                )
                 license_dets = [d for d in det_payload if d.get('cls') == LICENSE_CLASS] if det_payload else []
                 if license_dets and car_boxes:
                     for det in license_dets:
@@ -1552,10 +1934,11 @@ def process_video(path, args):
                     plate_id = upd.get('track_id', -1)
                     text_val = upd.get('text', '')
                     is_guess = bool(upd.get('is_guess', False))
+                    det['raw_text'] = str(det.get('raw_text', det.get('text', '')) or '')
                     row_idx = det.get('row_idx', -1)
                     if row_idx is not None and 0 <= row_idx < len(rows):
-                        rows[row_idx][-1] = det.get('text', '')
-                        if text_val:
+                        rows[row_idx][-1] = det.get('raw_text', '')
+                        if text_val and not plate_draw_stable_only:
                             rows[row_idx][-2] = text_val
                     if plate_id > 0:
                         state = _ensure_plate_binding_state(
@@ -1585,6 +1968,32 @@ def process_video(path, args):
                             vehicle_box = det.get('vehicle_box_candidate')
                         if locked_car_id is not None and vehicle_box is not None:
                             car_boxes.setdefault(locked_car_id, vehicle_box)
+                        plate_candidate_history = []
+                        if locked_car_id is not None:
+                            plate_candidate_history = _consume_pending_plate_candidates(
+                                pending_plate_cache,
+                                plate_id,
+                                next_frame_to_write,
+                                pending_plate_cache_ttl_frames,
+                            )
+                        else:
+                            raw_text = str(det.get('raw_text', det.get('text', '')) or '')
+                            candidate_text = raw_text
+                            if not is_valid_plate(normalize_plate_candidate_text(candidate_text)):
+                                candidate_text = text_val if text_val and not is_guess else ''
+                            _append_pending_plate_candidate(
+                                pending_plate_cache,
+                                plate_id,
+                                candidate_text,
+                                next_frame_to_write,
+                                conf=det.get('score'),
+                                box=det.get('box'),
+                                plate_color=det.get('plate_color', ''),
+                                plate_color_conf=det.get('plate_color_conf'),
+                                plate_type=det.get('plate_type', ''),
+                                trusted=True,
+                                max_entries=pending_plate_cache_max_entries,
+                            )
                         plate_track_info[plate_id] = {
                             'box': det['box'],
                             'text': text_val,
@@ -1595,6 +2004,8 @@ def process_video(path, args):
                             'plate_color_conf': det.get('plate_color_conf'),
                             'plate_type': det.get('plate_type', ''),
                             'car_id': locked_car_id if locked_car_id is not None else -1,
+                            'plate_candidate_history': plate_candidate_history,
+                            'det_ref': det,
                         }
                 removed_locked_ids = _cleanup_plate_binding_states(
                     plate_binding_states=plate_binding_states,
@@ -1644,7 +2055,12 @@ def process_video(path, args):
                         plate_color=info.get('plate_color', ''),
                         plate_color_conf=info.get('plate_color_conf'),
                         plate_type=info.get('plate_type', ''),
+                        plate_candidate_history=info.get('plate_candidate_history'),
                     )
+                    det_ref = info.get('det_ref')
+                    if det_ref is not None:
+                        det_ref['track_id'] = track_key
+                        apply_stable_plate_fields(track_key, det_ref, rows)
                     alias_seen.add(track_key)
                     plates_with_updates.add(track_key)
                 for det_ref in vehicle_payload_refs:
@@ -1663,6 +2079,12 @@ def process_video(path, args):
                                 known_text = track_state.get('plate_text', '')
                             confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
                             anchor_pt = anchor_point_for(det_ref['box'])
+                            plate_candidate_history = _consume_pending_plate_candidates(
+                                pending_plate_cache,
+                                alias_plate_id,
+                                next_frame_to_write,
+                                pending_plate_cache_ttl_frames,
+                            )
                             event_manager.update_track(
                                 car_id,
                                 None,
@@ -1679,6 +2101,7 @@ def process_video(path, args):
                                 confirmed=confirmed_alias,
                                 cleaning_label=cleaning_label,
                                 anchor_point=anchor_pt,
+                                plate_candidate_history=plate_candidate_history,
                             )
                         annotate_locked_label(car_id, det_ref, rows, frame_out)
                         alias_seen.add(car_id)
@@ -1695,6 +2118,12 @@ def process_video(path, args):
                             known_text = track_state.get('plate_text', '')
                         confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
                         anchor_pt = anchor_point_for(det_ref['box'])
+                        plate_candidate_history = _consume_pending_plate_candidates(
+                            pending_plate_cache,
+                            cache_entry.get('plate_id'),
+                            next_frame_to_write,
+                            pending_plate_cache_ttl_frames,
+                        )
                         event_manager.update_track(
                             car_id,
                             None,
@@ -1711,6 +2140,7 @@ def process_video(path, args):
                             confirmed=confirmed_alias,
                             cleaning_label=cleaning_label,
                             anchor_point=anchor_pt,
+                            plate_candidate_history=plate_candidate_history,
                         )
                         alias_seen.add(car_id)
                         continue
@@ -1739,6 +2169,7 @@ def process_video(path, args):
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)
+                draw_stable_plate_overlay(frame_out, license_dets)
                 t_after_updates = time.perf_counter()
                 if debug_tracks:
                     for det_ref in vehicle_payload_refs:
@@ -1815,7 +2246,10 @@ def process_video(path, args):
                                 writer = None
                                 break
                         if writer is not None:
-                            frame_to_write = frame_out
+                            if per_id_video_source == 'raw' and raw_frame_for_idx is not None:
+                                frame_to_write = raw_frame_for_idx
+                            else:
+                                frame_to_write = frame_out
                             if frame_to_write is not None:
                                 writer.write(frame_to_write)
                 t_after_perid = time.perf_counter()
@@ -1877,12 +2311,45 @@ def process_video(path, args):
     while True:
         _advance_dropped_frames()
         poll_runtime_commands()
+        if runtime_paused:
+            last_progress_ts = time.time()
+            drain_results(block=False)
+            event_manager.flush_inactive(set(), next_frame_to_write, finalize_per_id_for_track)
+            write_heartbeat(
+                status='paused',
+                force=True,
+                extra={'runtime_pause_poll_interval_seconds': 0.1},
+            )
+            poll_runtime_commands(force=True)
+            if runtime_paused:
+                time.sleep(0.1)
+                continue
+        if cap is None:
+            write_heartbeat(
+                status='reader_reopen',
+                force=True,
+                extra={'reopen_after_runtime_pause': True},
+            )
+            cap, decode_meta = create_video_reader(path, args)
+            if cap and hasattr(cap, 'isOpened') and cap.isOpened():
+                _log_decode_open_result('恢复打开', decode_meta, True)
+                consecutive_fails = 0
+                write_heartbeat(status='running', force=True)
+            else:
+                _log_decode_open_result('恢复打开', decode_meta, False)
+                reconnect_count += 1
+                if reader_max_reconnect and reconnect_count >= reader_max_reconnect:
+                    print('[reader] max reconnect attempts reached during runtime resume, aborting stream.')
+                    break
+                time.sleep(reader_reconnect_delay)
+                continue
         write_heartbeat(status='running')
         storage_cleaner.run_due(reason='periodic')
         if frame_limit is not None and total_frames >= frame_limit:
             break
         ret, frame = cap.read()
         if not ret or frame is None:
+            failure_summary, failure_extra = _capture_failure_summary(cap)
             consecutive_fails += 1
             if is_file_input:
                 print('[reader] local file reached EOF or failed, stopping.')
@@ -1891,7 +2358,10 @@ def process_video(path, args):
                 write_heartbeat(
                     status='waiting_reader',
                     force=True,
-                    extra={'consecutive_reader_failures': consecutive_fails},
+                    extra={
+                        'consecutive_reader_failures': consecutive_fails,
+                        **failure_extra,
+                    },
                 )
                 time.sleep(0.05)
                 continue
@@ -1899,13 +2369,17 @@ def process_video(path, args):
             consecutive_fails = 0
             _throttled_log(
                 'reader.reconnect_attempt',
-                f'[reader] capture stalled, reconnect attempt #{reconnect_count}',
+                f'[reader] capture stalled, reconnect attempt #{reconnect_count}'
+                + (f' {failure_summary}' if failure_summary else ''),
                 window_seconds=15.0,
             )
             write_heartbeat(
                 status='reader_reconnect',
                 force=True,
-                extra={'reconnect_attempt': reconnect_count},
+                extra={
+                    'reconnect_attempt': reconnect_count,
+                    **failure_extra,
+                },
             )
             try:
                 cap.release()
@@ -2134,25 +2608,11 @@ def process_video(path, args):
             poll_runtime_commands(force=True)
             write_heartbeat(status='draining', force=True)
 
-    if enable_per_id_video and per_id_writers:
-        for tid in list(per_id_writers.keys()):
-            track_state = event_manager.tracks.get(tid) or {}
-            close_per_id_writer(tid, track_state)
-
-    if csv_f:
-        csv_f.close()
-    if wheel_service is not None:
-        wheel_service.stop()
-    cap.release()
-    monitor_stop.set()
-    if monitor_thread:
-        monitor_thread.join(timeout=0.5)
-    event_manager.flush_inactive(set(), total_frames + int(config.get('track_timeout_frames', 60)) + 1, finalize_per_id_for_track)
-    cleanup_alias_confirm(total_frames + alias_timeout + 1)
-    if uploader:
-        uploader.close()
-    if wheel_photo_uploader:
-        wheel_photo_uploader.close()
+    cleanup_runtime()
+    try:
+        atexit.unregister(cleanup_runtime)
+    except Exception:
+        pass
 
     elapsed = time.time() - start
     write_heartbeat(status='stopped', force=True, extra={'elapsed_seconds': elapsed})

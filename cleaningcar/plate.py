@@ -13,6 +13,13 @@ from .constants import (
 )
 
 
+_BODY_CONFUSION_MAP = {
+    "O": "0",
+    "I": "1",
+    "S": "5",
+}
+
+
 def normalize_plate_text(text):
     if not text:
         return ""
@@ -21,33 +28,96 @@ def normalize_plate_text(text):
     return filtered
 
 
-def is_valid_plate(text):
+def _normalize_plate_ocr_text(text):
+    if not text:
+        return ""
+    text = text.upper().replace("路", "").replace(".", "").replace(" ", "")
+    allowed = set(PLATE_ALLOWED_CHARS) | set(_BODY_CONFUSION_MAP.keys())
+    return "".join(ch for ch in text if ch in allowed)
+
+
+def _split_plate_tail(text):
+    if text.endswith('险品'):
+        return text[:-2], '险品'
+    if text and text[-1] in PLATE_SUFFIX_CHARS:
+        return text[:-1], text[-1]
+    return text, ''
+
+
+def _has_numeric_serial(text):
+    body_with_prefix, _tail = _split_plate_tail(text)
+    return any(ch in '0123456789' for ch in body_with_prefix[2:])
+
+
+def _is_valid_plate_normalized(text):
     if not text:
         return False
-    text = normalize_plate_text(text)
-    if PLATE_REGEX.match(text):
-        return True
-    if PLATE_REGEX_NE.match(text):
-        return True
     if len(text) < 7 or len(text) > 9:
         return False
     if text[0] not in PROVINCE_CHARS or text[1] not in PLATE_LETTERS:
         return False
+    if not _has_numeric_serial(text):
+        return False
 
-    tail = ''
-    if text.endswith('险品'):
-        tail = '险品'
-    elif text[-1] in PLATE_SUFFIX_CHARS:
-        tail = text[-1]
+    if PLATE_REGEX.match(text):
+        return True
+    if PLATE_REGEX_NE.match(text):
+        return True
+
+    body_with_prefix, tail = _split_plate_tail(text)
     if not tail:
         return False
 
-    body = text[2:-len(tail)]
+    body = body_with_prefix[2:]
     if len(body) < 4 or len(body) > 6:
         return False
     if not all(ch in ALNUM for ch in body):
         return False
     return True
+
+
+def normalize_plate_candidate_text(text):
+    text = _normalize_plate_ocr_text(text)
+    if len(text) >= 2 and not _has_numeric_serial(text):
+        return text
+    if not text or _is_valid_plate_normalized(text):
+        body_with_prefix, tail = _split_plate_tail(text)
+        chars = list(body_with_prefix)
+        changed = False
+        for idx in range(2, len(chars)):
+            if chars[idx] == "O":
+                chars[idx] = "0"
+                changed = True
+            elif chars[idx] == "I":
+                chars[idx] = "1"
+                changed = True
+        if changed:
+            corrected = ''.join(chars) + tail
+            if _is_valid_plate_normalized(corrected):
+                return corrected
+        return text
+    if len(text) < 3:
+        return text
+
+    body_with_prefix, tail = _split_plate_tail(text)
+    chars = list(body_with_prefix)
+    changed = False
+    for idx in range(2, len(chars)):
+        replacement = _BODY_CONFUSION_MAP.get(chars[idx])
+        if replacement:
+            chars[idx] = replacement
+            changed = True
+    if not changed:
+        return text
+    corrected = ''.join(chars) + tail
+    if _is_valid_plate_normalized(corrected):
+        return corrected
+    return text
+
+
+def is_valid_plate(text):
+    text = normalize_plate_candidate_text(text)
+    return _is_valid_plate_normalized(text)
 
 
 class PlateTextTracker:
@@ -75,7 +145,7 @@ class PlateTextTracker:
     def update(self, frame_idx, detections):
         results = []
         det_boxes = [np.array(det["box"], dtype=float) for det in detections]
-        det_texts = [normalize_plate_text(det.get("text", "")) for det in detections]
+        det_texts = [normalize_plate_candidate_text(det.get("text", "")) for det in detections]
         track_ids = list(self.tracks.keys())
         iou_matrix = None
         if track_ids and det_boxes:
@@ -171,7 +241,7 @@ class PlateTextTracker:
                     tid = track_id
                     break
             if tid is None:
-                results.append({"track_id": -1, "text": normalize_plate_text(det.get("text", "")), "is_guess": False})
+                results.append({"track_id": -1, "text": normalize_plate_candidate_text(det.get("text", "")), "is_guess": False})
                 continue
             track = self.tracks.get(tid)
             text = track.get("locked") or ""

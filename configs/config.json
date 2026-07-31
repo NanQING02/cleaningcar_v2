@@ -1,15 +1,15 @@
 {
   "system": {
-    "device_id": "RK3588-BYPASS",
+    "device_id": "RK3588-DEV",
     "api": {
       "url": "http://127.0.0.1:28014/api/vehicle/wash-event",
       "token": "",
-      "capture_mode": "base64",
+      "capture_mode": "path",
       "wheel_photo_url": ""
     },
     "wheel_photo_base_dir": "/data/ftp",
     "monitor_interval": 10,
-    "metrics_path": "/dev/shm/metrics_bypass.json",
+    "metrics_path": "/dev/shm/metrics_laneA.json",
     "cpu_mask": "",
     "command_dir": "/dev/shm/cleaningcar_cmd",
     "startup_flag_path": "/dev/shm/cleaningcar_started.flag",
@@ -25,32 +25,34 @@
     "performance_lock_script": ""
   },
   "video": {
-    "source": "rtsp://user:password@bypass-camera-ip:port/path",
+    "source": "rtsp://admin:YanyA.999.@192.168.1.111:8557/h264",
     "source_mode": "camera",
     "hw_decode": true,
+    "decode_backend": "gstreamer",
     "rtsp_latency_ms": 100,
     "rtsp_appsink_max_buffers": 1,
     "workers": 1,
-    "core_mask": "1",
+    "core_mask": "0",
     "worker_core_strategy": "auto",
     "fp_output_mode": "6",
-    "csv": "./video_result/test_bypass.csv",
+    "csv": "./video_result/test.csv",
     "debug_frame_path": "off",
     "debug_frame_interval": 30,
     "segment_minutes": 60,
     "debug_frame_max_width": 960,
-    "debug_frame_quality": 80
+    "debug_frame_quality": 80,
+    "reader_frame_timeout_seconds": 5.0
   },
   "wheel": {
-    "enabled": false,
-    "run_mode": "remote",
-    "service_url": "http://127.0.0.1:28015",
-    "service_timeout_seconds": 0.5,
+    "enabled": true,
+    "pause_bypass_during_wash_enabled": false,
+    "pause_bypass_config_key": "config_绕行.json",
+    "pause_bypass_resume_delay_seconds": 0.5,
     "event_driven": true,
     "reader_event_driven": false,
     "reader_idle_fps": 5.0,
-    "left_source": "",
-    "right_source": "",
+    "left_source": "rtsp://admin:YanyA.999.@192.168.1.20:554/stream1",
+    "right_source": "rtsp://admin:YanyA.999.@192.168.1.21:554/stream1",
     "model": "models/wheel/2026.4.28CRwheel.rknn",
     "classes": [
       "0-25",
@@ -60,51 +62,82 @@
     ],
     "target_fps": 5.0,
     "active_target_fps": 20.0,
-    "core_mask": "",
+    "core_mask": "2",
     "imgsz": 640,
-    "photo_bucket_seconds": 1.0,
-    "photo_min_score": 0.3,
     "bind_window_seconds": 30.0,
     "bind_pre_start_seconds": 3.0,
     "bind_after_end_seconds": 3.0,
     "bind_require_active": true,
     "bind_wait_seconds": 2.0,
-    "bind_wait_poll_seconds": 0.08
+    "bind_wait_poll_seconds": 0.08,
+    "photo_bucket_seconds": 0.5,
+    "photo_min_score": 0.3,
+    "reader_stale_seconds": 5.0,
+    "reader_stale_check_interval_frames": 15,
+    "reader_stale_hash_size": 16
   },
   "zones": {
     "zone_a_detection": [
-      [0.1913, 0.138],
-      [0.2107, 0.8993],
-      [0.5109, 0.9985],
-      [0.996, 0.9837],
-      [0.9982, 0.3546],
-      [0.5268, 0.2315]
+      [
+        0.2403,
+        0.9977
+      ],
+      [
+        0.2626,
+        0.3727
+      ],
+      [
+        0.4752,
+        0.3661
+      ],
+      [
+        0.9941,
+        0.991
+      ]
     ],
     "zone_b_wash": [
-      [0.2172, 0.7664],
-      [0.5259, 0.5564],
-      [0.8475, 0.7188],
-      [0.5442, 0.9624]
+      [
+        0.2745,
+        0.6023
+      ],
+      [
+        0.6405,
+        0.5843
+      ],
+      [
+        0.9482,
+        0.9536
+      ],
+      [
+        0.268,
+        0.9928
+      ]
     ],
     "flow_vector": {
-      "start": [0.3409, 0.6508],
-      "end": [0.7542, 0.8927]
+      "start": [
+        0.4621,
+        0.5186
+      ],
+      "end": [
+        0.6266,
+        0.9452
+      ]
     }
   },
   "logic": {
     "class_thresholds": {
-      "car": 0.74,
-      "blue truck": 0.4,
-      "yellow truck": 0.63,
-      "dump truck": 0.6,
-      "wuxiao": 0.4,
-      "wheel": 0.55,
+      "car": 0.8,
+      "blue truck": 0.8,
+      "yellow truck": 0.8,
+      "dump truck": 0.8,
+      "wuxiao": 0.8,
+      "wheel": 0.8,
       "cleaning table": 0.35,
       "manual": 0.36,
-      "license": 0.1
+      "license": 0.8
     },
     "detection_anchor": "bottom_center",
-    "zone_a_mask_enable": true,
+    "zone_a_mask_enable": false,
     "zone_b_entry_hysteresis": 20,
     "zone_b_exit_hysteresis": 3,
     "stationary_min_frames": 0,
@@ -112,20 +145,52 @@
     "type34_min_interval_frames": 60,
     "track_timeout_frames": 80,
     "track_max_age": 100,
-    "lane_name": "绕行",
+    "lane_name": "冲洗",
     "vehicle_shrink_ratio": 0.35,
     "vehicle_lock_min_votes": 80,
     "vehicle_lock_on_confirm": true,
-    "plate_lock_frames": 5,
+    "plate_lock_frames": 6,
+    "plate_output_shape_log_once": true,
+    "plate_draw_stable_only": true,
     "default_plate_color": "",
     "default_plate_color_conf": 0,
     "default_cleanliness": 0,
     "car_plate_cache_ttl": 150,
     "shadow_plate_pool": {
       "max_candidates": 50,
-      "max_age_frames": 120
+      "max_age_frames": 120,
+      "text_window_frames": 50,
+      "text_margin_ratio": 0.12,
+      "text_switch_min_consecutive": 6,
+      "text_switch_gain_ratio": 1.2,
+      "text_switch_margin_ratio": 0.18,
+      "color_min_confidence": 0.7,
+      "color_lock_frames": 3,
+      "color_window_frames": 50,
+      "color_switch_min_consecutive": 3,
+      "color_switch_gain_ratio": 1.2,
+      "color_switch_margin": 0.5
     },
-    "allowed_event_types": [1, 2, 3, 4, 5, 6],
+    "event_track_quality": {
+      "enabled": true,
+      "min_hits_type1": 12,
+      "fast_vehicle_min_hits_type1": 6,
+      "min_avg_vehicle_conf": 0.62,
+      "fast_vehicle_min_avg_conf": 0.72,
+      "plate_candidate_min_hits": 2,
+      "plate_candidate_can_confirm_type1": true,
+      "min_zone_a_dwell_type5": 15,
+      "suppress_obvious_false_type5": true,
+      "suspicious_cooldown_seconds": 6
+    },
+    "allowed_event_types": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
     "debug_overlay": false,
     "debug_track_state": false,
     "debug_anchor_points": false,
@@ -145,19 +210,22 @@
     "min_track_frames_for_type1": 5,
     "require_vehicle_type_for_events": true,
     "min_zone_b_dwell_frames_for_type4": 60,
-    "enable_per_id_video": true,
+    "enable_per_id_video": false,
     "per_id_video_dir": "/data/ftp/per_id",
     "per_id_video_queue_size": 8,
     "per_id_video_source": "auto",
-    "per_id_raw_prebuffer_seconds": 3.0,
     "copy_track_last_frame": false,
     "copy_raw_frame_cache": false,
-    "plate_core_mask": "1",
-    "plate_infer_stride": 3,
-    "enable_event_disk": false,
-    "vehicle_tracker_impl": "bytetrack"
+    "plate_core_mask": "0",
+    "plate_infer_stride": 2,
+    "enable_event_disk": true,
+    "vehicle_tracker_impl": "bytetrack",
+    "plate_requires_vehicle": null,
+    "pending_plate_cache_ttl_frames": 40,
+    "pending_plate_cache_max_entries": 30,
+    "per_id_type6_require_plate_candidate": false
   },
-  "event_output_dir": "events/config_bypass",
-  "event_capture_dir": "captures/config_bypass",
-  "event_capture_quality": 85
+  "event_output_dir": "events/config",
+  "event_capture_dir": "/data/ftp/event_captures/config",
+  "event_capture_quality": 70
 }

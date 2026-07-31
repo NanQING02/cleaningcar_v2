@@ -74,7 +74,7 @@ run_zone_detect.py
 ## 关键模块
 
 - `cleaningcar/pipeline.py`：主调度层，串联视频 I/O、worker、跟踪、事件、车轮旁路、单车视频和运行信号。
-- `cleaningcar/video_io.py`：视频读写与回退链路。读流按 `FFmpeg rkmpp -> GStreamer+mpp -> 软件解码`，单车视频写出按 `FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`。
+- `cleaningcar/video_io.py`：视频读写与回退链路。读流按 `GStreamer+mpp direct-BGR -> FFmpeg rkmpp`，两级硬解都不可用时按读流失败处理；单车视频仅使用 `FFmpeg` 硬编，硬编不可用时不保存视频。
 - `cleaningcar/worker.py`：RKNN worker 线程，负责检测推理、后处理、车牌识别和基础绘制。
 - `cleaningcar/tracking.py`：车辆跟踪，默认 `vehicle_tracker_impl=bytetrack`，内部使用 Kalman 预测和匹配。
 - `cleaningcar/events.py`：事件状态机、事件 JSON、截图、上报 payload；`type=5` 事件会附加已锁定的 `wheelResults`。
@@ -109,23 +109,24 @@ run_zone_detect.py
 
 - `video.source_mode=camera`
 - `video.hw_decode=true`
+- `video.decode_backend=auto`，实际顺序为 `GStreamer+mpp direct-BGR -> FFmpeg rkmpp`
 - `video.workers=1`
 - `video.core_mask=0`
 - `video.worker_core_strategy=auto`
 - `video.fp_output_mode=6`
-- `video.debug_frame_path=""`，运行时映射到 `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
+- `video.debug_frame_path=off`
 - `system.performance_lock_enabled=true`
 - RGA 禁用；项目高负载场景已复现死机风险，不允许开启
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
-- `logic.no_draw=false`
-- `logic.draw_plate_boxes=true`
-- `logic.plate_infer_stride=3`
+- `logic.no_draw=true`
+- `logic.draw_plate_boxes=false`
+- `logic.plate_infer_stride=2`
 - `logic.enable_per_id_video=true`
 - `logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - `wheel.enabled=true`
-- `wheel.event_driven=false`
-- `wheel.target_fps=15.0`
-- `system.api.capture_mode=base64`
+- `wheel.event_driven=true`
+- `wheel.target_fps=5.0`
+- `system.api.capture_mode=path`
 
 ## 运行口径
 

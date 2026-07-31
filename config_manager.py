@@ -5,6 +5,7 @@ from urllib.parse import urlparse, urlunparse
 
 DEFAULT_PER_ID_VIDEO_DIR = 'video_result/per_id'
 DEFAULT_WHEEL_MODEL = 'models/wheel/2026.4.28CRwheel.rknn'
+DEFAULT_EVENT_CAPTURE_BASE_DIR = '/data/ftp/event_captures'
 
 
 def _derive_wheel_photo_url(api_url: str) -> str:
@@ -59,6 +60,10 @@ class ConfigManager:
         system['api'].setdefault('url', '')
         system['api'].setdefault('token', '')
         system['api'].setdefault('capture_mode', 'path')
+        capture_mode = str(system['api'].get('capture_mode', 'path') or 'path').strip().lower()
+        if capture_mode not in {'path', 'base64'}:
+            capture_mode = 'path'
+        system['api']['capture_mode'] = capture_mode
         system['api'].setdefault('wheel_photo_url', '')
         derived_wheel_photo_url = _derive_wheel_photo_url(system['api'].get('url', ''))
         current_wheel_photo_url = str(system['api'].get('wheel_photo_url') or '').strip()
@@ -100,15 +105,66 @@ class ConfigManager:
         video.pop('save_video', None)
         video.pop('rga_enable', None)
         video.setdefault('source_mode', 'auto')
-        video.setdefault('hw_decode', False)
+        video.setdefault('hw_decode', True)
+        decode_backend = str(video.get('decode_backend', 'auto') or 'auto').strip().lower()
+        if decode_backend not in {'auto', 'gstreamer', 'ffmpeg', 'ffmpeg_rga'}:
+            decode_backend = 'auto'
+        video['decode_backend'] = decode_backend
+        ffmpeg_rga = video.get('ffmpeg_rga', {})
+        if not isinstance(ffmpeg_rga, dict):
+            ffmpeg_rga = {}
+        core = str(ffmpeg_rga.get('core', 'auto') or 'auto').strip().lower()
+        if core not in {'auto', 'rga3_core0', 'rga3_core1'}:
+            core = 'auto'
+        ffmpeg_rga['core'] = core
+        try:
+            rga_width = max(0, int(ffmpeg_rga.get('width', 0) or 0))
+            rga_height = max(0, int(ffmpeg_rga.get('height', 0) or 0))
+        except (TypeError, ValueError):
+            rga_width = 0
+            rga_height = 0
+        if bool(rga_width) != bool(rga_height):
+            rga_width = 0
+            rga_height = 0
+        ffmpeg_rga['width'] = rga_width
+        ffmpeg_rga['height'] = rga_height
+        try:
+            async_depth = int(ffmpeg_rga.get('async_depth', 1))
+        except (TypeError, ValueError):
+            async_depth = 1
+        ffmpeg_rga['async_depth'] = min(4, max(0, async_depth))
+        for key, default in (('afbc', False), ('breaker_enabled', True)):
+            value = ffmpeg_rga.get(key, default)
+            if isinstance(value, str):
+                value = value.strip().lower() in {'1', 'true', 'yes', 'on'}
+            ffmpeg_rga[key] = bool(value)
+        for key, default, minimum in (
+            ('breaker_error_threshold', 1, 1),
+            ('breaker_window_seconds', 60.0, 1.0),
+            ('breaker_cooldown_seconds', 300.0, 1.0),
+        ):
+            try:
+                value = float(ffmpeg_rga.get(key, default))
+            except (TypeError, ValueError):
+                value = float(default)
+            if key == 'breaker_error_threshold':
+                ffmpeg_rga[key] = max(int(minimum), int(value))
+            else:
+                ffmpeg_rga[key] = max(float(minimum), value)
+        video['ffmpeg_rga'] = ffmpeg_rga
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
         video.setdefault('fp_output_mode', '6')
         video.setdefault('csv', '')
-        video.setdefault('debug_frame_path', '/dev/shm/cleaningcar_debug.jpg')
+        video.setdefault('debug_frame_path', 'off')
         video.setdefault('debug_frame_interval', 30)
         video.setdefault('debug_frame_max_width', 960)
         video.setdefault('debug_frame_quality', 80)
+        try:
+            reader_frame_timeout = float(video.get('reader_frame_timeout_seconds', 5.0))
+        except (TypeError, ValueError):
+            reader_frame_timeout = 5.0
+        video['reader_frame_timeout_seconds'] = max(0.0, reader_frame_timeout)
         try:
             segment_minutes = int(video.get('segment_minutes', 60))
         except (TypeError, ValueError):
@@ -121,6 +177,19 @@ class ConfigManager:
             wheel['enabled'] = enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['enabled'] = bool(enabled)
+        pause_bypass_enabled = wheel.get('pause_bypass_during_wash_enabled', False)
+        if isinstance(pause_bypass_enabled, str):
+            wheel['pause_bypass_during_wash_enabled'] = pause_bypass_enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            wheel['pause_bypass_during_wash_enabled'] = bool(pause_bypass_enabled)
+        wheel['pause_bypass_config_key'] = str(
+            wheel.get('pause_bypass_config_key', 'config_绕行.json') or 'config_绕行.json'
+        ).strip()
+        try:
+            pause_resume_delay = float(wheel.get('pause_bypass_resume_delay_seconds', 0.5))
+        except (TypeError, ValueError):
+            pause_resume_delay = 0.5
+        wheel['pause_bypass_resume_delay_seconds'] = max(0.0, pause_resume_delay)
         event_driven = wheel.get('event_driven', True)
         if isinstance(event_driven, str):
             wheel['event_driven'] = event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -131,16 +200,9 @@ class ConfigManager:
             wheel['reader_event_driven'] = reader_event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['reader_event_driven'] = bool(reader_event_driven)
-        run_mode = str(wheel.get('run_mode', 'embedded') or 'embedded').strip().lower()
-        if run_mode not in {'embedded', 'remote'}:
-            run_mode = 'embedded'
-        wheel['run_mode'] = run_mode
-        wheel['service_url'] = str(wheel.get('service_url', '') or '').strip()
-        try:
-            service_timeout = float(wheel.get('service_timeout_seconds', 0.5))
-        except (TypeError, ValueError):
-            service_timeout = 0.5
-        wheel['service_timeout_seconds'] = max(0.1, service_timeout)
+        wheel.pop('run_mode', None)
+        wheel.pop('service_url', None)
+        wheel.pop('service_timeout_seconds', None)
         try:
             reader_idle_fps = float(wheel.get('reader_idle_fps', 0.0))
         except (TypeError, ValueError):
@@ -202,15 +264,30 @@ class ConfigManager:
             bind_wait_poll = 0.08
         wheel['bind_wait_poll_seconds'] = max(0.02, bind_wait_poll)
         try:
-            photo_bucket = float(wheel.get('photo_bucket_seconds', 1.0))
+            photo_bucket = float(wheel.get('photo_bucket_seconds', 0.5))
         except (TypeError, ValueError):
-            photo_bucket = 0.25
+            photo_bucket = 0.5
         wheel['photo_bucket_seconds'] = max(0.05, photo_bucket)
         try:
             photo_min_score = float(wheel.get('photo_min_score', 0.3))
         except (TypeError, ValueError):
             photo_min_score = 0.3
         wheel['photo_min_score'] = max(0.0, min(photo_min_score, 1.0))
+        try:
+            reader_stale_seconds = float(wheel.get('reader_stale_seconds', 5.0))
+        except (TypeError, ValueError):
+            reader_stale_seconds = 5.0
+        wheel['reader_stale_seconds'] = max(0.0, reader_stale_seconds)
+        try:
+            reader_stale_check_interval = int(wheel.get('reader_stale_check_interval_frames', 15))
+        except (TypeError, ValueError):
+            reader_stale_check_interval = 15
+        wheel['reader_stale_check_interval_frames'] = max(1, reader_stale_check_interval)
+        try:
+            reader_stale_hash_size = int(wheel.get('reader_stale_hash_size', 16))
+        except (TypeError, ValueError):
+            reader_stale_hash_size = 16
+        wheel['reader_stale_hash_size'] = max(4, min(reader_stale_hash_size, 64))
         wheel.pop('photo_per_bucket', None)
 
         zones = self.data.setdefault('zones', {})
@@ -247,6 +324,9 @@ class ConfigManager:
         logic.setdefault('vehicle_iou_threshold', 0.3)
         logic.setdefault('vehicle_center_gate_ratio', 0.0)
         logic.setdefault('vehicle_tracker_impl', 'bytetrack')
+        logic.setdefault('plate_requires_vehicle', None)
+        logic.setdefault('pending_plate_cache_ttl_frames', 40)
+        logic.setdefault('pending_plate_cache_max_entries', 30)
         logic['disable_plate_only_events'] = True
         logic['single_lifecycle_events'] = True
         logic.setdefault('min_zone_a_dwell_frames_for_type5', 25)
@@ -259,6 +339,8 @@ class ConfigManager:
         logic.setdefault('vehicle_lock_min_votes', 40)
         logic.setdefault('vehicle_lock_on_confirm', True)
         logic.setdefault('plate_lock_frames', 6)
+        logic.setdefault('plate_output_shape_log_once', True)
+        logic.setdefault('plate_draw_stable_only', True)
         logic.setdefault('default_plate_color', '')
         logic.setdefault('default_plate_color_conf', 0.0)
         logic.setdefault('default_cleanliness', 0)
@@ -273,34 +355,58 @@ class ConfigManager:
         logic.setdefault('wash_duration_offset_seconds', 0.0)
         logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
         logic.setdefault('enable_per_id_video', True)
+        logic.setdefault('per_id_type6_require_plate_candidate', False)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         logic.setdefault('per_id_video_queue_size', 8)
         per_id_video_source = str(logic.get('per_id_video_source', 'auto') or 'auto').strip().lower()
         if per_id_video_source not in {'auto', 'raw', 'source', 'original', 'origin', 'annotated', 'draw', 'debug'}:
             per_id_video_source = 'auto'
         logic['per_id_video_source'] = per_id_video_source
-        try:
-            per_id_raw_prebuffer = float(logic.get('per_id_raw_prebuffer_seconds', 3.0))
-        except (TypeError, ValueError):
-            per_id_raw_prebuffer = 3.0
-        logic['per_id_raw_prebuffer_seconds'] = max(0.0, per_id_raw_prebuffer)
         logic.setdefault('copy_track_last_frame', False)
         logic.setdefault('copy_raw_frame_cache', False)
         logic.setdefault('plate_core_mask', '')
         per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()
         logic['per_id_video_dir'] = per_id_video_dir or DEFAULT_PER_ID_VIDEO_DIR
         logic.setdefault('enable_event_disk', False)
-        shadow = logic.setdefault('shadow_plate_pool', {})
+        shadow = logic.get('shadow_plate_pool')
+        if not isinstance(shadow, dict):
+            shadow = {}
+            logic['shadow_plate_pool'] = shadow
         shadow.setdefault('max_candidates', 50)
         shadow.setdefault('max_age_frames', 120)
+        shadow.setdefault('text_window_frames', 50)
+        shadow.setdefault('text_margin_ratio', 0.12)
+        shadow.setdefault('text_switch_min_consecutive', 6)
+        shadow.setdefault('text_switch_gain_ratio', 1.2)
+        shadow.setdefault('text_switch_margin_ratio', 0.18)
+        shadow.setdefault('color_min_confidence', 0.70)
+        shadow.setdefault('color_lock_frames', 3)
+        shadow.setdefault('color_window_frames', 50)
+        shadow.setdefault('color_switch_min_consecutive', 3)
+        shadow.setdefault('color_switch_gain_ratio', 1.2)
+        shadow.setdefault('color_switch_margin', 0.5)
+        event_quality = logic.get('event_track_quality')
+        if not isinstance(event_quality, dict):
+            event_quality = {'enabled': bool(event_quality)} if event_quality is not None else {}
+            logic['event_track_quality'] = event_quality
+        event_quality.setdefault('enabled', True)
+        event_quality.setdefault('min_hits_type1', 12)
+        event_quality.setdefault('fast_vehicle_min_hits_type1', 6)
+        event_quality.setdefault('min_avg_vehicle_conf', 0.62)
+        event_quality.setdefault('fast_vehicle_min_avg_conf', 0.72)
+        event_quality.setdefault('plate_candidate_min_hits', 2)
+        event_quality.setdefault('plate_candidate_can_confirm_type1', True)
+        event_quality.setdefault('min_zone_a_dwell_type5', 15)
+        event_quality.setdefault('suppress_obvious_false_type5', True)
+        event_quality.setdefault('suspicious_cooldown_seconds', 6)
 
         self.data.pop('storage', None)
 
-        self.data.setdefault('event_capture_quality', 85)
+        self.data.setdefault('event_capture_quality', 70)
 
         cfg_name = self.path.stem or 'default'
         default_events = f'events/{cfg_name}'
-        default_captures = f'captures/{cfg_name}'
+        default_captures = f'{DEFAULT_EVENT_CAPTURE_BASE_DIR}/{cfg_name}'
         self.data.setdefault('event_output_dir', default_events)
         self.data.setdefault('event_capture_dir', default_captures)
 

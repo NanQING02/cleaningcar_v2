@@ -98,6 +98,57 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertNotIn("save_video", text)
         self.assertNotIn("enable_global_video", text)
 
+    def test_zone_editor_exposes_single_per_id_video_display_toggle(self):
+        template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
+        text = template_path.read_text(encoding="utf-8")
+
+        self.assertIn('v-model="perIdDebugVideo"', text)
+        self.assertIn("单车录像使用完整调试画面", text)
+        self.assertNotIn('v-model="form.logic.no_draw"', text)
+        self.assertNotIn('v-model="form.logic.draw_plate_boxes"', text)
+        self.assertNotIn('v-model="form.logic.debug_overlay"', text)
+        self.assertIn("this.form.logic.no_draw = !debugEnabled", text)
+        self.assertIn("this.form.logic.draw_plate_boxes = debugEnabled", text)
+        self.assertIn("this.form.logic.plate_draw_stable_only = !debugEnabled", text)
+        self.assertIn("this.form.logic.debug_overlay = debugEnabled", text)
+
+    def test_zone_editor_only_submits_editable_shadow_plate_fields(self):
+        template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
+        text = template_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("shadow_plate_pool: this.form.logic.shadow_plate_pool", text)
+        self.assertIn("max_candidates: this.form.logic.shadow_plate_pool.max_candidates", text)
+
+    def test_developer_config_can_enable_annotated_per_id_video(self):
+        active = self.write_config("config.json", "camera-a")
+        state.set_config_path(active)
+
+        result = server.update_developer_config(
+            server.ConfigPayload(
+                logic={
+                    "no_draw": False,
+                    "draw_plate_boxes": True,
+                    "plate_draw_stable_only": False,
+                    "per_id_video_source": "annotated",
+                    "debug_overlay": True,
+                    "debug_track_state": True,
+                    "debug_anchor_points": True,
+                    "debug_water_boxes": True,
+                    "shadow_plate_pool": {"max_candidates": 60},
+                }
+            )
+        )
+        saved = json.loads(active.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tier"], "developer")
+        self.assertFalse(saved["logic"]["no_draw"])
+        self.assertTrue(saved["logic"]["draw_plate_boxes"])
+        self.assertFalse(saved["logic"]["plate_draw_stable_only"])
+        self.assertEqual(saved["logic"]["per_id_video_source"], "annotated")
+        self.assertTrue(saved["logic"]["debug_overlay"])
+        self.assertEqual(saved["logic"]["shadow_plate_pool"]["max_candidates"], 60)
+
 
 if __name__ == "__main__":
     unittest.main()

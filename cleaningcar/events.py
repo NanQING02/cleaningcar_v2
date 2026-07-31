@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import threading
 import time
@@ -15,7 +16,7 @@ from utils.upload_queue import SQLiteUploadQueue
 from .constants import VEHICLE_LABEL_CN, WHEEL_CLASS_NAME_TO_CLEAN_VALUE, WHEEL_SIDE_TO_PHOTO_TYPE
 from .log_throttle import WindowedLogThrottler
 from .npu_monitor import format_npu_status, snapshot_npu_status
-from .plate import normalize_plate_text
+from .plate import is_valid_plate, normalize_plate_candidate_text, normalize_plate_text
 from .resize_accel import resize_bgr
 from .vision import box_iou, get_anchor_point
 
@@ -186,7 +187,7 @@ class EventManager:
         wheel_photo_uploader=None,
         wheel_photo_base_dir=None,
         session_id='',
-        wheel_photo_bucket_seconds=1.0,
+        wheel_photo_bucket_seconds=0.5,
         wheel_photo_min_score=0.3,
     ):
         self.config = config
@@ -198,7 +199,9 @@ class EventManager:
         self.capture_dir = Path(config.get('event_capture_dir', './captures'))
         self.capture_dir.mkdir(parents=True, exist_ok=True)
         self.events_dir = Path(config.get('event_output_dir', './events'))
-        self.events_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_event_disk = bool(self.logic.get('enable_event_disk', False))
+        if self.enable_event_disk or uploader:
+            self.events_dir.mkdir(parents=True, exist_ok=True)
         self.tracks = {}
         self.timeout_frames = int(config.get('track_timeout_frames', 60))
         self.base_time = datetime.now()
@@ -210,33 +213,36 @@ class EventManager:
         self.vehicle_shrink_ratio = float(config.get('vehicle_shrink_ratio', 0.35))
         self.vehicle_lock_min_votes = int(config.get('vehicle_lock_min_votes', 80))
         self.vehicle_lock_on_confirm = bool(config.get('vehicle_lock_on_confirm', True))
-        shadow_cfg = config.get('shadow_pool', {})
+        shadow_cfg = dict(self.logic.get('shadow_plate_pool') or {})
+        legacy_shadow_cfg = config.get('shadow_pool', {}) or {}
+        for key, value in legacy_shadow_cfg.items():
+            shadow_cfg.setdefault(key, value)
         self.shadow_max = int(shadow_cfg.get('max_candidates', 50))
         self.shadow_max_age = int(shadow_cfg.get('max_age_frames', 120))
-        self.plate_lock_frames = max(1, int(self.logic.get('plate_lock_frames', 5)))
+        self.plate_lock_frames = max(1, int(self.logic.get('plate_lock_frames', 6)))
         self.plate_text_window_frames = max(
             self.plate_lock_frames,
-            int(shadow_cfg.get('text_window_frames', min(self.shadow_max_age, max(self.plate_lock_frames * 3, 15)))),
+            int(shadow_cfg.get('text_window_frames', min(self.shadow_max_age, 50))),
         )
         self.plate_text_margin_ratio = float(shadow_cfg.get('text_margin_ratio', 0.12))
         self.plate_text_switch_min_consecutive = max(
             self.plate_lock_frames,
-            int(shadow_cfg.get('text_switch_min_consecutive', self.plate_lock_frames + 1)),
+            int(shadow_cfg.get('text_switch_min_consecutive', 6)),
         )
         self.plate_text_switch_gain_ratio = float(shadow_cfg.get('text_switch_gain_ratio', 1.2))
         self.plate_text_switch_margin_ratio = float(
             shadow_cfg.get('text_switch_margin_ratio', max(self.plate_text_margin_ratio + 0.05, 0.18))
         )
         self.plate_color_min_confidence = float(
-            shadow_cfg.get('color_min_confidence', shadow_cfg.get('plate_color_min_confidence', 0.6))
+            shadow_cfg.get('color_min_confidence', shadow_cfg.get('plate_color_min_confidence', 0.70))
         )
         self.plate_color_lock_frames = max(
-            2,
-            int(shadow_cfg.get('color_lock_frames', shadow_cfg.get('plate_color_lock_frames', 2))),
+            1,
+            int(shadow_cfg.get('color_lock_frames', shadow_cfg.get('plate_color_lock_frames', 3))),
         )
         self.plate_color_window_frames = max(
             self.plate_color_lock_frames,
-            int(shadow_cfg.get('color_window_frames', shadow_cfg.get('plate_color_window_frames', self.shadow_max_age))),
+            int(shadow_cfg.get('color_window_frames', shadow_cfg.get('plate_color_window_frames', min(self.shadow_max_age, 50)))),
         )
         self.plate_color_switch_min_consecutive = max(
             self.plate_color_lock_frames,
@@ -301,12 +307,38 @@ class EventManager:
         self.zone_b_anchor_min_frames = int(self.logic.get('zone_b_anchor_min_frames', 0))
         if self.zone_b_anchor_min_frames < 0:
             self.zone_b_anchor_min_frames = 0
-        self.min_type5_zone_a_dwell = int(self.logic.get('min_zone_a_dwell_frames_for_type5', 0))
+        quality_cfg = self.logic.get('event_track_quality')
+        if isinstance(quality_cfg, dict):
+            self.event_track_quality_cfg = quality_cfg
+            self.event_track_quality_enabled = bool(quality_cfg.get('enabled', True))
+        else:
+            self.event_track_quality_cfg = {}
+            self.event_track_quality_enabled = bool(quality_cfg) if quality_cfg is not None else False
+        quality_cfg = self.event_track_quality_cfg
+        self.quality_min_hits_type1 = max(1, int(quality_cfg.get('min_hits_type1', 12)))
+        self.quality_fast_min_hits_type1 = max(1, int(quality_cfg.get('fast_vehicle_min_hits_type1', 6)))
+        self.quality_min_avg_vehicle_conf = float(quality_cfg.get('min_avg_vehicle_conf', 0.62))
+        self.quality_fast_min_avg_vehicle_conf = float(quality_cfg.get('fast_vehicle_min_avg_conf', 0.72))
+        self.quality_plate_candidate_min_hits = max(1, int(quality_cfg.get('plate_candidate_min_hits', 2)))
+        self.quality_plate_candidate_can_confirm_type1 = bool(
+            quality_cfg.get('plate_candidate_can_confirm_type1', True)
+        )
+        self.quality_suppress_obvious_false_type5 = bool(quality_cfg.get('suppress_obvious_false_type5', True))
+        self.quality_suspicious_cooldown_seconds = max(
+            0.0,
+            float(quality_cfg.get('suspicious_cooldown_seconds', 6.0)),
+        )
+        self.min_type5_zone_a_dwell = int(
+            quality_cfg.get(
+                'min_zone_a_dwell_type5',
+                self.logic.get('min_zone_a_dwell_frames_for_type5', 0),
+            )
+        )
         if self.min_type5_zone_a_dwell < 0:
             self.min_type5_zone_a_dwell = 0
-        self.min_type1_track_frames = int(self.logic.get('min_track_frames_for_type1', 10))
-        if self.min_type1_track_frames < 10:
-            self.min_type1_track_frames = 10
+        self.min_type1_track_frames = int(self.logic.get('min_track_frames_for_type1', 5))
+        if self.min_type1_track_frames < 0:
+            self.min_type1_track_frames = 0
         self.wash_dwell_offset = 0.0
         self.min_type4_zone_b_dwell = int(self.logic.get('min_zone_b_dwell_frames_for_type4', 60))
         if self.min_type4_zone_b_dwell < 0:
@@ -315,8 +347,12 @@ class EventManager:
         self.disable_plate_only_events = True
         self.single_lifecycle_events = True
         self.require_vehicle_type_for_events = bool(self.logic.get('require_vehicle_type_for_events', False))
-        self.max_per_id_video_seconds = 600.0
+        self.max_per_id_video_seconds = 1500.0
         self.per_id_video_tail_seconds = 10.0
+        self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
+        self.per_id_type6_require_plate_candidate = bool(
+            self.logic.get('per_id_type6_require_plate_candidate', False)
+        )
         self.pending_events = {}
         self.upload_buffer = {}
         self.upload_qualified = set()
@@ -333,6 +369,7 @@ class EventManager:
                     f.write('capture_time,id,type,payload\n')
         self.frame_timing = {}
         self.log_throttler = WindowedLogThrottler()
+        self.suspicious_type5_cooldown = deque(maxlen=64)
         self.latency_log_window_seconds = float(self.logic.get('latency_log_window_seconds', 10.0))
         self._capture_base64_cache = {}
         self._capture_metrics = {
@@ -355,10 +392,93 @@ class EventManager:
     def frame_timestamp(self, frame_idx):
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+    def _ingest_plate_candidate(
+        self,
+        track_id,
+        track_state,
+        text,
+        frame_idx,
+        conf=None,
+        trusted=True,
+        plate_color='',
+        plate_color_conf=None,
+        plate_type='',
+        update_frame_idx=None,
+    ):
+        normalized_plate = normalize_plate_candidate_text(text)
+        has_valid_plate_candidate = bool(normalized_plate and is_valid_plate(normalized_plate))
+        try:
+            candidate_frame = int(frame_idx)
+        except (TypeError, ValueError):
+            candidate_frame = 0
+        if has_valid_plate_candidate:
+            last_candidate_frame = int(track_state.get('plate_candidate_last_frame', -1) or -1)
+            track_state['plate_candidate_hits'] = int(track_state.get('plate_candidate_hits', 0) or 0) + 1
+            if candidate_frame >= last_candidate_frame:
+                track_state['plate_text_latest'] = normalized_plate
+                if last_candidate_frame >= 0 and candidate_frame - last_candidate_frame <= 1:
+                    track_state['plate_candidate_consecutive'] = int(
+                        track_state.get('plate_candidate_consecutive', 0) or 0
+                    ) + 1
+                else:
+                    track_state['plate_candidate_consecutive'] = 1
+                track_state['plate_candidate_latest'] = normalized_plate
+                track_state['plate_candidate_last_frame'] = candidate_frame
+            self._add_shadow_candidate(
+                track_id,
+                normalized_plate,
+                conf,
+                candidate_frame,
+                trusted=trusted,
+            )
+            self._update_locked_plate_text(
+                track_id,
+                track_state,
+                candidate_frame if update_frame_idx is None else update_frame_idx,
+            )
+        if plate_color:
+            plate_color_latest = str(plate_color).strip()
+            if plate_color_latest:
+                track_state['plate_color_latest'] = plate_color_latest
+                parsed_color_conf = 0.0
+                if plate_color_conf is not None:
+                    try:
+                        parsed_color_conf = float(plate_color_conf)
+                    except (TypeError, ValueError):
+                        parsed_color_conf = 0.0
+                track_state['plate_color_latest_conf'] = parsed_color_conf
+                self._update_locked_plate_color(track_state, plate_color_latest, parsed_color_conf, candidate_frame)
+        if plate_type:
+            track_state['plate_type'] = str(plate_type)
+        return has_valid_plate_candidate
+
+    def _merge_plate_candidate_history(self, track_id, track_state, entries, frame_idx):
+        merged = 0
+        if not entries:
+            return merged
+        ordered_entries = sorted(entries, key=lambda item: int((item or {}).get('frame', frame_idx) or frame_idx))
+        for entry in ordered_entries:
+            if not isinstance(entry, dict):
+                continue
+            if self._ingest_plate_candidate(
+                track_id,
+                track_state,
+                entry.get('text', ''),
+                entry.get('frame', frame_idx),
+                conf=entry.get('conf'),
+                trusted=entry.get('trusted', True),
+                plate_color=entry.get('plate_color', ''),
+                plate_color_conf=entry.get('plate_color_conf'),
+                plate_type=entry.get('plate_type', ''),
+                update_frame_idx=frame_idx,
+            ):
+                merged += 1
+        return merged
+
     def update_track(self, track_id, plate_box, vehicle_box, plate_text, frame_idx, frame,
                      water_boxes, water_active, is_plate, vehicle_label, vehicle_conf,
                      plate_conf, confirmed, cleaning_label='', anchor_point=None, plate_is_guess=False,
-                     plate_color='', plate_color_conf=None, plate_type=''):
+                     plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None):
         if track_id <= 0:
             return
         st = self.tracks.setdefault(track_id, {
@@ -393,12 +513,19 @@ class EventManager:
             'plate_color': '',
             'plate_color_conf': 0.0,
             'plate_type': '',
+            'plate_candidate_hits': 0,
+            'plate_candidate_consecutive': 0,
+            'plate_candidate_latest': '',
+            'plate_candidate_last_frame': -1,
             'vehicle_cls': '',
             'last_plate_box': None,
             'last_vehicle_box': None,
             'confirmed': False,
             'plate_conf_history': [],
             'vehicle_conf_history': [],
+            'vehicle_hit_frames': 0,
+            'anchor_history': deque(maxlen=10),
+            'center_jump_history': deque(maxlen=12),
             'wash_start_time': None,
             'wash_end_time': None,
             'lane': self.lane_name,
@@ -418,10 +545,13 @@ class EventManager:
             'zone_b_dwell_frames': 0,
             'zone_a_enter_frame': -1,
             'zone_a_dwell_frames': 0,
+            'zone_a_seen': False,
+            'zone_a_exited': False,
             'track_frame_count': 0,
             'abnormal_reasons': set(),
             'type2_qualified': False,
             'type2_qualified_frame': -1,
+            'type5_suppressed_quality': False,
             'wheel_results_locked': {},
             'wheel_photo_history': {'left': {}, 'right': {}},
             'wheel_photo_seq': {'left': 0, 'right': 0},
@@ -469,43 +599,30 @@ class EventManager:
                 st['vehicle_cls'] = vehicle_label
         if freeze_label and st.get('vehicle_cls_locked'):
             st['vehicle_cls_frozen'] = True
+        prev_vehicle_box_for_motion = st.get('last_vehicle_box')
         if vehicle_box is not None:
             st['last_vehicle_box'] = vehicle_box
         if plate_box is not None:
             st['last_plate_box'] = plate_box
-        normalized_plate = normalize_plate_text(plate_text)
-        if normalized_plate:
-            st['plate_text_latest'] = normalized_plate
-            self._add_shadow_candidate(
-                track_id,
-                normalized_plate,
-                plate_conf,
-                frame_idx,
-                trusted=not bool(plate_is_guess),
-            )
-            self._update_locked_plate_text(track_id, st, frame_idx)
-        elif plate_conf and plate_conf > 0.0:
-            self._add_shadow_candidate(track_id, plate_text, plate_conf, frame_idx, trusted=False)
-            self._update_locked_plate_text(track_id, st, frame_idx)
-        if plate_color:
-            plate_color_latest = str(plate_color).strip()
-            if plate_color_latest:
-                st['plate_color_latest'] = plate_color_latest
-                parsed_color_conf = 0.0
-                if plate_color_conf is not None:
-                    try:
-                        parsed_color_conf = float(plate_color_conf)
-                    except (TypeError, ValueError):
-                        parsed_color_conf = 0.0
-                st['plate_color_latest_conf'] = parsed_color_conf
-                self._update_locked_plate_color(st, plate_color_latest, parsed_color_conf, frame_idx)
+        self._merge_plate_candidate_history(track_id, st, plate_candidate_history, frame_idx)
+        self._ingest_plate_candidate(
+            track_id,
+            st,
+            plate_text,
+            frame_idx,
+            conf=plate_conf,
+            trusted=not bool(plate_is_guess),
+            plate_color=plate_color,
+            plate_color_conf=plate_color_conf,
+            plate_type=plate_type,
+        )
         self._sync_plate_legacy_fields(st)
-        if plate_type:
-            st['plate_type'] = str(plate_type)
         if confirmed:
             st['confirmed'] = True
             if self.vehicle_lock_on_confirm and st.get('vehicle_cls_locked'):
                 st['vehicle_cls_frozen'] = True
+        if vehicle_box is not None or vehicle_conf is not None:
+            st['vehicle_hit_frames'] = int(st.get('vehicle_hit_frames', 0) or 0) + 1
         if vehicle_conf is not None:
             history = st.get('vehicle_conf_history') or []
             history.append(float(vehicle_conf))
@@ -521,7 +638,7 @@ class EventManager:
         if cleaning_label:
             st['last_cleaning'] = cleaning_label
         ref_box = vehicle_box or plate_box or st.get('last_vehicle_box') or st.get('last_plate_box')
-        prev_box = st.get('last_vehicle_box')
+        prev_box = prev_vehicle_box_for_motion
         dist = 0.0
         if ref_box is not None and prev_box is not None:
             cx = 0.5 * (ref_box[0] + ref_box[2])
@@ -529,6 +646,12 @@ class EventManager:
             px = 0.5 * (prev_box[0] + prev_box[2])
             py = 0.5 * (prev_box[1] + prev_box[3])
             dist = hypot(cx - px, cy - py)
+            jump_history = st.get('center_jump_history')
+            if not isinstance(jump_history, deque):
+                jump_history = deque(maxlen=12)
+                st['center_jump_history'] = jump_history
+            frame_diag = max(1.0, hypot(self.frame_w, self.frame_h))
+            jump_history.append(dist / frame_diag)
         st['speed_buf'].append(dist)
         avg_speed = sum(st['speed_buf']) / max(len(st['speed_buf']), 1)
         speed_thresh = self.stationary_speed_thresh
@@ -546,12 +669,21 @@ class EventManager:
         zone_state = st.get('zone_state')
         if anchor_point:
             st['last_anchor'] = anchor_point
+            anchor_history = st.get('anchor_history')
+            if not isinstance(anchor_history, deque):
+                anchor_history = deque(maxlen=10)
+                st['anchor_history'] = anchor_history
+            anchor_history.append((float(anchor_point[0]), float(anchor_point[1])))
         zone_state, zone_flags = self.zone_mgr.update_track(track_id, anchor_point, frame_idx)
         st['zone_state'] = zone_state
 
         timestamp = self.frame_timestamp(frame_idx)
         inside_a = bool(zone_state and zone_state.inside_a)
         inside_b = bool(zone_state and zone_state.inside_b)
+        if inside_a or zone_flags.get('enter_a') or st.get('zone_a_dwell_frames', 0) > 0:
+            st['zone_a_seen'] = True
+        if zone_flags.get('exit_a'):
+            st['zone_a_exited'] = True
         if zone_flags.get('enter_a'):
             st['zone_a_enter_frame'] = frame_idx
             st['zone_a_dwell_frames'] = 0
@@ -624,19 +756,13 @@ class EventManager:
 
         if self.disable_plate_only_events and is_plate and (vehicle_box is None and st.get('last_vehicle_box') is None):
             return
-        can_type1 = True
-        if self.min_type1_track_frames > 0:
-            if st.get('zone_a_dwell_frames', 0) < self.min_type1_track_frames:
-                can_type1 = False
+        can_type1 = self._can_emit_type1(st)
         if bool(zone_state and zone_state.inside_a) and 1 not in st['events'] and 1 in self.allowed_events and can_type1:
             self.emit_event(track_id, 1, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(1)
         if type2_ready and 2 not in st['events'] and 2 in self.allowed_events:
             if 1 in self.allowed_events and 1 not in st['events']:
-                backfill_type1 = True
-                if self.min_type1_track_frames > 0:
-                    if st.get('zone_a_dwell_frames', 0) < self.min_type1_track_frames:
-                        backfill_type1 = False
+                backfill_type1 = self._can_emit_type1(st)
                 if backfill_type1:
                     self.emit_event(track_id, 1, frame_idx, frame, {'captureTime': timestamp}, st)
                     st['events'].add(1)
@@ -666,17 +792,22 @@ class EventManager:
             st['events'].add(4)
         can_type5 = self._can_emit_type5(st)
         if zone_flags.get('exit_a') and 5 in self.allowed_events and 5 not in st['events'] and can_type5:
-            st['wash_end_time'] = st.get('wash_end_time') or timestamp
-            duration_val = self._compute_effective_wash_duration(st, frame_idx)
-            st['wash_duration'] = duration_val
-            self._mark_type5_abnormal_reasons(st)
-            self.emit_event(track_id, 5, frame_idx, frame, {
-                'captureTime': timestamp,
-                'washDuration': round(duration_val, 2),
-            }, st)
-            st['events'].add(5)
-            if self.single_lifecycle_events:
-                st['closed'] = True
+            if self._should_suppress_type5_quality(track_id, st, frame_idx):
+                st['type5_suppressed_quality'] = True
+                if self.single_lifecycle_events:
+                    st['closed'] = True
+            else:
+                st['wash_end_time'] = st.get('wash_end_time') or timestamp
+                duration_val = self._compute_effective_wash_duration(st, frame_idx)
+                st['wash_duration'] = duration_val
+                self._mark_type5_abnormal_reasons(st)
+                self.emit_event(track_id, 5, frame_idx, frame, {
+                    'captureTime': timestamp,
+                    'washDuration': round(duration_val, 2),
+                }, st)
+                st['events'].add(5)
+                if self.single_lifecycle_events:
+                    st['closed'] = True
 
         st['washing'] = washing_now
         self._update_wheel_track_activity(track_id, st, frame_ts=time.time())
@@ -761,10 +892,16 @@ class EventManager:
                 continue
             if frame_idx - st.get('last_frame_idx', frame_idx) >= self.timeout_frames:
                 event_enabled = bool(st.get('zone_a_dwell_frames', 0) > 0)
+                suppress_plate_only_events = bool(
+                    self.disable_plate_only_events
+                    and st.get('last_vehicle_box') is None
+                    and int(st.get('vehicle_hit_frames', 0) or 0) <= 0
+                )
                 if (
                     4 not in st['events']
                     and 4 in self.allowed_events
                     and event_enabled
+                    and not suppress_plate_only_events
                     and st.get('type2_qualified')
                     and st.get('zone_b_dwell_frames', 0) > 0
                 ):
@@ -778,18 +915,28 @@ class EventManager:
                     }, st)
                     st['events'].add(4)
                 can_type5 = self._can_emit_type5(st)
-                if 5 not in st['events'] and 5 in self.allowed_events and can_type5 and event_enabled:
-                    timestamp = self.frame_timestamp(st.get('last_frame_idx', frame_idx))
-                    st['wash_end_time'] = st.get('wash_end_time') or timestamp
-                    duration_val = self._compute_effective_wash_duration(st, st.get('last_frame_idx', frame_idx))
-                    st['wash_duration'] = duration_val
-                    extras = {
-                        'captureTime': timestamp,
-                        'washDuration': round(duration_val, 2),
-                    }
-                    self._mark_type5_abnormal_reasons(st)
-                    self.emit_event(tid, 5, st.get('last_frame_idx', frame_idx), st.get('last_frame'), extras, st)
-                    st['events'].add(5)
+                if (
+                    5 not in st['events']
+                    and 5 in self.allowed_events
+                    and can_type5
+                    and event_enabled
+                    and not suppress_plate_only_events
+                ):
+                    last_frame_idx = st.get('last_frame_idx', frame_idx)
+                    if self._should_suppress_type5_quality(tid, st, last_frame_idx):
+                        st['type5_suppressed_quality'] = True
+                    else:
+                        timestamp = self.frame_timestamp(last_frame_idx)
+                        st['wash_end_time'] = st.get('wash_end_time') or timestamp
+                        duration_val = self._compute_effective_wash_duration(st, last_frame_idx)
+                        st['wash_duration'] = duration_val
+                        extras = {
+                            'captureTime': timestamp,
+                            'washDuration': round(duration_val, 2),
+                        }
+                        self._mark_type5_abnormal_reasons(st)
+                        self.emit_event(tid, 5, last_frame_idx, st.get('last_frame'), extras, st)
+                        st['events'].add(5)
                 if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
                     extra_frames = self._record_tail_frames()
                     last_idx = st.get('last_frame_idx', frame_idx)
@@ -822,7 +969,7 @@ class EventManager:
         if event_type not in self.allowed_events:
             return
         vehicle_type = payload.get('vehicleType') or self._resolve_vehicle_type(track_state)
-        if self.require_vehicle_type_for_events and event_type in (3, 4, 5):
+        if self.require_vehicle_type_for_events and event_type in (3, 4):
             if not (vehicle_type and str(vehicle_type).strip()):
                 pending = self.pending_events.setdefault(track_id, [])
                 pending.append({
@@ -883,7 +1030,7 @@ class EventManager:
             prev_stop = track_state.get('record_stop_frame')
             if prev_stop is None or stop_frame > prev_stop:
                 track_state['record_stop_frame'] = stop_frame
-            self._enqueue_wheel_photos(track_state)
+            self._enqueue_wheel_photos(track_state, track_id=track_id, force=True)
         try:
             track_state[f'last_event_t{event_type}_capture_time'] = capture_time
         except Exception:
@@ -948,7 +1095,9 @@ class EventManager:
                     video_duration = 0.0
             event['videoDuration'] = video_duration
             event['cleanliness'] = self.default_cleanliness
-            self._attach_wheel_results(event, track_state=track_state)
+            self._attach_wheel_results(event, track_state=track_state, track_id=track_id)
+        if event_type == 6:
+            event['perIdVideoEnabled'] = bool(payload.get('perIdVideoEnabled', False))
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
         capture_ts_val = None
@@ -966,7 +1115,7 @@ class EventManager:
                 cap_str = datetime.fromtimestamp(capture_ts_val).strftime("%H:%M:%S.%f")[:-3]
                 infer_str = datetime.fromtimestamp(infer_ts_val).strftime("%H:%M:%S.%f")[:-3]
                 event_str = datetime.fromtimestamp(now_ts).strftime("%H:%M:%S.%f")[:-3]
-                self.log_throttler.log(
+                for line in self.log_throttler.record(
                     key='latency.event',
                     message=(
                         f"[latency] 帧={frame_idx} 轨迹={track_id} 类型={event_type} "
@@ -975,16 +1124,17 @@ class EventManager:
                         f"总时延={total_latency*1000:.1f}ms"
                     ),
                     window_seconds=self.latency_log_window_seconds,
-                    emit=print,
-                )
+                ):
+                    print(line)
             except Exception:
                 pass
-        event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
-        try:
-            with event_path.open('w', encoding='utf-8') as f:
-                json.dump(event, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        if self.enable_event_disk:
+            event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
+            try:
+                with event_path.open('w', encoding='utf-8') as f:
+                    json.dump(event, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
         t_json = time.perf_counter()
         print(f"[EVENT] cam={self.camera_id} track={track_id} type={event_type} time={event['captureTime']}")
         if self.event_log_path:
@@ -1075,8 +1225,8 @@ class EventManager:
             self._emit_event_core(track_id, et, fi, fr, payload, track_state, vehicle_type)
 
     def _add_shadow_candidate(self, track_id, text, conf, frame_idx, trusted=False):
-        text = normalize_plate_text(text)
-        if not text:
+        text = normalize_plate_candidate_text(text)
+        if not text or not is_valid_plate(text):
             return
         pool = self.shadow_pool.setdefault(track_id, deque())
         pool.append({
@@ -1156,7 +1306,15 @@ class EventManager:
         best_text, best_hits, best_weight, best_trusted_hits, best_trusted_weight, _best_frame = ranked[0]
         locked_text = (track_state.get('plate_text_locked') or '').strip()
         if not locked_text:
-            if best_trusted_hits > 0:
+            second_trusted_weight = 0.0
+            for item in ranked[1:]:
+                second_trusted_weight = max(second_trusted_weight, float(item[4]))
+            margin_ok = self._plate_margin_ok(
+                best_trusted_weight if best_trusted_weight > 0 else best_weight,
+                second_trusted_weight,
+                self.plate_text_margin_ratio,
+            )
+            if best_hits >= self.plate_lock_frames and best_trusted_hits > 0 and margin_ok:
                 track_state['plate_text_locked'] = best_text
                 track_state['plate_text_locked_is_guess'] = False
                 track_state['plate_text_switch_candidate'] = ''
@@ -1316,12 +1474,16 @@ class EventManager:
     def _resolve_report_plate_fields(self, track_id, track_state, frame_idx):
         del frame_idx
         track_state = track_state or {}
-        locked_text = normalize_plate_text((track_state.get('plate_text_locked') or '').strip())
-        if locked_text:
+        locked_text = normalize_plate_candidate_text((track_state.get('plate_text_locked') or '').strip())
+        if locked_text and is_valid_plate(locked_text):
             return locked_text, False, False, ''
-        latest_text = normalize_plate_text((track_state.get('plate_text_latest') or track_state.get('plate_text') or '').strip())
+        latest_text = normalize_plate_candidate_text(
+            (track_state.get('plate_text_latest') or track_state.get('plate_text') or '').strip()
+        )
         pool = self.shadow_pool.get(track_id) or ()
-        has_candidate = bool(latest_text) or any(normalize_plate_text(entry.get('text', '')) for entry in pool)
+        has_candidate = bool(latest_text and is_valid_plate(latest_text)) or any(
+            is_valid_plate(normalize_plate_candidate_text(entry.get('text', ''))) for entry in pool
+        )
         if has_candidate:
             return '', False, True, 'PLATE_NOT_LOCKED'
         return '', False, True, 'PLATE_NOT_DETECTED'
@@ -1368,15 +1530,160 @@ class EventManager:
         return max(0.0, seconds)
 
     def _record_tail_frames(self):
+        if not bool(getattr(self, 'per_id_video_enabled', False)):
+            return 0
         return int(max(self.fps, 1.0) * self.per_id_video_tail_seconds)
 
+    def _track_avg_vehicle_conf(self, track_state):
+        return self._avg(track_state.get('vehicle_conf_history') or [])
+
+    def _track_quality_hits(self, track_state):
+        return max(
+            int(track_state.get('vehicle_hit_frames', 0) or 0),
+            int(track_state.get('track_frame_count', 0) or 0),
+            int(track_state.get('zone_a_dwell_frames', 0) or 0),
+        )
+
+    def _has_valid_plate_candidate(self, track_state):
+        if not track_state:
+            return False
+        locked_text = normalize_plate_text(track_state.get('plate_text_locked', ''))
+        if locked_text and is_valid_plate(locked_text):
+            return True
+        latest_text = normalize_plate_candidate_text(track_state.get('plate_candidate_latest', ''))
+        if latest_text and is_valid_plate(latest_text):
+            if int(track_state.get('plate_candidate_hits', 0) or 0) >= self.quality_plate_candidate_min_hits:
+                return True
+            if int(track_state.get('plate_candidate_consecutive', 0) or 0) >= self.quality_plate_candidate_min_hits:
+                return True
+        return False
+
+    def _direction_is_stable(self, track_state):
+        history = track_state.get('anchor_history')
+        if not isinstance(history, deque) or len(history) < 2:
+            return False
+        first = history[0]
+        last = history[-1]
+        dx = float(last[0]) - float(first[0])
+        dy = float(last[1]) - float(first[1])
+        net_dist = hypot(dx, dy)
+        if net_dist < max(2.0, min(self.frame_w, self.frame_h) * 0.01):
+            return False
+        positive = 0
+        negative = 0
+        prev = history[0]
+        for item in list(history)[1:]:
+            sx = float(item[0]) - float(prev[0])
+            sy = float(item[1]) - float(prev[1])
+            step = sx * dx + sy * dy
+            if step > 0:
+                positive += 1
+            elif step < 0:
+                negative += 1
+            prev = item
+        total = positive + negative
+        if total <= 0:
+            return True
+        return positive / max(total, 1) >= 0.7
+
+    def _can_emit_type1(self, track_state):
+        if not self.event_track_quality_enabled:
+            if self.min_type1_track_frames <= 0:
+                return True
+            return int(track_state.get('zone_a_dwell_frames', 0) or 0) >= self.min_type1_track_frames
+
+        hits = self._track_quality_hits(track_state)
+        avg_conf = self._track_avg_vehicle_conf(track_state)
+        if hits >= self.quality_min_hits_type1 and avg_conf >= self.quality_min_avg_vehicle_conf:
+            return True
+        if (
+            hits >= self.quality_fast_min_hits_type1
+            and avg_conf >= self.quality_fast_min_avg_vehicle_conf
+            and self._direction_is_stable(track_state)
+        ):
+            return True
+        if self.quality_plate_candidate_can_confirm_type1 and self._has_valid_plate_candidate(track_state):
+            return True
+        return False
+
+    def _has_valid_zone_a_lifecycle_for_type5(self, track_state):
+        if not self.event_track_quality_enabled:
+            if self.min_type5_zone_a_dwell > 0:
+                return track_state.get('zone_a_dwell_frames', 0) >= self.min_type5_zone_a_dwell
+            return True
+        if not track_state.get('zone_a_seen') and track_state.get('zone_a_dwell_frames', 0) <= 0:
+            return False
+        if track_state.get('zone_a_dwell_frames', 0) >= self.min_type5_zone_a_dwell:
+            return True
+        if 1 in track_state.get('events', set()):
+            return True
+        return self._can_emit_type1(track_state)
+
+    def _max_center_jump_ratio(self, track_state):
+        history = track_state.get('center_jump_history')
+        if not isinstance(history, deque) or not history:
+            return 0.0
+        return max(float(v or 0.0) for v in history)
+
+    def _is_obvious_false_type5(self, track_state):
+        if self._has_valid_plate_candidate(track_state):
+            return False
+        hits = self._track_quality_hits(track_state)
+        avg_conf = self._track_avg_vehicle_conf(track_state)
+        dwell = int(track_state.get('zone_a_dwell_frames', 0) or 0)
+        low_conf = avg_conf > 0.0 and avg_conf < self.quality_min_avg_vehicle_conf
+        short_track = hits < self.quality_fast_min_hits_type1 or dwell < max(1, self.min_type5_zone_a_dwell)
+        jumpy = self._max_center_jump_ratio(track_state) >= 0.18
+        return bool(short_track and (low_conf or jumpy))
+
+    def _suspicious_type5_area_key(self, track_state):
+        box = track_state.get('last_vehicle_box') or track_state.get('last_plate_box')
+        if not box or len(box) != 4:
+            return ('unknown', 0, 0)
+        cx = 0.5 * (float(box[0]) + float(box[2]))
+        cy = 0.5 * (float(box[1]) + float(box[3]))
+        cell_w = max(1.0, self.frame_w / 4.0)
+        cell_h = max(1.0, self.frame_h / 4.0)
+        return (
+            str(self.lane_name or ''),
+            int(cx // cell_w),
+            int(cy // cell_h),
+        )
+
+    def _should_suppress_type5_quality(self, track_id, track_state, frame_idx):
+        del frame_idx
+        if not self.event_track_quality_enabled or not self.quality_suppress_obvious_false_type5:
+            return False
+        if not self._is_obvious_false_type5(track_state):
+            return False
+        now = time.time()
+        cutoff = now - self.quality_suspicious_cooldown_seconds
+        while self.suspicious_type5_cooldown and self.suspicious_type5_cooldown[0].get('ts', 0.0) < cutoff:
+            self.suspicious_type5_cooldown.popleft()
+        area_key = self._suspicious_type5_area_key(track_state)
+        duplicate = any(entry.get('area') == area_key for entry in self.suspicious_type5_cooldown)
+        self.suspicious_type5_cooldown.append({'ts': now, 'area': area_key})
+        suffix = ' duplicate' if duplicate else ''
+        for line in self.log_throttler.record(
+            key=f'event.type5.quality_suppressed.{area_key}',
+            message=(
+                f'[event-quality] suppress suspicious type5{suffix}: '
+                f'track={track_id} hits={self._track_quality_hits(track_state)} '
+                f'avg_conf={self._track_avg_vehicle_conf(track_state):.3f} '
+                f'zone_a_dwell={track_state.get("zone_a_dwell_frames", 0)} '
+                f'jump={self._max_center_jump_ratio(track_state):.3f}'
+            ),
+            window_seconds=max(self.quality_suspicious_cooldown_seconds, 1.0),
+        ):
+            print(line)
+        return True
+
     def _can_emit_type5(self, track_state):
+        if track_state.get('type5_suppressed_quality'):
+            return False
         if not track_state.get('type2_qualified'):
             return False
-        if self.min_type5_zone_a_dwell > 0:
-            if track_state.get('zone_a_dwell_frames', 0) < self.min_type5_zone_a_dwell:
-                return False
-        return True
+        return self._has_valid_zone_a_lifecycle_for_type5(track_state)
 
     def _mark_type5_abnormal_reasons(self, track_state):
         reasons = track_state.get('abnormal_reasons')
@@ -1529,6 +1836,30 @@ class EventManager:
             return ''
         return st.get('vehicle_cls_locked') or st.get('vehicle_cls', '')
 
+    def get_locked_plate(self, track_id):
+        st = self.tracks.get(track_id)
+        if not st:
+            return {
+                'text': '',
+                'plate_color': '',
+                'plate_color_conf': 0.0,
+                'plate_type': '',
+            }
+        text = normalize_plate_candidate_text(st.get('plate_text_locked', ''))
+        if not is_valid_plate(text):
+            text = ''
+        color = (st.get('plate_color_locked') or '').strip()
+        try:
+            color_conf = float(st.get('plate_color_locked_conf', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            color_conf = 0.0
+        return {
+            'text': text,
+            'plate_color': color,
+            'plate_color_conf': color_conf,
+            'plate_type': st.get('plate_type', ''),
+        }
+
     def get_track_debug(self, track_id):
         st = self.tracks.get(track_id)
         if not st:
@@ -1590,7 +1921,12 @@ class EventManager:
             self._log_capture_failure(event_type, track_id, frame_idx, '', frame, error='frame is None')
             self._capture_metrics['failed'] += 1
             return ''
-        capture_file = self.capture_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.jpg'
+        now = datetime.now()
+        capture_dir = self.capture_dir / now.strftime('%Y%m%d') / now.strftime('%H')
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now.strftime('%Y%m%d_%H%M%S')
+        safe_camera_id = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(self.camera_id or 'CAM'))
+        capture_file = capture_dir / f'{stamp}_{safe_camera_id}_{track_id}_t{event_type}_f{frame_idx}.jpg'
         capture_path = str(capture_file)
         try:
             h, w = frame.shape[:2]
@@ -1685,6 +2021,7 @@ class EventManager:
                 'id': event['id'],
                 'type': evt_type,
                 'lane': self.lane_name,
+                'perIdVideoEnabled': bool(event.get('perIdVideoEnabled', False)),
             }
         plate_conf = round(self._avg(track_state.get('plate_conf_history')), 3)
         vehicle_conf = round(self._avg(track_state.get('vehicle_conf_history')), 3)
@@ -1763,7 +2100,7 @@ class EventManager:
                 payload['washStartTime'] = wash_start_time
             payload['direction'] = dir_code
             payload['directionLabel'] = dir_label
-            self._attach_wheel_results(payload, track_state=track_state)
+            self._attach_wheel_results(payload, track_state=track_state, track_id=track_id)
         else:
             payload['lane'] = lane
             payload['plateNumber'] = plate_number
@@ -1794,36 +2131,105 @@ class EventManager:
         self._apply_plate_recognition_flags(payload, plate_abnormal_reason)
         return payload
 
-    def _attach_wheel_results(self, payload, track_state=None):
+    def _attach_wheel_results(self, payload, track_state=None, track_id=None):
         if not isinstance(payload, dict):
             return payload
-        wheel_results = self._build_wheel_results_payload(track_state=track_state)
+        wheel_results = self._build_wheel_results_payload(track_state=track_state, track_id=track_id)
         if wheel_results:
             payload['wheelResults'] = wheel_results
         return payload
 
-    @staticmethod
-    def _serialize_locked_wheel_entry(side, entry):
+    def _absolute_wheel_photo_url(self, photo_url):
+        photo_url = str(photo_url or '').strip()
+        if not photo_url:
+            return ''
+        photo_path = Path(photo_url)
+        if photo_path.is_absolute():
+            return photo_path.as_posix()
+        return (self.wheel_photo_base_dir / photo_path).resolve().as_posix()
+
+    def _find_existing_wheel_photo_url(self, track_state, side, entry):
+        if not isinstance(track_state, dict) or not isinstance(entry, dict):
+            return ''
+        history = track_state.get('wheel_photo_history')
+        if not isinstance(history, dict):
+            return ''
+        side_history = history.get(side)
+        if not isinstance(side_history, dict):
+            return ''
+        entry_id = int(entry.get('entryId', 0) or 0)
+        image_bytes = entry.get('imageJpegBytes', b'') or b''
+        image_hash = hashlib.sha1(image_bytes).hexdigest() if image_bytes else ''
+        for bucket in side_history.values():
+            if not isinstance(bucket, dict):
+                continue
+            rep = bucket.get('representative')
+            if not isinstance(rep, dict):
+                continue
+            photo_url = str(rep.get('photoUrl') or '').strip()
+            if not photo_url:
+                continue
+            if entry_id > 0 and int(rep.get('entryId', 0) or 0) == entry_id:
+                return self._absolute_wheel_photo_url(photo_url)
+            if image_hash and str(rep.get('imageHash') or '') == image_hash:
+                return self._absolute_wheel_photo_url(photo_url)
+        return ''
+
+    def _ensure_locked_wheel_photo_url(self, side, entry, track_state=None, track_id=None):
+        if not isinstance(entry, dict):
+            return ''
+        photo_url = str(entry.get('photoUrl') or '').strip()
+        if photo_url:
+            photo_url = self._absolute_wheel_photo_url(photo_url)
+            entry['photoUrl'] = photo_url
+            return photo_url
+        photo_url = self._find_existing_wheel_photo_url(track_state, side, entry)
+        if photo_url:
+            entry['photoUrl'] = photo_url
+            return photo_url
+        image_bytes = entry.get('imageJpegBytes', b'') or b''
+        if not image_bytes:
+            return ''
+        if isinstance(track_state, dict):
+            seq_map = track_state.setdefault('wheel_photo_seq', {'left': 0, 'right': 0})
+        else:
+            seq_map = {'left': 0, 'right': 0}
+        seq = int(seq_map.get(side, 0) or 0) + 1
+        seq_map[side] = seq
+        photo_url = self._save_wheel_photo(
+            side=side,
+            track_id=track_id or 0,
+            seq=seq,
+            image_bytes=image_bytes,
+            capture_ts=entry.get('capture_ts'),
+            class_name=entry.get('className', ''),
+        )
+        if photo_url:
+            entry['photoUrl'] = photo_url
+        return photo_url or ''
+
+    def _serialize_locked_wheel_entry(self, side, entry, track_state=None, track_id=None):
         side = str(side or '').strip().lower()
         if side not in ('left', 'right') or not isinstance(entry, dict):
             return None
         capture_time = str(entry.get('captureTime') or '').strip()
         class_name = str(entry.get('className') or '').strip()
-        image_b64 = str(entry.get('imageBase64') or '').strip()
-        if not image_b64:
-            image_bytes = entry.get('imageJpegBytes', b'') or b''
-            if image_bytes:
-                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        if not capture_time or not class_name or not image_b64:
+        photo_url = self._ensure_locked_wheel_photo_url(
+            side=side,
+            entry=entry,
+            track_state=track_state,
+            track_id=track_id,
+        )
+        if not capture_time or not class_name or not photo_url:
             return None
         return {
             'side': side,
             'captureTime': capture_time,
-            'imageBase64': image_b64,
+            'photoUrl': photo_url,
             'className': class_name,
         }
 
-    def _build_locked_wheel_results_payload(self, track_state):
+    def _build_locked_wheel_results_payload(self, track_state, track_id=None):
         if not isinstance(track_state, dict):
             return []
         locked = track_state.get('wheel_results_locked')
@@ -1831,13 +2237,18 @@ class EventManager:
             return []
         results = []
         for side in ('left', 'right'):
-            item = self._serialize_locked_wheel_entry(side, locked.get(side))
+            item = self._serialize_locked_wheel_entry(
+                side,
+                locked.get(side),
+                track_state=track_state,
+                track_id=track_id,
+            )
             if item:
                 results.append(item)
         return results
 
-    def _build_wheel_results_payload(self, track_state=None):
-        return self._build_locked_wheel_results_payload(track_state)
+    def _build_wheel_results_payload(self, track_state=None, track_id=None):
+        return self._build_locked_wheel_results_payload(track_state, track_id=track_id)
 
     @staticmethod
     def _is_wheel_track_active(track_state):
@@ -1903,7 +2314,7 @@ class EventManager:
         except Exception as exc:
             print(f'[wheel-photo] failed to save {abs_path}: {exc}')
             return None
-        return rel_path.as_posix()
+        return abs_path.resolve().as_posix()
 
     def _wheel_candidate_allowed_for_track(self, track_state, candidate, ref_ts):
         try:
@@ -1953,7 +2364,8 @@ class EventManager:
             f"[wheel-bind] track={track_id} side={side} action={action}{reason_part} "
             f"entry={entry_id} capture={candidate.get('captureTime', '')} "
             f"age={age:.2f}s since_start={since_start:.2f}s "
-            f"class={candidate.get('className', '')} score={float(candidate.get('score', 0.0) or 0.0):.3f}"
+            f"class={candidate.get('className', '')} score={float(candidate.get('score', 0.0) or 0.0):.3f} "
+            f"center={self._wheel_candidate_center_distance(candidate):.1f}"
         )
         key_reason = reason or action
         for line in self.log_throttler.record(
@@ -2072,6 +2484,34 @@ class EventManager:
             f"{stats_part}"
         )
 
+    @staticmethod
+    def _wheel_candidate_center_distance(item, default=float('inf')):
+        if not isinstance(item, dict) or 'centerDistance' not in item:
+            return float(default)
+        try:
+            value = float(item.get('centerDistance'))
+        except (TypeError, ValueError):
+            return float(default)
+        if value != value or value < 0.0:
+            return float(default)
+        return value
+
+    @staticmethod
+    def _wheel_result_selection_key(item, ref_ts):
+        if not isinstance(item, dict):
+            return (float('inf'), 0.0, float('inf'), 0.0)
+        center_distance = EventManager._wheel_candidate_center_distance(item)
+        try:
+            score = float(item.get('score', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        try:
+            capture_ts = float(item.get('capture_ts', ref_ts) or ref_ts)
+        except (TypeError, ValueError):
+            capture_ts = float(ref_ts)
+        time_delta = abs(float(ref_ts) - capture_ts)
+        return (center_distance, -score, time_delta, -capture_ts)
+
     def _update_track_wheel_results(self, track_id, track_state, frame_ts=None):
         if not isinstance(track_state, dict):
             return
@@ -2125,7 +2565,7 @@ class EventManager:
                 'imageJpegBytes': image_bytes,
                 'className': class_name,
                 'score': float(item.get('score', 0.0) or 0.0),
-                'centerDistance': float(item.get('centerDistance', 0.0) or 0.0),
+                'centerDistance': self._wheel_candidate_center_distance(item),
                 'capture_ts': float(item.get('capture_ts', ref_ts) or ref_ts),
                 'entryId': int(item.get('entryId', 0) or 0),
             }
@@ -2152,14 +2592,8 @@ class EventManager:
                 )
                 photo_seed_candidates.append(candidate)
                 continue
-            current_key = (
-                -float(current.get('score', 0.0) or 0.0),
-                -float(current.get('capture_ts', 0.0) or 0.0),
-            )
-            candidate_key = (
-                -candidate['score'],
-                -candidate['capture_ts'],
-            )
+            current_key = self._wheel_result_selection_key(current, ref_ts)
+            candidate_key = self._wheel_result_selection_key(candidate, ref_ts)
             if candidate_key < current_key:
                 if callable(claimer) and not claimer(track_id, candidate.get('entryId')):
                     continue
@@ -2179,6 +2613,7 @@ class EventManager:
             ref_ts=ref_ts,
             fallback_candidates=photo_seed_candidates,
         )
+        self._enqueue_wheel_photos(track_state, now_ts=ref_ts, track_id=track_id, force=False)
 
     @staticmethod
     def _is_candidate_claimed_by_track(provider, track_id, entry_id):
@@ -2281,7 +2716,7 @@ class EventManager:
             'imageJpegBytes': image_bytes,
             'className': class_name,
             'score': float(item.get('score', 0.0) or 0.0),
-            'centerDistance': float(item.get('centerDistance', 0.0) or 0.0),
+            'centerDistance': self._wheel_candidate_center_distance(item),
             'capture_ts': float(item.get('capture_ts', ref_ts) or ref_ts),
             'entryId': int(item.get('entryId', 0) or 0),
         }
@@ -2339,15 +2774,18 @@ class EventManager:
                 return
         history = track_state.setdefault('wheel_photo_history', {'left': {}, 'right': {}})
         side_history = history.setdefault(side, {})
+        image_bytes = candidate.get('imageJpegBytes', b'') or b''
+        image_hash = hashlib.sha1(image_bytes).hexdigest() if image_bytes else ''
         bucket_ts = int(candidate['capture_ts'] // self.wheel_photo_bucket_seconds)
         bucket = side_history.setdefault(bucket_ts, {'candidates': [], 'representative': None})
-        if any(int(c.get('entryId', 0) or 0) == entry_id for c in bucket['candidates']):
+        if entry_id > 0 and any(int(c.get('entryId', 0) or 0) == entry_id for c in bucket['candidates']):
             return
         bucket['candidates'].append({
             'className': candidate.get('className', ''),
             'score': float(candidate.get('score', 0.0) or 0.0),
-            'centerDistance': float(candidate.get('centerDistance', 0.0) or 0.0),
-            'imageJpegBytes': candidate.get('imageJpegBytes', b'') or b'',
+            'centerDistance': self._wheel_candidate_center_distance(candidate),
+            'imageJpegBytes': image_bytes,
+            'imageHash': image_hash,
             'capture_ts': float(candidate.get('capture_ts', 0.0) or 0.0),
             'entryId': entry_id,
         })
@@ -2357,22 +2795,51 @@ class EventManager:
         clean_class_name = self._select_bucket_clean_class_name(bucket['candidates'])
         clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(clean_class_name, 0)
         current_rep = bucket.get('representative')
+        new_rep_hash = str(new_rep_candidate.get('imageHash') or '')
         if current_rep and int(current_rep.get('entryId', 0) or 0) == int(new_rep_candidate.get('entryId', 0) or 0):
             if int(current_rep.get('cleanValue', 0) or 0) != int(clean_value):
                 current_rep['cleanValue'] = int(clean_value)
             return
+        if current_rep and new_rep_hash and current_rep.get('imageHash') == new_rep_hash:
+            current_rep.update({
+                'cleanValue': int(clean_value),
+                'score': float(new_rep_candidate.get('score', 0.0) or 0.0),
+                'capture_ts': float(new_rep_candidate.get('capture_ts', 0.0) or 0.0),
+                'entryId': int(new_rep_candidate.get('entryId', 0) or 0),
+            })
+            return
+        duplicate_photo_url = ''
+        duplicate_rep = None
+        if new_rep_hash:
+            for existing_bucket_key, existing_bucket in side_history.items():
+                if existing_bucket_key == bucket_ts:
+                    continue
+                existing_rep = existing_bucket.get('representative') if isinstance(existing_bucket, dict) else None
+                if (
+                    isinstance(existing_rep, dict)
+                    and existing_rep.get('imageHash') == new_rep_hash
+                    and int(existing_rep.get('cleanValue', 0) or 0) == int(clean_value)
+                ):
+                    duplicate_photo_url = str(existing_rep.get('photoUrl') or '')
+                    duplicate_rep = existing_rep
+                    break
         seq_map = track_state.setdefault('wheel_photo_seq', {'left': 0, 'right': 0})
-        if current_rep and current_rep.get('seq'):
+        if duplicate_rep and duplicate_rep.get('seq'):
+            seq = int(duplicate_rep['seq'])
+        elif current_rep and current_rep.get('seq'):
             seq = int(current_rep['seq'])
         else:
             seq = int(seq_map.get(side, 0)) + 1
             seq_map[side] = seq
-        photo_url = self._save_wheel_photo(
-            side=side, track_id=track_id, seq=seq,
-            image_bytes=new_rep_candidate.get('imageJpegBytes', b'') or b'',
-            capture_ts=new_rep_candidate.get('capture_ts'),
-            class_name=new_rep_candidate.get('className', ''),
-        )
+        if duplicate_photo_url:
+            photo_url = self._absolute_wheel_photo_url(duplicate_photo_url)
+        else:
+            photo_url = self._save_wheel_photo(
+                side=side, track_id=track_id, seq=seq,
+                image_bytes=new_rep_candidate.get('imageJpegBytes', b'') or b'',
+                capture_ts=new_rep_candidate.get('capture_ts'),
+                class_name=new_rep_candidate.get('className', ''),
+            )
         if not photo_url:
             return
         bucket['representative'] = {
@@ -2383,6 +2850,8 @@ class EventManager:
             'capture_ts': float(new_rep_candidate.get('capture_ts', 0.0) or 0.0),
             'entryId': int(new_rep_candidate.get('entryId', 0) or 0),
             'seq': seq,
+            'imageHash': new_rep_hash,
+            'duplicatePhoto': bool(duplicate_photo_url),
         }
 
     @staticmethod
@@ -2405,29 +2874,102 @@ class EventManager:
     def _select_bucket_representative(candidates):
         if not candidates:
             return None
-        return min(candidates, key=lambda c: float(c.get('centerDistance', 0.0) or 0.0))
+        return min(candidates, key=EventManager._wheel_candidate_center_distance)
 
-    def _enqueue_wheel_photos(self, track_state):
+    @staticmethod
+    def _wheel_photo_uploaded_urls(track_state):
+        uploaded = track_state.setdefault('wheel_photo_uploaded_urls', set())
+        if isinstance(uploaded, set):
+            return uploaded
+        if isinstance(uploaded, (list, tuple)):
+            uploaded = {str(item) for item in uploaded if str(item)}
+        else:
+            uploaded = set()
+        track_state['wheel_photo_uploaded_urls'] = uploaded
+        return uploaded
+
+    def _wheel_photo_bucket_ready(self, bucket_key, rep, now_ts):
+        try:
+            bucket_end = (int(bucket_key) + 1) * self.wheel_photo_bucket_seconds
+        except (TypeError, ValueError):
+            try:
+                bucket_end = float(rep.get('capture_ts', 0.0) or 0.0) + self.wheel_photo_bucket_seconds
+            except (TypeError, ValueError):
+                return False
+        return float(now_ts) >= bucket_end
+
+    def _collect_wheel_photo_entries(self, track_state, now_ts=None, force=True, track_id=None):
+        if not isinstance(track_state, dict):
+            return []
         if not self.wheel_photo_uploader:
-            return
-        history = track_state.get('wheel_photo_history') if isinstance(track_state, dict) else None
-        if not isinstance(history, dict):
-            return
+            return []
+        now_ref = time.time() if now_ts is None else float(now_ts)
+        history = track_state.get('wheel_photo_history')
         photos = []
-        for side in ('left', 'right'):
-            side_history = history.get(side)
-            if not isinstance(side_history, dict):
-                continue
-            for bucket in side_history.values():
-                if not isinstance(bucket, dict):
+        sides_with_history_photos = set()
+        if isinstance(history, dict):
+            for side in ('left', 'right'):
+                side_history = history.get(side)
+                if not isinstance(side_history, dict):
                     continue
-                rep = bucket.get('representative')
-                if not isinstance(rep, dict):
-                    continue
-                photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
+                for bucket_key, bucket in side_history.items():
+                    if not isinstance(bucket, dict):
+                        continue
+                    rep = bucket.get('representative')
+                    if not isinstance(rep, dict):
+                        continue
+                    if rep.get('duplicatePhoto'):
+                        continue
+                    if not force and not self._wheel_photo_bucket_ready(bucket_key, rep, now_ref):
+                        continue
+                    sides_with_history_photos.add(side)
+                    photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
+        if force:
+            locked = track_state.get('wheel_results_locked')
+            if isinstance(locked, dict):
+                for side in ('left', 'right'):
+                    if side in sides_with_history_photos:
+                        continue
+                    entry = locked.get(side)
+                    if not isinstance(entry, dict):
+                        continue
+                    photo_url = self._ensure_locked_wheel_photo_url(
+                        side=side,
+                        entry=entry,
+                        track_state=track_state,
+                        track_id=track_id,
+                    )
+                    class_name = str(entry.get('className') or '').strip()
+                    clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(class_name, 0)
+                    if not photo_url or not clean_value:
+                        continue
+                    photos.append((
+                        float(entry.get('capture_ts', 0.0) or 0.0),
+                        {
+                            'photoUrl': photo_url,
+                            'type': WHEEL_SIDE_TO_PHOTO_TYPE.get(side, ''),
+                            'cleanValue': clean_value,
+                            'capture_ts': float(entry.get('capture_ts', 0.0) or 0.0),
+                            '_sourceEntry': entry,
+                        },
+                    ))
         photos.sort(key=lambda item: item[0])
+        return photos
+
+    def _enqueue_wheel_photos(self, track_state, now_ts=None, force=True, track_id=None):
+        if not self.wheel_photo_uploader or not isinstance(track_state, dict):
+            return
+        uploaded_urls = self._wheel_photo_uploaded_urls(track_state)
+        photos = self._collect_wheel_photo_entries(
+            track_state,
+            now_ts=now_ts,
+            force=force,
+            track_id=track_id,
+        )
         for _, entry in photos:
-            photo_url = str(entry.get('photoUrl') or '').strip()
+            photo_url = self._absolute_wheel_photo_url(entry.get('photoUrl'))
+            if not photo_url or photo_url in uploaded_urls:
+                continue
             type_str = str(entry.get('type') or '').strip()
             clean_value = entry.get('cleanValue')
             if not photo_url or not type_str or clean_value is None:
@@ -2442,6 +2984,13 @@ class EventManager:
                     'type': type_str,
                     'cleanValue': clean_value_int,
                 })
+                uploaded_urls.add(photo_url)
+                entry['wheelPhotoUploaded'] = True
+                entry['wheelPhotoUploadedAt'] = time.time()
+                source_entry = entry.get('_sourceEntry')
+                if isinstance(source_entry, dict):
+                    source_entry['wheelPhotoUploaded'] = True
+                    source_entry['wheelPhotoUploadedAt'] = entry['wheelPhotoUploadedAt']
             except Exception as exc:
                 print(f'[wheel-photo] failed to enqueue ({photo_url}): {exc}')
 

@@ -41,15 +41,15 @@ run_zone_detect.py
 ## 当前运行口径
 
 - 当前只保留双模型车牌链路，旧单模型 LPR 不再参与主链路
-- 当 `video.hw_decode=true` 时，读流顺序为：`FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码`
-- 单车视频写出顺序为：`FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
+- 当 `video.hw_decode=true` 时，读流顺序为：`GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解`；两级硬解都不可用时按读流失败处理，不再切软件解码
+- 单车视频写出顺序为：`GStreamer 硬编 -> FFmpeg 硬编`；硬编不可用时不保存该段单车视频，没有软件编码兜底
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - 车轮旁路独立于主相机冲洗检测运行，只在 `wheel.enabled=true` 时启用
-- 主事件只有 `type=5` 会附加 `wheelResults`，且只附加该车主轨迹生命周期内已锁定的左右轮结果
+- 主事件只有 `type=5` 会附加 `wheelResults`，且只附加该车主轨迹生命周期内已锁定的左右轮结果；轮胎图片字段为 `photoUrl` 绝对路径，不再使用 `imageBase64`
 - 同一侧短时间连续命中的车轮结果会按连续簇整串归属给同一辆车，避免同一波旁路结果拆给后车
 - 上传给接口的车轮图片为原图，不带调试标注
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
-- `logic.per_id_video_source=auto` 时，关闭绘制默认按主路原始解码帧写单车录像；开启绘制时按绘制帧写
+- `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 按主路原始解码帧写单车录像；`logic.no_draw=false` 按绘制帧写
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存
 - 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
@@ -61,7 +61,7 @@ run_zone_detect.py
 
 - 设备 ID：`system.device_id=RK3588-DEV`
 - 视频源：RTSP，`video.source_mode=camera`
-- 解码：`video.hw_decode=true`
+- 解码：`video.hw_decode=true`、`video.decode_backend=auto`
 - 推理并发：`video.workers=1`，`video.core_mask=0`，`video.worker_core_strategy=auto`
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - 板端定频：`system.performance_lock_enabled=true`，推理启动前默认尝试定频
@@ -70,21 +70,46 @@ run_zone_detect.py
 - 画面叠加：`logic.no_draw=true`
 - 车牌框绘制：`logic.draw_plate_boxes=false`
 - 调试帧：`video.debug_frame_path=off`
-- 车牌副链路降频：`logic.plate_infer_stride=3`
+- 车牌副链路降频：`logic.plate_infer_stride=2`
 - 单车视频：`logic.enable_per_id_video=true`
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
-- 单车视频帧源：`logic.per_id_video_source=auto`，关闭绘制时走原始解码帧，`logic.per_id_raw_prebuffer_seconds=3.0`
+- 单车视频帧源：`logic.per_id_video_source=auto`，`logic.no_draw=true` 时走原始解码帧
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
-- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=1.0`
+- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.5`，稳定桶实时入上传队列，最终 `type=5` 前强制 flush 未上传照片
 - 检测 CSV：`video.csv=./video_result/test.csv`
-- 事件截图上报格式：`system.api.capture_mode=base64`
+- 事件截图上报格式：`system.api.capture_mode=path`
 - 事件目录：`event_output_dir=events/config`
 - 事件截图目录：`event_capture_dir=captures/config`
 
 说明：
 
 - 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
-- 若板端缺少 `ffmpeg rkmpp`，程序会先退到 `GStreamer+mpp`；若 `mppvideodec` 也不可用，再退到软件解码
+- 程序优先使用 `GStreamer+mpp direct-BGR`；短测显示该路径资源占用最低。排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式在 1080p RTSP 上帧率明显偏低。
+- 实验性 `video.decode_backend=ffmpeg_rga` 使用 `RKMPP -> scale_rkrga -> BGR rawvideo`，只允许绑定 `RGA3 core0/core1`，不会自动回退到 GStreamer 或普通 FFmpeg。建议从原分辨率输出开始验证，再按业务坐标体系决定是否下采样。
+- `ffmpeg_rga` 默认在第一条明确的 RGA `-22`、`Invalid argument`、`>4G` 或 buffer-map 错误时熔断当前源 300 秒，避免持续向驱动提交失败任务。
+
+```json
+{
+  "video": {
+    "decode_backend": "ffmpeg_rga",
+    "ffmpeg_rga": {
+      "core": "auto",
+      "width": 0,
+      "height": 0,
+      "async_depth": 1,
+      "afbc": false,
+      "breaker_enabled": true,
+      "breaker_error_threshold": 1,
+      "breaker_window_seconds": 60.0,
+      "breaker_cooldown_seconds": 300.0
+    }
+  }
+}
+```
+
+- 单路短测可运行 `venv-gst/bin/python tools/ffmpeg_rga_probe.py --config configs/config.json --duration 30 --core rga3_core0`。
+- 四路长测可运行 `venv-gst/bin/python tools/ffmpeg_rga_soak.py --config configs/config.json --bypass-config configs/config_绕行.json --duration 7200 --output logs/rga_soak/soak.jsonl`。长测会交替绑定两个 RGA3 核，任一路读流/熔断失败或内核出现 RGA `>4G`、buffer-map、commit、submit 错误时联动停止，并持续将脱敏状态同步落盘。
+
 - 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
 
 ## 运行时命名空间

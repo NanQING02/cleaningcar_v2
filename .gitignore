@@ -48,9 +48,9 @@ per_id/
 *.jpeg
 *.png
 *.csv
-configs/config.json
+configs/*.example.json
 configs/config_*.json
-!configs/*.example.json
+!configs/config_绕行.json
 !configs/README.md
 packages/*wheel_sidechain*.tar.gz
 packages/*wheel_sidechain*.zip

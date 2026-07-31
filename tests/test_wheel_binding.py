@@ -9,7 +9,12 @@ import numpy as np
 
 from cleaningcar.events import EventManager
 from cleaningcar.runtime_config import load_config
-from cleaningcar.wheel import WheelResultCache, resolve_wheel_class_name, resolve_wheel_settings
+from cleaningcar.wheel import (
+    WheelResultCache,
+    resolve_wheel_class_name,
+    resolve_wheel_settings,
+    select_best_detection,
+)
 
 
 class _DummyZoneManager:
@@ -122,12 +127,14 @@ class WheelBindingTests(unittest.TestCase):
             zone_manager=zone_manager or _DummyZoneManager(),
             uploader=object(),
             wheel_result_provider=wheel_provider,
+            wheel_photo_base_dir=temp_dir.name,
         )
 
     @staticmethod
     def _type5_event(capture_time="2026-04-28 12:00:00"):
         return {
             "id": "evt-1",
+            "trackId": 1,
             "type": 5,
             "captureTime": capture_time,
             "captureImage": "",
@@ -179,7 +186,22 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(results[0]["className"], "75-100")
         self.assertTrue(results[0]["imageBase64"])
 
-    def test_window_prefers_highest_score(self):
+    def test_single_frame_prefers_detection_nearest_frame_center(self):
+        best = select_best_detection(
+            boxes=np.array([
+                [0.0, 0.0, 20.0, 20.0],
+                [35.0, 35.0, 65.0, 65.0],
+            ], dtype=np.float32),
+            classes=np.array([0, 3], dtype=np.int64),
+            scores=np.array([0.99, 0.60], dtype=np.float32),
+            frame_shape=(100, 100, 3),
+            class_names=["0-25", "25-50", "50-75", "75-100"],
+        )
+
+        self.assertEqual(best["className"], "75-100")
+        self.assertEqual(best["centerDistance"], 0.0)
+
+    def test_window_prefers_nearest_frame_center_before_score(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
         frame = np.full((100, 100, 3), 150, dtype=np.uint8)
         class_names = ["0-25", "25-50", "50-75", "75-100"]
@@ -214,7 +236,7 @@ class WheelBindingTests(unittest.TestCase):
 
         results = cache.get_recent_results(now_ts=1002.0, reference_ts=1002.0)
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["className"], "0-25")
+        self.assertEqual(results[0]["className"], "50-75")
 
     def test_type5_payload_only_attaches_simplified_wheel_fields(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
@@ -240,10 +262,12 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(len(payload["wheelResults"]), 1)
         self.assertEqual(
             set(payload["wheelResults"][0].keys()),
-            {"side", "captureTime", "imageBase64", "className"},
+            {"side", "captureTime", "photoUrl", "className"},
         )
         self.assertEqual(payload["wheelResults"][0]["side"], "left")
         self.assertEqual(payload["wheelResults"][0]["className"], "50-75")
+        self.assertTrue(Path(payload["wheelResults"][0]["photoUrl"]).is_absolute())
+        self.assertTrue(Path(payload["wheelResults"][0]["photoUrl"]).exists())
 
     def test_type5_payload_does_not_fallback_to_provider_without_lifecycle_lock(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
@@ -291,6 +315,7 @@ class WheelBindingTests(unittest.TestCase):
         )
 
         manager = self._manager(wheel_provider=cache)
+        manager.enable_event_disk = True
         track_state = self._track_state()
         manager._update_track_wheel_results(1, track_state, frame_ts=now_ts)
         track_state["type1_capture_time"] = "2026-04-28 11:59:47"
@@ -312,10 +337,12 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(len(event["wheelResults"]), 1)
         self.assertEqual(
             set(event["wheelResults"][0].keys()),
-            {"side", "captureTime", "imageBase64", "className"},
+            {"side", "captureTime", "photoUrl", "className"},
         )
         self.assertEqual(event["wheelResults"][0]["side"], "left")
         self.assertEqual(event["wheelResults"][0]["className"], "50-75")
+        self.assertTrue(Path(event["wheelResults"][0]["photoUrl"]).is_absolute())
+        self.assertTrue(Path(event["wheelResults"][0]["photoUrl"]).exists())
 
     def test_lifecycle_locked_wheel_results_survive_after_provider_no_longer_has_recent_items(self):
         provider = _StaticWheelProvider([
@@ -341,7 +368,7 @@ class WheelBindingTests(unittest.TestCase):
         self.assertIn("wheelResults", payload)
         self.assertEqual(payload["wheelResults"][0]["className"], "25-50")
 
-    def test_lifecycle_locked_wheel_results_upgrade_to_better_candidate(self):
+    def test_lifecycle_locked_wheel_results_upgrade_to_more_centered_candidate(self):
         provider = _StaticWheelProvider([
             {
                 "entryId": 1,
@@ -350,6 +377,7 @@ class WheelBindingTests(unittest.TestCase):
                 "imageJpegBytes": b"first",
                 "className": "0-25",
                 "score": 0.95,
+                "centerDistance": 80.0,
                 "capture_ts": 1000.0,
             }
         ])
@@ -365,14 +393,50 @@ class WheelBindingTests(unittest.TestCase):
                 "imageJpegBytes": b"second",
                 "className": "50-75",
                 "score": 0.62,
+                "centerDistance": 5.0,
                 "capture_ts": 1005.0,
             }
         ]
         manager._update_track_wheel_results(1, track_state, frame_ts=1005.0)
 
         locked = track_state.get("wheel_results_locked", {}).get("left", {})
-        self.assertEqual(locked.get("className"), "0-25")
-        self.assertEqual(locked.get("imageJpegBytes"), b"first")
+        self.assertEqual(locked.get("className"), "50-75")
+        self.assertEqual(locked.get("imageJpegBytes"), b"second")
+
+    def test_lifecycle_locked_wheel_results_keep_centered_candidate_over_newer(self):
+        provider = _StaticWheelProvider([
+            {
+                "entryId": 1,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"centered",
+                "className": "25-50",
+                "score": 0.70,
+                "centerDistance": 2.0,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state = self._track_state()
+
+        manager._update_track_wheel_results(1, track_state, frame_ts=1000.0)
+        provider.items = [
+            {
+                "entryId": 2,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:45",
+                "imageJpegBytes": b"newer-off-center",
+                "className": "75-100",
+                "score": 0.99,
+                "centerDistance": 80.0,
+                "capture_ts": 1005.0,
+            }
+        ]
+        manager._update_track_wheel_results(1, track_state, frame_ts=1005.0)
+
+        locked = track_state.get("wheel_results_locked", {}).get("left", {})
+        self.assertEqual(locked.get("entryId"), 1)
+        self.assertEqual(locked.get("imageJpegBytes"), b"centered")
 
     def test_type5_payload_omits_wheel_results_when_provider_absent(self):
         manager = self._manager(wheel_provider=None)
@@ -614,6 +678,9 @@ class WheelBindingTests(unittest.TestCase):
         self.assertFalse(config["wheel"]["enabled"])
         self.assertEqual(config["wheel"]["classes"], ["0-25", "25-50", "50-75", "75-100"])
         self.assertEqual(config["wheel"]["target_fps"], 5.0)
+        self.assertEqual(config["wheel"]["reader_stale_seconds"], 5.0)
+        self.assertEqual(config["wheel"]["reader_stale_check_interval_frames"], 15)
+        self.assertEqual(config["wheel"]["reader_stale_hash_size"], 16)
         self.assertNotIn("center_min_margin_ratio", config["wheel"])
 
     def test_wheel_model_path_prefers_project_root_when_relative_path_exists(self):
@@ -626,6 +693,76 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(model_path.name, "2026.4.28CRwheel.rknn")
         self.assertEqual(model_path.parent, Path(__file__).resolve().parent.parent / "models" / "wheel")
         self.assertTrue(model_path.exists())
+
+    def test_event_json_disk_retention_is_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            event_dir = root / "events"
+            capture_dir = root / "captures"
+            manager = EventManager(
+                {
+                    "logic": {"enable_event_disk": False},
+                    "event_output_dir": str(event_dir),
+                    "event_capture_dir": str(capture_dir),
+                },
+                fps=25.0,
+                frame_size=(64, 64),
+                zone_manager=_DummyZoneManager(),
+            )
+            track_state = {
+                "plate_conf_history": [0.9],
+                "vehicle_conf_history": [0.8],
+                "events": set(),
+                "last_frame_idx": 1,
+            }
+
+            manager._emit_event_core(
+                1,
+                1,
+                1,
+                np.zeros((64, 64, 3), dtype=np.uint8),
+                {"captureTime": "2026-07-11 16:00:00"},
+                track_state,
+                "car",
+            )
+
+            self.assertFalse(list(event_dir.glob("*.json")))
+            self.assertTrue(list(capture_dir.rglob("*.jpg")))
+
+    def test_event_json_disk_retention_can_be_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            event_dir = root / "events"
+            capture_dir = root / "captures"
+            manager = EventManager(
+                {
+                    "logic": {"enable_event_disk": True},
+                    "event_output_dir": str(event_dir),
+                    "event_capture_dir": str(capture_dir),
+                },
+                fps=25.0,
+                frame_size=(64, 64),
+                zone_manager=_DummyZoneManager(),
+            )
+            track_state = {
+                "plate_conf_history": [0.9],
+                "vehicle_conf_history": [0.8],
+                "events": set(),
+                "last_frame_idx": 1,
+            }
+
+            manager._emit_event_core(
+                1,
+                1,
+                1,
+                np.zeros((64, 64, 3), dtype=np.uint8),
+                {"captureTime": "2026-07-11 16:00:00"},
+                track_state,
+                "car",
+            )
+
+            self.assertTrue(list(event_dir.glob("*.json")))
+            self.assertTrue(list(capture_dir.rglob("*.jpg")))
 
 
 if __name__ == "__main__":

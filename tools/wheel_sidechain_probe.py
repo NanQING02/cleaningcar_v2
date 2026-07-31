@@ -200,7 +200,7 @@ def main():
         "bind_window_seconds": settings.get("bind_window_seconds"),
         "wheel_photo_url": wheel_photo_url,
         "photo_base_dir": photo_base_dir,
-        "photo_bucket_seconds": wheel_cfg.get("photo_bucket_seconds", 1.0),
+        "photo_bucket_seconds": wheel_cfg.get("photo_bucket_seconds", 0.25),
         "photo_min_score": wheel_cfg.get("photo_min_score", 0.3),
     }
     (output_dir / "resolved_settings.json").write_text(
@@ -241,7 +241,7 @@ def main():
         wheel_photo_uploader=uploader,
         wheel_photo_base_dir=photo_base_dir,
         session_id="probe_" + datetime.now().strftime("%H%M%S"),
-        wheel_photo_bucket_seconds=float(wheel_cfg.get("photo_bucket_seconds", 1.0)),
+        wheel_photo_bucket_seconds=float(wheel_cfg.get("photo_bucket_seconds", 0.25)),
         wheel_photo_min_score=float(wheel_cfg.get("photo_min_score", 0.3)),
     )
     track_state = {
