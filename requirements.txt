@@ -1,16 +1,15 @@
-fastapi
-uvicorn
-pydantic
-numpy
-psutil
-Pillow
+fastapi==0.141.1
+uvicorn==0.52.0
+pydantic==2.13.4
+psutil==7.2.2
 
 # The following dependencies are provided by deployment scripts or board runtime:
-# - cv2: install_runtime_venv.sh installs system package python3-opencv
+# - cv2/numpy: install_runtime_venv.sh installs system package python3-opencv
+# - Pillow: install_runtime_venv.sh installs system package python3-pil
 # - rknnlite: install_runtime_venv.sh installs the wheel from packages/
 #
-pycryptodome>=3.20.0
-cffi>=1.16.0
+pycryptodome==3.23.0
+cffi==2.1.0
 
 # Optional test dependency:
 # - onnxruntime: only needed for tools/tests/test_plate_dual_models.py --onnx

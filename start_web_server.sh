@@ -12,6 +12,7 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv-gst"
 PACKAGES_DIR="$SCRIPT_DIR/packages"
+WHEELHOUSE_DIR="$PACKAGES_DIR/wheelhouse"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-8000}"
 SERVICE_NAME="web_server_${WEB_PORT}"
@@ -242,6 +243,20 @@ can_import() {
   "$python_bin" -c "import $module" >/dev/null 2>&1
 }
 
+has_offline_wheelhouse() {
+  [ -d "$WHEELHOUSE_DIR" ] && compgen -G "$WHEELHOUSE_DIR/*.whl" >/dev/null
+}
+
+pip_install() {
+  local python_bin="$1"
+  shift
+  if has_offline_wheelhouse; then
+    "$python_bin" -m pip install --no-index --find-links "$WHEELHOUSE_DIR" "$@"
+  else
+    "$python_bin" -m pip install "$@"
+  fi
+}
+
 # ============================================================
 #  Self-healing environment ensure functions
 # ============================================================
@@ -284,6 +299,7 @@ ensure_apt_dependencies() {
     python3-venv
     python3-pip
     python3-opencv
+    python3-pil
     gstreamer1.0-tools
     gstreamer1.0-plugins-base
     gstreamer1.0-plugins-good
@@ -352,10 +368,14 @@ ensure_venv() {
     fail "venv" "venv python not functional after creation"
   fi
 
-  log_setup "[venv] upgrading pip..."
-  if ! "$VENV_DIR/bin/python" -m pip install --upgrade pip 2>&1; then
-    log_warn "[venv] pip upgrade failed (non-fatal, continuing)"
-    log_warn "[venv] possible cause: no network, but cached pip should work"
+  if has_offline_wheelhouse && compgen -G "$WHEELHOUSE_DIR/pip-26.2-*.whl" >/dev/null; then
+    log_setup "[venv] installing locked pip from offline wheelhouse..."
+    pip_install "$VENV_DIR/bin/python" "pip==26.2" 2>&1 || fail "venv" "offline pip installation failed"
+  elif ! has_offline_wheelhouse; then
+    log_setup "[venv] upgrading pip..."
+    if ! "$VENV_DIR/bin/python" -m pip install --upgrade pip 2>&1; then
+      log_warn "[venv] pip upgrade failed (non-fatal, continuing)"
+    fi
   fi
   log_setup "[venv] ready"
 }
@@ -477,7 +497,7 @@ ensure_rknn_wheel() {
 
   if [ -n "$whl_file" ]; then
     log_setup "[rknn] installing: $whl_file"
-    if ! "$python_bin" -m pip install "$whl_file" 2>&1; then
+    if ! pip_install "$python_bin" "$whl_file" 2>&1; then
       log_error "[rknn] pip install failed for RKNN wheel"
       log_error "  possible cause 1: wheel is compiled for different python version"
       log_error "  possible cause 2: wheel is compiled for different architecture (arm64 vs armhf)"
@@ -504,7 +524,10 @@ ensure_rknn_wheel() {
 
 ensure_pip_requirements() {
   local python_bin="$1"
-  local req_file="$SCRIPT_DIR/requirements.txt"
+  local req_file="$SCRIPT_DIR/requirements.lock"
+  if [ ! -f "$req_file" ]; then
+    req_file="$SCRIPT_DIR/requirements.txt"
+  fi
 
   [ -f "$req_file" ] || return 0
 
@@ -543,8 +566,12 @@ ensure_pip_requirements() {
     fi
   fi
 
-  log_setup "[pip] running: $python_bin -m pip install -r $req_file"
-  if ! "$python_bin" -m pip install -r "$req_file" 2>&1; then
+  if has_offline_wheelhouse; then
+    log_setup "[pip] installing locked dependencies from offline wheelhouse"
+  else
+    log_setup "[pip] offline wheelhouse missing, installing from configured pip index"
+  fi
+  if ! pip_install "$python_bin" -r "$req_file" 2>&1; then
     log_error "[pip] pip install failed"
     log_error "  possible cause 1: no network (pip needs to download packages on first install)"
     log_error "  possible cause 2: DNS failure (check: ping pypi.org)"
@@ -559,6 +586,57 @@ ensure_pip_requirements() {
   log_setup "[pip] requirements installed"
 }
 
+board_preflight() {
+  log_setup "[preflight] checking RK3588 MPP/NPU runtime..."
+  local failures=()
+  local arch
+  arch="$(uname -m 2>/dev/null || true)"
+  [ "$arch" = "aarch64" ] || failures+=("unsupported architecture: $arch (need aarch64)")
+
+  if [ ! -e /dev/mpp_service ]; then
+    failures+=("missing /dev/mpp_service")
+  elif [ ! -r /dev/mpp_service ] || [ ! -w /dev/mpp_service ]; then
+    failures+=("current user cannot read/write /dev/mpp_service")
+  fi
+  command -v gst-inspect-1.0 >/dev/null 2>&1 || failures+=("gst-inspect-1.0 not found")
+  if command -v gst-inspect-1.0 >/dev/null 2>&1 && ! gst-inspect-1.0 mppvideodec >/dev/null 2>&1; then
+    failures+=("GStreamer plugin mppvideodec unavailable")
+  fi
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    failures+=("ffmpeg not found")
+  elif ! ffmpeg -hide_banner -decoders 2>/dev/null | grep -E 'h264_rkmpp|hevc_rkmpp' >/dev/null; then
+    failures+=("FFmpeg rkmpp decoder unavailable")
+  fi
+
+  if [ ! -r /sys/kernel/debug/rknpu/version ] && ! compgen -G '/sys/class/devfreq/*npu*' >/dev/null; then
+    failures+=("RKNPU driver/sysfs not detected")
+  fi
+  if ! ldconfig -p 2>/dev/null | grep 'librknnrt.so' >/dev/null; then
+    failures+=("librknnrt.so not registered in dynamic linker cache")
+  fi
+  local model
+  for model in \
+    "$SCRIPT_DIR/models/detection/best.rknn" \
+    "$SCRIPT_DIR/models/plate/plate_detect.rknn" \
+    "$SCRIPT_DIR/models/plate/plate_rec_color.rknn" \
+    "$SCRIPT_DIR/models/wheel/2026.4.28CRwheel.rknn"; do
+    [ -s "$model" ] || failures+=("model missing or empty: $model")
+  done
+
+  if [ ${#failures[@]} -gt 0 ]; then
+    local item
+    for item in "${failures[@]}"; do
+      log_error "[preflight] $item"
+    done
+    if [ "${CLEANINGCAR_PREFLIGHT_STRICT:-1}" = "0" ]; then
+      log_warn "[preflight] strict mode disabled; continuing despite ${#failures[@]} failure(s)"
+      return 0
+    fi
+    fail "preflight" "RK3588 runtime preflight failed with ${#failures[@]} issue(s)"
+  fi
+  log_setup "[preflight] RK3588 MPP/NPU runtime ready"
+}
+
 # ---- Main environment gate ----
 
 ensure_environment() {
@@ -566,11 +644,19 @@ ensure_environment() {
   log_setup "========== Environment Check =========="
   local python_sys
   python_sys="$(ensure_system_python)"
+  if has_offline_wheelhouse; then
+    local offline_python_version
+    offline_python_version="$("$python_sys" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+    if [ "$offline_python_version" != "3.10" ]; then
+      fail "python" "offline wheelhouse requires Python 3.10, detected $offline_python_version"
+    fi
+  fi
   ensure_apt_dependencies
   ensure_venv "$python_sys"
   local python_bin="$VENV_DIR/bin/python"
   ensure_opencv_gstreamer "$python_bin"
   ensure_native_libs
+  board_preflight
   ensure_rknn_wheel "$python_bin" "$python_sys"
   ensure_pip_requirements "$python_bin"
   log_setup "========== Environment Ready =========="
@@ -825,6 +911,14 @@ do_start() {
   fi
 }
 
+do_preflight() {
+  local config_path
+  config_path="$(resolve_config_path)" || fail "config" "config file not found"
+  log_setup "[config] using: $config_path"
+  ensure_environment
+  log_service "deployment preflight passed"
+}
+
 case "$ACTION" in
   start)
     do_start
@@ -839,8 +933,11 @@ case "$ACTION" in
   status)
     do_status
     ;;
+  preflight)
+    do_preflight
+    ;;
   *)
-    echo "usage: $0 [start|stop|restart|status]"
+    echo "usage: $0 [start|stop|restart|status|preflight]"
     exit 1
     ;;
 esac

@@ -5,6 +5,7 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv-gst"
 PACKAGES_DIR="$SCRIPT_DIR/packages"
+WHEELHOUSE_DIR="$PACKAGES_DIR/wheelhouse"
 APT_OPTIONS=()
 APT_SOURCEPARTS_OVERRIDE=""
 
@@ -74,6 +75,20 @@ run_apt_cmd() {
     "$sudo_prefix" apt-get "${APT_OPTIONS[@]}" "$@"
   else
     apt-get "${APT_OPTIONS[@]}" "$@"
+  fi
+}
+
+has_offline_wheelhouse() {
+  [ -d "$WHEELHOUSE_DIR" ] && compgen -G "$WHEELHOUSE_DIR/*.whl" >/dev/null
+}
+
+pip_install() {
+  local python_bin="$1"
+  shift
+  if has_offline_wheelhouse; then
+    "$python_bin" -m pip install --no-index --find-links "$WHEELHOUSE_DIR" "$@"
+  else
+    "$python_bin" -m pip install "$@"
   fi
 }
 
@@ -174,6 +189,10 @@ resolve_config_path >/dev/null
 
 PYTHON_SYS="$(detect_system_python)"
 PYTHON_VER="$(ensure_supported_python_version "$PYTHON_SYS")"
+if has_offline_wheelhouse && [ "$PYTHON_VER" != "3.10" ]; then
+  echo "offline wheelhouse requires Python 3.10, detected $PYTHON_VER" >&2
+  exit 1
+fi
 FORCE_SETUP="${FORCE_SETUP:-}"
 PYTHON_BIN=""
 
@@ -193,6 +212,7 @@ if [ -z "$PYTHON_BIN" ]; then
     python3-venv
     python3-pip
     python3-opencv
+    python3-pil
     gstreamer1.0-tools
     gstreamer1.0-plugins-base
     gstreamer1.0-plugins-good
@@ -230,7 +250,11 @@ EOF
 
   "$PYTHON_SYS" -m venv --system-site-packages "$VENV_DIR"
   PYTHON_BIN="$VENV_DIR/bin/python"
-  "$PYTHON_BIN" -m pip install --upgrade pip
+  if has_offline_wheelhouse && compgen -G "$WHEELHOUSE_DIR/pip-26.2-*.whl" >/dev/null; then
+    pip_install "$PYTHON_BIN" "pip==26.2"
+  elif ! has_offline_wheelhouse; then
+    "$PYTHON_BIN" -m pip install --upgrade pip
+  fi
 
   if [ -d "$PACKAGES_DIR" ]; then
     RKN_LIB_SRC="$PACKAGES_DIR/librknnrt.so"
@@ -278,12 +302,16 @@ EOF
       RKNN_WHL="$(ls "$PACKAGES_DIR"/rknn_toolkit_lite*"$PY_TAG"*.whl 2>/dev/null | head -n 1)"
     fi
     if [ -n "$RKNN_WHL" ]; then
-      "$PYTHON_BIN" -m pip install "$RKNN_WHL"
+      pip_install "$PYTHON_BIN" "$RKNN_WHL"
     fi
   fi
 
-  if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-    "$PYTHON_BIN" -m pip install -r "$SCRIPT_DIR/requirements.txt"
+  REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.lock"
+  if [ ! -f "$REQUIREMENTS_FILE" ]; then
+    REQUIREMENTS_FILE="$SCRIPT_DIR/requirements.txt"
+  fi
+  if [ -f "$REQUIREMENTS_FILE" ]; then
+    pip_install "$PYTHON_BIN" -r "$REQUIREMENTS_FILE"
   fi
 fi
 

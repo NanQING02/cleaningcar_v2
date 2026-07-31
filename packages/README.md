@@ -12,6 +12,10 @@
   - RGA 头文件
 - `packages.md5sum`
   - 包文件校验信息
+- `wheelhouse/`
+  - RK3588 Ubuntu 22.04 / aarch64 / Python 3.10 的离线 Python wheels
+- 根目录 `requirements.lock`
+  - 与 wheelhouse 配套的完整锁定依赖版本
 
 当前仓库现状：
 
@@ -23,5 +27,7 @@
 
 ## 使用方式
 
-- 首次执行 `./start_web_server.sh start` 时，内部会通过 `install_runtime_venv.sh` 优先从这里安装或复制依赖
+- 首次执行 `./start_web_server.sh start` 时，内部会通过 `install_runtime_venv.sh` 优先从 wheelhouse 离线安装依赖
+- wheelhouse 存在时不会回退到公网 pip；文件缺失会直接失败，避免产生不可复现的环境
+- `./start_web_server.sh preflight` 会检查 MPP、FFmpeg rkmpp、NPU 驱动、RKNN 运行库和模型文件
 - 板端交付时建议整个目录一起带上
