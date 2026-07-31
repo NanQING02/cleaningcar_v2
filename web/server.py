@@ -600,6 +600,7 @@ def main():
         host=args.host,
         port=args.port,
         reload=args.reload,
+        ws='none',
         log_level='warning',
         access_log=False,
     )
