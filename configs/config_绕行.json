@@ -25,7 +25,7 @@
     "performance_lock_script": ""
   },
   "video": {
-    "source": "rtsp://admin:yanya999@192.168.1.222:8557/h264",
+    "source": "rtsp://admin:YanyA.999.@192.168.1.222:8557/h264",
     "source_mode": "camera",
     "hw_decode": true,
     "decode_backend": "gstreamer",
