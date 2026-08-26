@@ -9,6 +9,23 @@
 - 环境检查顺序固定为：先 `conda env list`，再在候选环境里检查关键包是否可导入；只有 import 失败或版本不满足时，才考虑安装。
 - 如果当前目录不是 Git 仓库，先明确说明，再跳过 commit/PR 操作，不继续尝试 Git 命令。
 
+## RGA 管控口径（2026-08-26 定，接手必读）
+
+2026-08-26 实机排查定论（完整实验报告见仓库外部文档 `RGA_4G死机排查_实验报告.md`）：
+RK3588 整机死机 = 四要素叠加——RGA3 双忙（job 落 RGA2，无 IOMMU）× buffer 物理页 >4G ×
+调用方以 **malloc 虚拟地址** 传 buffer × librga 1.10.x virAddr/im2d 错误路径 SIGSEGV
+→ 内核 elf_core_dump BUG → D 状态卡死 → 整机慢性挂死。
+
+据此本项目执行如下硬性口径：
+
+1. **唯一允许的 RGA 用法**：GStreamer 解码端 BGR 直出（`mppvideodec format=BGR` direct 管线）。
+   gst-rockchip 插件内部以 fd/DMA-BUF 调 RGA，提交失败仅丢帧（实测 223 次连续失败进程存活），不触发死机链。
+2. **禁止**任何其他 RGA 用法：显式 `scale_rkrga`/ffmpeg_rga、`wrapbuffer_virtualaddr`+`imresize`、
+   ctypes/c 直接调 librga 等。不走 fd 路径或未实机验证错误路径的 RGA 方案一律不允许合入。
+3. 若未来确需新增 RGA 用法：必须先用实机探针验证目标 librga 版本在"RGA2 + >4G"下的错误路径
+   不 crash 进程，且优先 importbuffer 句柄 + 绑定 RGA3 core；评估通过前不允许进入任何链路。
+4. 板端 librga 以系统镜像自带为准（soname `librga.so.2`），项目不再向 `/usr/local/lib` 安装第二份。
+
 ## 项目概览
 
 CleaningCar v2 是部署在 RK3588 板端的实时车辆检测与冲洗监测系统。主链路使用 RKNN NPU 做 FP 目标检测，使用双模型车牌识别链路识别车牌和颜色，可选启用左右车轮 RTSP 旁路检测。Web 端基于 FastAPI，负责配置管理、推理进程守护、日志、调试帧和手动截图。
@@ -116,7 +133,7 @@ run_zone_detect.py
 - `video.fp_output_mode=6`
 - `video.debug_frame_path=off`
 - `system.performance_lock_enabled=true`
-- RGA 禁用；项目高负载场景已复现死机风险，不允许开启
+- RGA 管控：**只允许** GStreamer 解码端 BGR 直出（`mppvideodec format=BGR`）隐式使用 RGA（fd/DMA-BUF 路径，失败仅丢帧不死机）；其余任何显式 RGA 用法（ffmpeg_rga/scale_rkrga、rga_resize、wrapbuffer_virtualaddr/imresize 等）已于 2026-08-26 全部移除，禁止恢复
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - `logic.no_draw=true`
 - `logic.draw_plate_boxes=false`

@@ -217,7 +217,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             self.assertEqual(manager.video["decode_backend"], "auto")
 
-    def test_config_manager_accepts_and_normalizes_ffmpeg_rga_backend(self):
+    def test_config_manager_strips_ffmpeg_rga_backend_and_section(self):
+        """RGA 管控（2026-08-26）：ffmpeg_rga 后端已删除；残留配置必须归一到 auto 并丢弃 ffmpeg_rga 段。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
             payload = {
@@ -243,13 +244,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             manager = ConfigManager(path)
 
-            self.assertEqual(manager.video["decode_backend"], "ffmpeg_rga")
-            self.assertEqual(manager.video["ffmpeg_rga"]["core"], "rga3_core1")
-            self.assertEqual(manager.video["ffmpeg_rga"]["width"], 640)
-            self.assertEqual(manager.video["ffmpeg_rga"]["height"], 360)
-            self.assertEqual(manager.video["ffmpeg_rga"]["async_depth"], 4)
-            self.assertEqual(manager.video["ffmpeg_rga"]["breaker_error_threshold"], 1)
-            self.assertEqual(manager.video["ffmpeg_rga"]["breaker_cooldown_seconds"], 300.0)
+            self.assertEqual(manager.video["decode_backend"], "auto")
+            self.assertNotIn("ffmpeg_rga", manager.video)
 
     def test_web_config_registry_exposes_wash_priority_pause_fields(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}

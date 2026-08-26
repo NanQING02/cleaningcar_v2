@@ -428,34 +428,8 @@ ensure_native_libs() {
     fi
   fi
 
-  # librga.so
-  if [ -f "$PACKAGES_DIR/librga.so" ]; then
-    if ! is_file_same "$PACKAGES_DIR/librga.so" /usr/local/lib/librga.so; then
-      log_setup "[native-libs] installing librga.so -> /usr/local/lib/"
-      if [ -n "$sudo_prefix" ]; then
-        "$sudo_prefix" cp -f "$PACKAGES_DIR/librga.so" /usr/local/lib/librga.so
-        "$sudo_prefix" chmod 755 /usr/local/lib/librga.so || true
-      else
-        cp -f "$PACKAGES_DIR/librga.so" /usr/local/lib/librga.so
-        chmod 755 /usr/local/lib/librga.so || true
-      fi
-      need_ldconfig=1
-    fi
-  fi
-
-  # im2d.h
-  if [ -f "$PACKAGES_DIR/im2d.h" ]; then
-    if ! is_file_same "$PACKAGES_DIR/im2d.h" /usr/local/include/rga/im2d.h; then
-      log_setup "[native-libs] installing im2d.h -> /usr/local/include/rga/"
-      if [ -n "$sudo_prefix" ]; then
-        "$sudo_prefix" mkdir -p /usr/local/include/rga
-        "$sudo_prefix" cp -f "$PACKAGES_DIR/im2d.h" /usr/local/include/rga/im2d.h
-      else
-        mkdir -p /usr/local/include/rga
-        cp -f "$PACKAGES_DIR/im2d.h" /usr/local/include/rga/im2d.h
-      fi
-    fi
-  fi
+  # RGA 管控（2026-08-26）：不再安装 librga.so——项目已无显式 RGA 用法，
+  # GStreamer 插件按 soname 使用系统自带 librga.so.2，避免多版本混装。
 
   if [ "$need_ldconfig" -eq 1 ]; then
     log_setup "[native-libs] running ldconfig..."

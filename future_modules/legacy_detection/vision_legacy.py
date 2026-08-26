@@ -3,13 +3,6 @@ import numpy as np
 
 from cleaningcar.constants import PROJECT, REG_MAX
 
-RGA_RESIZE_FUNC = None
-try:
-    from future_modules.acceleration.rga_resize_plugin import rga_resize
-    RGA_RESIZE_FUNC = rga_resize
-except Exception:
-    RGA_RESIZE_FUNC = None
-
 
 def letterbox(im, new_shape=640, color=(114, 114, 114)):
     shape = im.shape[:2]
@@ -31,11 +24,6 @@ def letterbox(im, new_shape=640, color=(114, 114, 114)):
 
 
 def resize_for_letterbox(im, new_unpad):
-    if RGA_RESIZE_FUNC is not None:
-        try:
-            return RGA_RESIZE_FUNC(im, new_unpad)
-        except Exception as exc:
-            print(f"[rga-resize] failed, fallback to cv2: {exc}")
     return cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
 
 

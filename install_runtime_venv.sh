@@ -270,29 +270,10 @@ EOF
       fi
     fi
 
-    RGA_SO_SRC="$PACKAGES_DIR/librga.so"
-    if [ -f "$RGA_SO_SRC" ]; then
-      if [ -n "$SUDO_PREFIX" ]; then
-        "$SUDO_PREFIX" cp -f "$RGA_SO_SRC" /usr/local/lib/librga.so
-        "$SUDO_PREFIX" chmod 755 /usr/local/lib/librga.so || true
-        "$SUDO_PREFIX" ldconfig || true
-      else
-        cp -f "$RGA_SO_SRC" /usr/local/lib/librga.so
-        chmod 755 /usr/local/lib/librga.so || true
-        ldconfig || true
-      fi
-    fi
+    # RGA 管控（2026-08-26）：不再安装任何 librga/im2d 到系统——项目已无显式 RGA 用法，
+    # GStreamer 插件按 soname 使用系统镜像自带的 librga.so.2，混装第二个版本只会制造
+    # 版本混乱（曾出现 /usr/local/lib/librga.so 1.10.5 死库存与系统 1.10.0 并存）。
 
-    RGA_HDR_SRC="$PACKAGES_DIR/im2d.h"
-    if [ -f "$RGA_HDR_SRC" ]; then
-      if [ -n "$SUDO_PREFIX" ]; then
-        "$SUDO_PREFIX" mkdir -p /usr/local/include/rga
-        "$SUDO_PREFIX" cp -f "$RGA_HDR_SRC" /usr/local/include/rga/im2d.h
-      else
-        mkdir -p /usr/local/include/rga
-        cp -f "$RGA_HDR_SRC" /usr/local/include/rga/im2d.h
-      fi
-    fi
 
     PY_MAJOR="$(echo "$PYTHON_VER" | cut -d. -f1)"
     PY_MINOR="$(echo "$PYTHON_VER" | cut -d. -f2)"

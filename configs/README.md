@@ -40,7 +40,7 @@
 
 - `true` 时，读流按 `GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解` 依次尝试
 - 当前配置建议 `video.decode_backend=auto`；只在排查特定链路时临时改成 `gstreamer` 或 `ffmpeg`
-- 排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式会明显降低 1080p RTSP 读流帧率
+- RGA 管控（2026-08-26）：`decode_backend` 仅支持 `auto`/`gstreamer`/`ffmpeg`；原 `ffmpeg_rga` 后端已按死机排查结论移除，残留值自动归一到 `auto`，`ffmpeg_rga` 配置段会被丢弃
 - 若两级硬解都不可用，不再切软件解码；主链路会按读流失败处理并重连或退出
 
 ### `video.fp_output_mode`

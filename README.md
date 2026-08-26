@@ -65,7 +65,7 @@ run_zone_detect.py
 - 推理并发：`video.workers=1`，`video.core_mask=0`，`video.worker_core_strategy=auto`
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
 - 板端定频：`system.performance_lock_enabled=true`，推理启动前默认尝试定频
-- RGA：禁用；项目高负载场景已复现死机风险，不允许开启
+- RGA 管控：项目内**只允许** GStreamer 解码端 BGR 直出（`mppvideodec format=BGR`，fd/DMA-BUF 路径）隐式使用 RGA；其余任何显式 RGA 用法（ffmpeg_rga/scale_rkrga、rga_resize 等）已按 2026-08-26 死机排查结论全部移除，禁止恢复
 - FP 后处理：`video.fp_output_mode=6`
 - 画面叠加：`logic.no_draw=true`
 - 车牌框绘制：`logic.draw_plate_boxes=false`
@@ -84,31 +84,8 @@ run_zone_detect.py
 说明：
 
 - 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
-- 程序优先使用 `GStreamer+mpp direct-BGR`；短测显示该路径资源占用最低。排查 RGA 问题时可临时设置 `video.gstreamer_bgr_mode=safe`，但该模式在 1080p RTSP 上帧率明显偏低。
-- 实验性 `video.decode_backend=ffmpeg_rga` 使用 `RKMPP -> scale_rkrga -> BGR rawvideo`，只允许绑定 `RGA3 core0/core1`，不会自动回退到 GStreamer 或普通 FFmpeg。建议从原分辨率输出开始验证，再按业务坐标体系决定是否下采样。
-- `ffmpeg_rga` 默认在第一条明确的 RGA `-22`、`Invalid argument`、`>4G` 或 buffer-map 错误时熔断当前源 300 秒，避免持续向驱动提交失败任务。
-
-```json
-{
-  "video": {
-    "decode_backend": "ffmpeg_rga",
-    "ffmpeg_rga": {
-      "core": "auto",
-      "width": 0,
-      "height": 0,
-      "async_depth": 1,
-      "afbc": false,
-      "breaker_enabled": true,
-      "breaker_error_threshold": 1,
-      "breaker_window_seconds": 60.0,
-      "breaker_cooldown_seconds": 300.0
-    }
-  }
-}
-```
-
-- 单路短测可运行 `venv-gst/bin/python tools/ffmpeg_rga_probe.py --config configs/config.json --duration 30 --core rga3_core0`。
-- 四路长测可运行 `venv-gst/bin/python tools/ffmpeg_rga_soak.py --config configs/config.json --bypass-config configs/config_绕行.json --duration 7200 --output logs/rga_soak/soak.jsonl`。长测会交替绑定两个 RGA3 核，任一路读流/熔断失败或内核出现 RGA `>4G`、buffer-map、commit、submit 错误时联动停止，并持续将脱敏状态同步落盘。
+- 程序优先使用 `GStreamer+mpp direct-BGR`；短测显示该路径资源占用最低。该路径即 RGA 唯一允许的使用方式（插件内部经 fd/DMA-BUF 调用 RGA，提交失败仅丢帧、不会 crash 进程，实测不触发死机链）。
+- `video.decode_backend=ffmpeg_rga`（scale_rkrga 路径）与配套熔断器已于 2026-08-26 按死机排查结论移除；残留配置会被自动归一到 `auto` 并丢弃 `ffmpeg_rga` 段。
 
 - 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
 

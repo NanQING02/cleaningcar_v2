@@ -107,51 +107,12 @@ class ConfigManager:
         video.setdefault('source_mode', 'auto')
         video.setdefault('hw_decode', True)
         decode_backend = str(video.get('decode_backend', 'auto') or 'auto').strip().lower()
-        if decode_backend not in {'auto', 'gstreamer', 'ffmpeg', 'ffmpeg_rga'}:
+        if decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
             decode_backend = 'auto'
         video['decode_backend'] = decode_backend
-        ffmpeg_rga = video.get('ffmpeg_rga', {})
-        if not isinstance(ffmpeg_rga, dict):
-            ffmpeg_rga = {}
-        core = str(ffmpeg_rga.get('core', 'auto') or 'auto').strip().lower()
-        if core not in {'auto', 'rga3_core0', 'rga3_core1'}:
-            core = 'auto'
-        ffmpeg_rga['core'] = core
-        try:
-            rga_width = max(0, int(ffmpeg_rga.get('width', 0) or 0))
-            rga_height = max(0, int(ffmpeg_rga.get('height', 0) or 0))
-        except (TypeError, ValueError):
-            rga_width = 0
-            rga_height = 0
-        if bool(rga_width) != bool(rga_height):
-            rga_width = 0
-            rga_height = 0
-        ffmpeg_rga['width'] = rga_width
-        ffmpeg_rga['height'] = rga_height
-        try:
-            async_depth = int(ffmpeg_rga.get('async_depth', 1))
-        except (TypeError, ValueError):
-            async_depth = 1
-        ffmpeg_rga['async_depth'] = min(4, max(0, async_depth))
-        for key, default in (('afbc', False), ('breaker_enabled', True)):
-            value = ffmpeg_rga.get(key, default)
-            if isinstance(value, str):
-                value = value.strip().lower() in {'1', 'true', 'yes', 'on'}
-            ffmpeg_rga[key] = bool(value)
-        for key, default, minimum in (
-            ('breaker_error_threshold', 1, 1),
-            ('breaker_window_seconds', 60.0, 1.0),
-            ('breaker_cooldown_seconds', 300.0, 1.0),
-        ):
-            try:
-                value = float(ffmpeg_rga.get(key, default))
-            except (TypeError, ValueError):
-                value = float(default)
-            if key == 'breaker_error_threshold':
-                ffmpeg_rga[key] = max(int(minimum), int(value))
-            else:
-                ffmpeg_rga[key] = max(float(minimum), value)
-        video['ffmpeg_rga'] = ffmpeg_rga
+        # RGA 管控（2026-08-26）：ffmpeg_rga/scale_rkrga 解码后端已按死机排查结论移除，
+        # 残留在配置里的 ffmpeg_rga 段直接丢弃，decode_backend=ffmpeg_rga 归一到 auto。
+        video.pop('ffmpeg_rga', None)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
         video.setdefault('fp_output_mode', '6')
