@@ -217,6 +217,30 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             self.assertEqual(manager.video["decode_backend"], "auto")
 
+    def test_config_manager_forces_rtsp_to_gstreamer_direct_bgr(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {
+                    "source": "rtsp://camera/live",
+                    "source_mode": "camera",
+                    "decode_backend": "ffmpeg",
+                    "gstreamer_bgr_mode": "safe",
+                },
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertEqual(manager.video["decode_backend"], "gstreamer")
+            self.assertEqual(manager.video["gstreamer_bgr_mode"], "direct")
+
     def test_config_manager_strips_ffmpeg_rga_backend_and_section(self):
         """RGA 管控（2026-08-26）：ffmpeg_rga 后端已删除；残留配置必须归一到 auto 并丢弃 ffmpeg_rga 段。"""
         with tempfile.TemporaryDirectory() as tmpdir:

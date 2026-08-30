@@ -15,7 +15,7 @@
 - `video_io.py`
   - 打开视频源
   - 管理 RTSP / 文件输入
-  - 负责 `GStreamer+mpp direct-BGR 硬解 -> FFmpeg rkmpp 硬解` 的读流回退；单车视频仅使用 `FFmpeg` 硬编，读流不切软件解码，写视频也没有软件编码兜底
+  - RTSP 只使用 `GStreamer+mpp direct-BGR`，打开失败即读流失败；离线文件可保留非 RGA 硬解链路。单车视频仅使用 `FFmpeg` 硬编，写视频没有软件编码兜底
   - 负责运行时路径解析
 
 - `vision.py`
@@ -144,7 +144,7 @@ flowchart TD
 - 中文显示新增 `text_render.py`
 - 事件截图真实落盘校验收到了 `events.py`
 - 运行期清理已收口为默认禁用，仅保留 `storage_cleanup.py` 旧实现
-- 读流已收口为 GStreamer direct-BGR 硬解优先，FFmpeg rkmpp 次选；单车视频只使用 FFmpeg 硬编，不使用 GStreamer 写出或软件链路兜底
+- RTSP 读流已收口为 GStreamer direct-BGR 唯一路径，不回退到 FFmpeg 或 safe 管线；离线文件仍可使用非 RGA 硬解。单车视频只使用 FFmpeg 硬编，不使用 GStreamer 写出或软件链路兜底
 - 全局视频保存残留已删除，仅保留 `logic.enable_per_id_video`
 - Web 不再浏览 per-id 单车录像，但 `pipeline.py` 仍保存单车录像文件
 - 实时调试图与事件截图已分流：调试图带绘制，事件截图默认优先原图

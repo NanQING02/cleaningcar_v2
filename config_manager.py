@@ -107,11 +107,18 @@ class ConfigManager:
         video.setdefault('source_mode', 'auto')
         video.setdefault('hw_decode', True)
         decode_backend = str(video.get('decode_backend', 'auto') or 'auto').strip().lower()
-        if decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
+        source_mode = str(video.get('source_mode', 'auto') or 'auto').strip().lower()
+        source_value = str(video.get('source', '') or '').strip().lower()
+        is_rtsp_source = source_value.startswith(('rtsp://', 'rtsps://'))
+        if source_mode == 'camera' or is_rtsp_source:
+            decode_backend = 'gstreamer'
+            video['gstreamer_bgr_mode'] = 'direct'
+        elif decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
             decode_backend = 'auto'
         video['decode_backend'] = decode_backend
         # RGA 管控（2026-08-26）：ffmpeg_rga/scale_rkrga 解码后端已按死机排查结论移除，
-        # 残留在配置里的 ffmpeg_rga 段直接丢弃，decode_backend=ffmpeg_rga 归一到 auto。
+        # 残留在配置里的 ffmpeg_rga 段直接丢弃；RTSP/camera 强制归一到
+        # GStreamer direct-BGR，离线文件的无效后端归一到 auto。
         video.pop('ffmpeg_rga', None)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')

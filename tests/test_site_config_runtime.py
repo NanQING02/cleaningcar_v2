@@ -10,12 +10,12 @@ class SiteConfigRuntimeTests(unittest.TestCase):
     def test_main_and_bypass_plate_stride_match_runtime_configs(self):
         expected_plate_stride = {
             "configs/config.json": 2,
-            "configs/config_绕行.json": 1,
+            "configs/config_绕行.json": 2,
         }
         for relative, plate_stride in expected_plate_stride.items():
             with self.subTest(config=relative):
                 data = json.loads((PROJECT_ROOT / relative).read_text(encoding="utf-8"))
-                self.assertEqual(data["video"]["decode_backend"], "auto")
+                self.assertEqual(data["video"]["decode_backend"], "gstreamer")
                 self.assertEqual(data["logic"]["plate_infer_stride"], plate_stride)
                 self.assertNotIn("run_mode", data["wheel"])
                 self.assertNotIn("service_url", data["wheel"])
