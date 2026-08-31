@@ -14,6 +14,7 @@ import cv2
 from utils.upload_queue import SQLiteUploadQueue
 
 from .constants import VEHICLE_LABEL_CN, WHEEL_CLASS_NAME_TO_CLEAN_VALUE, WHEEL_SIDE_TO_PHOTO_TYPE
+from .event_trace import EventTraceRecorder
 from .log_throttle import WindowedLogThrottler
 from .npu_monitor import format_npu_status, snapshot_npu_status
 from .plate import is_valid_plate, normalize_plate_candidate_text, normalize_plate_text
@@ -380,6 +381,18 @@ class EventManager:
             'base64_seconds': 0.0,
             'read_seconds': 0.0,
         }
+        self.event_trace = EventTraceRecorder.from_config(config, fps)
+
+    def trace_record(self, kind, payload=None):
+        recorder = getattr(self, 'event_trace', None)
+        if recorder is None:
+            return False
+        return recorder.record(kind, payload)
+
+    def close(self):
+        recorder = getattr(self, 'event_trace', None)
+        if recorder is not None:
+            recorder.close()
 
     def record_frame_timing(self, frame_idx, capture_ts, infer_ts):
         if capture_ts is None or infer_ts is None:
@@ -481,8 +494,32 @@ class EventManager:
                      plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None):
         if track_id <= 0:
             return
+        previous_state = self.tracks.get(track_id) or {}
+        self.trace_record('track_input', {
+            'frameIdx': int(frame_idx),
+            'trackId': int(track_id),
+            'isPlateUpdate': bool(is_plate),
+            'plateBox': plate_box,
+            'vehicleBox': vehicle_box,
+            'plateText': str(plate_text or ''),
+            'plateConfidence': plate_conf,
+            'plateColor': str(plate_color or ''),
+            'plateColorConfidence': plate_color_conf,
+            'vehicleLabel': str(vehicle_label or ''),
+            'vehicleConfidence': vehicle_conf,
+            'waterBoxes': water_boxes or [],
+            'waterActive': bool(water_active),
+            'confirmed': bool(confirmed),
+            'cleaningLabel': str(cleaning_label or ''),
+            'anchorPoint': anchor_point,
+            'previousEvents': sorted(previous_state.get('events', set())),
+            'previousStage': int(previous_state.get('event_stage_max', 0) or 0),
+            'previousLastFrame': previous_state.get('last_frame_idx'),
+        })
         st = self.tracks.setdefault(track_id, {
             'events': set(),
+            'event_stage_max': 0,
+            'event_sequence_issues': [],
             'stationary_frames': 0,
             'speed_buf': deque(maxlen=6),
             'wash_duration': 0.0,
@@ -676,6 +713,14 @@ class EventManager:
             anchor_history.append((float(anchor_point[0]), float(anchor_point[1])))
         zone_state, zone_flags = self.zone_mgr.update_track(track_id, anchor_point, frame_idx)
         st['zone_state'] = zone_state
+        self.trace_record('zone_update', {
+            'frameIdx': int(frame_idx),
+            'trackId': int(track_id),
+            'insideA': bool(zone_state and zone_state.inside_a),
+            'insideB': bool(zone_state and zone_state.inside_b),
+            'flags': zone_flags,
+            'anchorPoint': anchor_point,
+        })
 
         timestamp = self.frame_timestamp(frame_idx)
         inside_a = bool(zone_state and zone_state.inside_a)
@@ -762,10 +807,11 @@ class EventManager:
             st['events'].add(1)
         if type2_ready and 2 not in st['events'] and 2 in self.allowed_events:
             if 1 in self.allowed_events and 1 not in st['events']:
-                backfill_type1 = self._can_emit_type1(st)
-                if backfill_type1:
-                    self.emit_event(track_id, 1, frame_idx, frame, {'captureTime': timestamp}, st)
-                    st['events'].add(1)
+                self.emit_event(track_id, 1, frame_idx, frame, {
+                    'captureTime': timestamp,
+                    'sequenceBackfill': True,
+                }, st)
+                st['events'].add(1)
             self.emit_event(track_id, 2, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(2)
         if water_in_b and 3 not in st['events'] and 3 in self.allowed_events:
@@ -983,7 +1029,49 @@ class EventManager:
             self._flush_pending_events(track_id, vehicle_type, track_state)
         self._emit_event_core(track_id, event_type, frame_idx, frame, payload, track_state, vehicle_type)
 
+    def _record_event_sequence_issue(self, track_id, event_type, frame_idx, track_state, previous_stage):
+        issue = {
+            'trackId': int(track_id),
+            'eventType': int(event_type),
+            'previousStage': int(previous_stage),
+            'frameIdx': int(frame_idx),
+            'reason': 'event_stage_regression',
+        }
+        issues = track_state.setdefault('event_sequence_issues', [])
+        issues.append(issue)
+        if len(issues) > 32:
+            del issues[:-32]
+        reasons = track_state.setdefault('abnormal_reasons', set())
+        if isinstance(reasons, set):
+            reasons.add(f'OUT_OF_ORDER_TYPE{event_type}_AFTER_TYPE{previous_stage}')
+        print(
+            f'[event-sequence] suppress regression track={track_id} '
+            f'type={event_type} previous={previous_stage} frame={frame_idx}'
+        )
+        self.trace_record('sequence_issue', issue)
+
+    def _event_stage_allowed(self, track_id, event_type, frame_idx, track_state):
+        try:
+            stage = int(event_type)
+        except (TypeError, ValueError):
+            return False
+        previous_stage = int(track_state.get('event_stage_max', 0) or 0)
+        if stage < previous_stage:
+            self._record_event_sequence_issue(
+                track_id,
+                stage,
+                frame_idx,
+                track_state,
+                previous_stage,
+            )
+            return False
+        if stage > previous_stage:
+            track_state['event_stage_max'] = stage
+        return True
+
     def _emit_event_core(self, track_id, event_type, frame_idx, frame, payload, track_state, vehicle_type):
+        if not self._event_stage_allowed(track_id, event_type, frame_idx, track_state):
+            return False
         t0 = time.perf_counter()
         anchor_dwell = 0
         dbg = track_state.get('debug', {})
@@ -1100,6 +1188,11 @@ class EventManager:
             event['perIdVideoEnabled'] = bool(payload.get('perIdVideoEnabled', False))
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
+        self.trace_record('event', {
+            'frameIdx': int(frame_idx),
+            'trackId': int(track_id),
+            'event': event,
+        })
         capture_ts_val = None
         infer_ts_val = None
         if hasattr(self, 'frame_timing'):
@@ -1210,12 +1303,13 @@ class EventManager:
             f'CSV写={ (t_csv-t_json)*1000:.1f}ms '
             f'上传={ (t_upload-t_csv)*1000:.1f}ms'
         )
+        return True
 
     def _flush_pending_events(self, track_id, vehicle_type, track_state):
         entries = self.pending_events.pop(track_id, None)
         if not entries:
             return
-        for entry in entries:
+        for entry in sorted(entries, key=lambda item: int(item.get('event_type', 0) or 0)):
             et = entry.get('event_type')
             fi = entry.get('frame_idx')
             fr = entry.get('frame')

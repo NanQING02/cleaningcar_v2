@@ -30,6 +30,7 @@ video_result/
 events/
 captures/
 logs/
+event_traces/
 tmp/
 wheel_smoke_output/
 configs/captures/

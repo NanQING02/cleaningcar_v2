@@ -95,6 +95,7 @@ run_zone_detect.py
 - `cleaningcar/worker.py`：RKNN worker 线程，负责检测推理、后处理、车牌识别和基础绘制。
 - `cleaningcar/tracking.py`：车辆跟踪，默认 `vehicle_tracker_impl=bytetrack`，内部使用 Kalman 预测和匹配。
 - `cleaningcar/events.py`：事件状态机、事件 JSON、截图、上报 payload；`type=5` 事件会附加已锁定的 `wheelResults`。
+- `cleaningcar/event_trace.py`：默认关闭的事件层输入JSONL追踪，用于本地视频逐案例手测；不得记录RTSP密码或图片Base64。
 - `cleaningcar/wheel.py`：左右车轮 RTSP 旁路检测，结果按车辆生命周期锁定，同侧短时间连续结果按簇归属给同一辆车。
 - `cleaningcar/plate_lpr.py`：双模型车牌检测、矫正、识别和颜色解码。
 - `cleaningcar/plate.py`：车牌文本规范化、合法性校验和锁定辅助。

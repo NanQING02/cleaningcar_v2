@@ -65,6 +65,10 @@ FP 检测模型后处理模式：
 - `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 默认写主路原始解码帧；`logic.no_draw=false` 时写绘制后的帧
 - Web 开发者参数只保留一个录像画面开关：关闭时写 `raw` 原始帧并禁用绘制；开启时写 `annotated`，同时启用 Zone、轨迹、锚点、水雾和双模型车牌结果绘制
 - `logic.per_id_type6_require_plate_candidate=false` 时，Type6 不再因缺少有效车牌候选被拦截；需要恢复旧门槛时可改为 `true`
+- `logic.track_lost_grace_seconds=8.0` 按视频源FPS换算tracker丢失保留帧数；25 FPS时为200帧，事件状态额外保留1秒
+- `logic.event_trace_enabled=false` 默认关闭事件输入追踪；本地视频手测时可临时开启
+- `logic.event_trace_dir=event_traces` 控制追踪输出根目录，相对路径按项目根目录解析
+- `logic.event_trace_queue_size=4096` 控制异步JSONL队列；队列溢出数量会写入 `summary.json`
 - Web 端不再浏览这些单车录像，但后台仍会继续保存
 - 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效
 

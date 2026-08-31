@@ -6,6 +6,19 @@ from urllib.parse import urlparse, urlunparse
 DEFAULT_PER_ID_VIDEO_DIR = 'video_result/per_id'
 DEFAULT_WHEEL_MODEL = 'models/wheel/2026.4.28CRwheel.rknn'
 DEFAULT_EVENT_CAPTURE_BASE_DIR = '/data/ftp/event_captures'
+NORMALIZED_COORD_TOLERANCE = 1e-3
+
+
+def _clamp_near_normalized_points(points):
+    parsed = [(float(item[0]), float(item[1])) for item in points]
+    tolerance = NORMALIZED_COORD_TOLERANCE
+    if all(
+        -tolerance <= x <= 1.0 + tolerance
+        and -tolerance <= y <= 1.0 + tolerance
+        for x, y in parsed
+    ):
+        return [(max(0.0, min(1.0, x)), max(0.0, min(1.0, y))) for x, y in parsed]
+    return parsed
 
 
 def _derive_wheel_photo_url(api_url: str) -> str:
@@ -29,18 +42,16 @@ class ConfigError(Exception):
 def _ensure_polygon(points: List[List[float]]) -> List[Tuple[float, float]]:
     if not isinstance(points, list) or len(points) < 3:
         raise ConfigError('Polygon requires at least 3 points')
-    poly = []
     for item in points:
         if not isinstance(item, (list, tuple)) or len(item) != 2:
             raise ConfigError(f'Invalid point format: {item}')
-        poly.append((float(item[0]), float(item[1])))
-    return poly
+    return _clamp_near_normalized_points(points)
 
 
 def _ensure_point(point: List[float]) -> Tuple[float, float]:
     if not isinstance(point, (list, tuple)) or len(point) != 2:
         raise ConfigError(f'Invalid point: {point}')
-    return float(point[0]), float(point[1])
+    return _clamp_near_normalized_points([point])[0]
 
 
 class ConfigManager:
@@ -289,6 +300,18 @@ class ConfigManager:
         logic.setdefault('type34_min_interval_frames', 5)
         logic.setdefault('track_timeout_frames', 90)
         logic.setdefault('track_max_age', 120)
+        try:
+            track_lost_grace_seconds = float(logic.get('track_lost_grace_seconds', 8.0) or 0.0)
+        except (TypeError, ValueError):
+            track_lost_grace_seconds = 8.0
+        logic['track_lost_grace_seconds'] = max(0.0, min(track_lost_grace_seconds, 60.0))
+        logic['event_trace_enabled'] = bool(logic.get('event_trace_enabled', False))
+        logic['event_trace_dir'] = str(logic.get('event_trace_dir', 'event_traces') or 'event_traces').strip()
+        try:
+            event_trace_queue_size = int(logic.get('event_trace_queue_size', 4096) or 4096)
+        except (TypeError, ValueError):
+            event_trace_queue_size = 4096
+        logic['event_trace_queue_size'] = max(128, min(event_trace_queue_size, 100000))
         logic.setdefault('vehicle_iou_threshold', 0.3)
         logic.setdefault('vehicle_center_gate_ratio', 0.0)
         logic.setdefault('vehicle_tracker_impl', 'bytetrack')

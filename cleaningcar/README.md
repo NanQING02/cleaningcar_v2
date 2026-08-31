@@ -50,6 +50,12 @@
   - 事件截图只有真实落盘成功才写入 `captureImage`
   - 当前默认优先保存原图事件截图，而不是调试叠加图
 
+- `event_trace.py`
+  - 默认关闭的事件层输入追踪
+  - 异步记录检测/跟踪输入、保留ID、丢帧、Zone变化、事件输出和时序异常
+  - 按配置和运行批次生成 `run.json`、`frames.jsonl`、`events.jsonl`、`summary.json`
+  - 不保存图片内容，并对RTSP源移除用户名和密码
+
 - `runtime_signals.py`
   - 输出心跳文件、启动标志、启动截图、手动截图
 

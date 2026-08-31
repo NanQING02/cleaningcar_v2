@@ -351,6 +351,20 @@
           <label>Track 超时时间 (帧)
             <input type="number" min="30" v-model.number="form.logic.track_timeout_frames" />
           </label>
+          <label>Track 丢失宽限 (秒，按源FPS换算)
+            <input type="number" min="0" max="60" step="0.5" v-model.number="form.logic.track_lost_grace_seconds" />
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.event_trace_enabled" />
+            记录事件层输入（手测时开启）
+          </label>
+          <label>事件追踪目录
+            <input v-model="form.logic.event_trace_dir" placeholder="event_traces" />
+          </label>
+          <label>事件追踪异步队列
+            <input type="number" min="128" v-model.number="form.logic.event_trace_queue_size" />
+          </label>
+          <p class="hint">丢失宽限大于0时，运行时按视频源FPS换算tracker保留帧数，事件状态再额外保留1秒。</p>
           <label>车辆跟踪 IoU 阈值 (0-1)
             <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_iou_threshold" />
           </label>
@@ -539,6 +553,10 @@
               type34_min_interval_frames: 5,
               track_timeout_frames: 90,
               track_max_age: 120,
+              track_lost_grace_seconds: 8.0,
+              event_trace_enabled: false,
+              event_trace_dir: 'event_traces',
+              event_trace_queue_size: 4096,
               vehicle_iou_threshold: 0.3,
               vehicle_center_gate_ratio: 0.0,
               no_draw: false,
@@ -969,6 +987,14 @@
           }
           this.form.logic.stationary_speed_thresh = Number(this.form.logic.stationary_speed_thresh || 8.0);
           this.form.logic.track_max_age = Number(this.form.logic.track_max_age || 120);
+          this.form.logic.track_lost_grace_seconds = Number(
+            (typeof this.form.logic.track_lost_grace_seconds === 'undefined')
+              ? 8.0
+              : this.form.logic.track_lost_grace_seconds
+          );
+          this.form.logic.event_trace_enabled = !!this.form.logic.event_trace_enabled;
+          this.form.logic.event_trace_dir = this.form.logic.event_trace_dir || 'event_traces';
+          this.form.logic.event_trace_queue_size = Number(this.form.logic.event_trace_queue_size || 4096);
           this.form.logic.vehicle_shrink_ratio = Number(this.form.logic.vehicle_shrink_ratio || 0.35);
           this.form.logic.vehicle_lock_min_votes = Number(this.form.logic.vehicle_lock_min_votes || 40);
           this.form.logic.vehicle_lock_on_confirm = !!this.form.logic.vehicle_lock_on_confirm;
@@ -1113,6 +1139,10 @@
               type34_min_interval_frames: this.form.logic.type34_min_interval_frames,
               track_timeout_frames: this.form.logic.track_timeout_frames,
               track_max_age: this.form.logic.track_max_age,
+              track_lost_grace_seconds: this.form.logic.track_lost_grace_seconds,
+              event_trace_enabled: this.form.logic.event_trace_enabled,
+              event_trace_dir: this.form.logic.event_trace_dir,
+              event_trace_queue_size: this.form.logic.event_trace_queue_size,
               vehicle_iou_threshold: this.form.logic.vehicle_iou_threshold,
               vehicle_center_gate_ratio: this.form.logic.vehicle_center_gate_ratio,
               no_draw: this.form.logic.no_draw,
@@ -1188,11 +1218,19 @@
             this.busy = false;
           }
         },
-       async saveZones() {
+        async saveZones() {
           this.busy = true;
           this.status = '保存区域中…';
           try {
-            const payload = this.form.zones;
+            const payload = {
+              zone_a_detection: this.form.zones.zone_a_detection.map(this.clampNormPoint),
+              zone_b_wash: this.form.zones.zone_b_wash.map(this.clampNormPoint),
+              flow_vector: {
+                start: this.clampNormPoint(this.form.zones.flow_vector.start),
+                end: this.clampNormPoint(this.form.zones.flow_vector.end)
+              }
+            };
+            this.form.zones = payload;
             const res = await fetch(this.buildKeyedUrl('/zones'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1335,7 +1373,12 @@
             : this.form.zones.zone_b_wash;
         },
         toNorm(pt) {
-          return [+(pt.x / this.canvas.width).toFixed(4), +(pt.y / this.canvas.height).toFixed(4)];
+          return this.clampNormPoint([pt.x / this.canvas.width, pt.y / this.canvas.height]);
+        },
+        clampNormPoint(pt) {
+          const x = Math.max(0, Math.min(1, Number(pt?.[0] || 0)));
+          const y = Math.max(0, Math.min(1, Number(pt?.[1] || 0)));
+          return [+x.toFixed(4), +y.toFixed(4)];
         },
         toPx(norm) {
           return { x: norm[0] * this.canvas.width, y: norm[1] * this.canvas.height };

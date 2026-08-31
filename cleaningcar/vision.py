@@ -1,14 +1,25 @@
-def _is_normalized(points):
+NORMALIZED_COORD_TOLERANCE = 1e-3
+
+
+def _clip_normalized(value):
+    return max(0.0, min(1.0, float(value)))
+
+
+def _is_normalized(points, tolerance=NORMALIZED_COORD_TOLERANCE):
     if not points:
         return False
-    return all(0.0 <= p[0] <= 1.0 and 0.0 <= p[1] <= 1.0 for p in points)
+    return all(
+        -tolerance <= float(p[0]) <= 1.0 + tolerance
+        and -tolerance <= float(p[1]) <= 1.0 + tolerance
+        for p in points
+    )
 
 
 def scale_polygon(points, width, height):
     if not points:
         return []
     if _is_normalized(points):
-        return [(float(x) * width, float(y) * height) for x, y in points]
+        return [(_clip_normalized(x) * width, _clip_normalized(y) * height) for x, y in points]
     return [(float(x), float(y)) for x, y in points]
 
 
@@ -16,8 +27,9 @@ def scale_point(point, width, height):
     if not point:
         return (0.0, 0.0)
     x, y = point
-    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
-        return float(x) * width, float(y) * height
+    tolerance = NORMALIZED_COORD_TOLERANCE
+    if -tolerance <= float(x) <= 1.0 + tolerance and -tolerance <= float(y) <= 1.0 + tolerance:
+        return _clip_normalized(x) * width, _clip_normalized(y) * height
     return float(x), float(y)
 
 

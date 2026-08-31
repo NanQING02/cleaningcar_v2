@@ -198,6 +198,7 @@ systemctl status cleaningcar-web --no-pager
 - 检测 CSV：`./video_result/test.csv`
 - 推理日志：`logs/inference/`
 - Web 日志：`web_server_<port>.log`
+- 事件输入追踪：`event_traces/<配置名>/<run_id>/`，仅在 `logic.event_trace_enabled=true` 时生成
 - Web pid：`web_server_<port>.pid`
 - 上传队列：`<event_output_dir>/upload_queue.db`
 - 心跳文件：由 `system.heartbeat_path` 控制

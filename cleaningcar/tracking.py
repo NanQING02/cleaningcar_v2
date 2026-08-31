@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 _STATE_NEW = 0
@@ -8,6 +10,36 @@ _STATE_REMOVED = 3
 
 def _clip01(value):
     return float(np.clip(float(value), 0.0, 1.0))
+
+
+def resolve_track_retention_frames(fps, logic_cfg=None, config=None):
+    logic_cfg = logic_cfg or {}
+    config = config or {}
+    try:
+        source_fps = float(fps or 0.0)
+    except (TypeError, ValueError):
+        source_fps = 0.0
+    if source_fps <= 0.0:
+        source_fps = 25.0
+    try:
+        grace_seconds = float(logic_cfg.get('track_lost_grace_seconds', 8.0) or 0.0)
+    except (TypeError, ValueError):
+        grace_seconds = 8.0
+    if grace_seconds > 0.0:
+        tracker_max_age = max(1, int(math.ceil(source_fps * grace_seconds)))
+        event_timeout = tracker_max_age + max(1, int(math.ceil(source_fps)))
+    else:
+        tracker_max_age = max(1, int(config.get('track_max_age', 60) or 60))
+        event_timeout = max(
+            tracker_max_age + 1,
+            int(config.get('track_timeout_frames', tracker_max_age + 1) or tracker_max_age + 1),
+        )
+    return {
+        'source_fps': source_fps,
+        'grace_seconds': grace_seconds,
+        'tracker_max_age_frames': tracker_max_age,
+        'event_timeout_frames': event_timeout,
+    }
 
 
 def _tlbr_iou(box_a, box_b):
@@ -537,6 +569,14 @@ class ByteTrackTracker:
             }
         return active
 
+    def get_retained_track_ids(self):
+        retained = self._joint_stracks(self.tracked_stracks, self.lost_stracks)
+        return {
+            int(track.track_id)
+            for track in retained
+            if int(getattr(track, "track_id", 0)) > 0 and track.state != _STATE_REMOVED
+        }
+
 
 class LegacyIoUTracker:
     def __init__(self, iou_thresh=0.3, max_age=60, center_gate_ratio=0.0):
@@ -647,6 +687,9 @@ class LegacyIoUTracker:
     def get_active_tracks(self):
         return {tid: tr for tid, tr in self.tracks.items() if tr.get("age", 0) == 0}
 
+    def get_retained_track_ids(self):
+        return {int(track_id) for track_id in self.tracks if int(track_id) > 0}
+
 
 class VehicleTracker:
     def __init__(self, iou_thresh=0.3, max_age=60, center_gate_ratio=0.0, tracker_impl="bytetrack"):
@@ -671,3 +714,6 @@ class VehicleTracker:
 
     def get_active_tracks(self):
         return self._tracker.get_active_tracks()
+
+    def get_retained_track_ids(self):
+        return self._tracker.get_retained_track_ids()

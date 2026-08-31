@@ -41,7 +41,7 @@ from .runtime_signals import (
 )
 from .storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
 from .text_render import draw_text
-from .tracking import VehicleTracker
+from .tracking import VehicleTracker, resolve_track_retention_frames
 from .video_io import (
     AsyncPerIdVideoWriter,
     _resolve_runtime_path,
@@ -450,6 +450,15 @@ def process_video(path, args):
     base_dir = getattr(args, '_config_dir', Path.cwd())
     video_cfg = config.get('video', {})
     logic_cfg = config.get('logic', {})
+    track_retention = resolve_track_retention_frames(fps, logic_cfg=logic_cfg, config=config)
+    config['track_max_age'] = track_retention['tracker_max_age_frames']
+    config['track_timeout_frames'] = track_retention['event_timeout_frames']
+    print(
+        f'[tracker] source_fps={track_retention["source_fps"]:.2f} '
+        f'lost_grace={track_retention["grace_seconds"]:.2f}s '
+        f'max_age={track_retention["tracker_max_age_frames"]}frames '
+        f'event_timeout={track_retention["event_timeout_frames"]}frames'
+    )
     system_cfg = config.get('system', {})
     reader_fail_threshold = max(1, int(config.get('reader_fail_threshold', 5)))
     reader_reconnect_delay = max(0.0, float(config.get('reader_reconnect_delay', 2.0)))
@@ -997,6 +1006,13 @@ def process_video(path, args):
         dropped_frame_ids.add(frame_idx)
         raw_frame_cache.pop(frame_idx, None)
         dropped_frame_count += 1
+        try:
+            event_manager.trace_record('dropped_frame', {
+                'frameIdx': frame_idx,
+                'droppedFramesTotal': dropped_frame_count,
+            })
+        except Exception:
+            pass
         _throttled_log(
             'realtime.dropped_stale_frame',
             f'[realtime] dropped stale frame idx={frame_idx}, total={dropped_frame_count}',
@@ -1466,19 +1482,6 @@ def process_video(path, args):
             return
         cleanup_done = True
 
-        if enable_per_id_video and per_id_writers:
-            for tid in list(per_id_writers.keys()):
-                track_state = event_manager.tracks.get(tid) or {}
-                close_per_id_writer(tid, track_state)
-        elif not enable_per_id_video:
-            for tid, track_state in list(event_manager.tracks.items()):
-                emit_per_id_video_type6(
-                    tid,
-                    track_state,
-                    event_manager,
-                    per_id_video_enabled=False,
-                )
-
         if csv_f:
             try:
                 csv_f.close()
@@ -1508,8 +1511,24 @@ def process_video(path, args):
             )
         except Exception:
             pass
+        if enable_per_id_video and per_id_writers:
+            for tid in list(per_id_writers.keys()):
+                track_state = event_manager.tracks.get(tid) or {}
+                close_per_id_writer(tid, track_state)
+        elif not enable_per_id_video:
+            for tid, track_state in list(event_manager.tracks.items()):
+                emit_per_id_video_type6(
+                    tid,
+                    track_state,
+                    event_manager,
+                    per_id_video_enabled=False,
+                )
         try:
             cleanup_alias_confirm(total_frames + alias_timeout + 1)
+        except Exception:
+            pass
+        try:
+            event_manager.close()
         except Exception:
             pass
         if uploader:
@@ -1901,6 +1920,15 @@ def process_video(path, args):
                     else (raw_frame_for_idx if raw_frame_for_idx is not None else frame_out)
                 )
                 assignments = vehicle_tracker.update(next_frame_to_write, vehicle_dets)
+                retained_track_ids = set(vehicle_tracker.get_retained_track_ids())
+                event_manager.trace_record('frame_tracks', {
+                    'frameIdx': int(next_frame_to_write),
+                    'captureTs': capture_ts,
+                    'vehicleDetections': vehicle_dets,
+                    'assignments': assignments,
+                    'retainedTrackIds': sorted(retained_track_ids),
+                    'waterBoxes': water_boxes,
+                })
                 for det_ref, track_id in zip(vehicle_payload_refs, assignments):
                     det_ref['track_id'] = track_id
                     car_boxes[track_id] = det_ref['box']
@@ -2271,7 +2299,11 @@ def process_video(path, args):
                 next_frame_to_write += 1
                 _advance_dropped_frames()
                 t_before_flush = time.perf_counter()
-                event_manager.flush_inactive(alias_seen, next_frame_to_write, finalize_per_id_for_track)
+                event_manager.flush_inactive(
+                    alias_seen | retained_track_ids,
+                    next_frame_to_write,
+                    finalize_per_id_for_track,
+                )
                 t_after_flush = time.perf_counter()
                 cleanup_alias_confirm(next_frame_to_write)
                 t_after_cleanup = time.perf_counter()
