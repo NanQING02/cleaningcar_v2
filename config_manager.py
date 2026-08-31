@@ -338,6 +338,40 @@ class ConfigManager:
         logic.setdefault('car_plate_cache_ttl', 60)
         logic.setdefault('allowed_event_types', [1, 2, 3, 4, 5, 6])
         logic.setdefault('anchor_offset_ratio', 0.0)
+        anchor_mode = str(logic.get('anchor_mode', 'directional') or 'directional').strip().lower()
+        if anchor_mode not in {'legacy', 'directional'}:
+            anchor_mode = 'directional'
+        logic['anchor_mode'] = anchor_mode
+        logic['anchor_shadow_compare'] = bool(logic.get('anchor_shadow_compare', False))
+        for key, default, minimum, maximum in (
+            ('anchor_legacy_flow_shift_ratio', 0.3, 0.0, 1.0),
+            ('anchor_adaptive_vertical_ratio', 0.08, 0.0, 0.5),
+            ('anchor_adaptive_vertical_cap_ratio', 0.02, 0.0, 0.2),
+            ('anchor_edge_margin_ratio', 0.01, 0.0, 0.1),
+            ('anchor_direction_consistency', 0.7, 0.5, 1.0),
+            ('anchor_direction_min_displacement_ratio', 0.03, 0.0, 0.5),
+        ):
+            try:
+                value = float(logic.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            logic[key] = max(minimum, min(maximum, value))
+        for key, default, minimum, maximum in (
+            ('anchor_history_size', 20, 2, 200),
+            ('anchor_reuse_max_frames', 12, 0, 300),
+            ('anchor_direction_window', 8, 3, 60),
+            ('anchor_direction_min_points', 5, 3, 60),
+            ('anchor_direction_blend_frames', 5, 1, 30),
+        ):
+            try:
+                value = int(logic.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            logic[key] = max(minimum, min(maximum, value))
+        logic['anchor_direction_min_points'] = min(
+            logic['anchor_direction_min_points'],
+            logic['anchor_direction_window'],
+        )
         logic.setdefault('zone_b_anchor_min_frames', 0)
         logic.setdefault('debug_overlay', False)
         logic.setdefault('debug_track_state', False)

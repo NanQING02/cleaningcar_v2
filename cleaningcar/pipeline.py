@@ -13,6 +13,7 @@ import numpy as np
 
 from zone_manager import ZoneManager, polygon_mask
 
+from .anchor import AnchorEstimator
 from .constants import (
     CAR_PLATE_CACHE_TTL,
     CLASS_COLORS,
@@ -55,7 +56,7 @@ from .video_io import (
     resolve_auto_plate_core_mask,
     resolve_worker_core_masks,
 )
-from .vision import box_iou, get_anchor_point, point_in_box, scale_point, scale_polygon
+from .vision import box_iou, point_in_box, scale_point, scale_polygon
 from .wheel import WheelDetectionService
 from .worker import DetectWorker
 
@@ -533,11 +534,6 @@ def process_video(path, args):
     storage_cfg = config.get('storage', {}) or {}
     zones_cfg = config.get('zones', {})
     logic_cfg = config.get('logic', {})
-    anchor_offset_ratio = float(logic_cfg.get('anchor_offset_ratio', 0.0))
-    if anchor_offset_ratio < 0.0:
-        anchor_offset_ratio = 0.0
-    elif anchor_offset_ratio > 0.95:
-        anchor_offset_ratio = 0.95
     zone_b_anchor_min_frames = int(logic_cfg.get('zone_b_anchor_min_frames', 0))
     if zone_b_anchor_min_frames < 0:
         zone_b_anchor_min_frames = 0
@@ -558,27 +554,29 @@ def process_video(path, args):
         detect_mask = polygon_mask(zone_a_pts, (height, width))
         print('zone_a_mask: 启用，仅在Zone A内检测')
 
-    def dual_anchor_for(box):
-        if not box:
-            return None, None
-        head = get_anchor_point(box, anchor_offset_ratio)
-        if not head:
-            return None, None
-        fx = flow_end[0] - flow_start[0]
-        fy = flow_end[1] - flow_start[1]
-        norm = (fx * fx + fy * fy) ** 0.5
-        if norm <= 1e-6:
-            return head, head
-        height = max(1.0, (box[3] - box[1]))
-        shift = 0.3 * height
-        ux = fx / norm
-        uy = fy / norm
-        tail = (head[0] - ux * shift, head[1] - uy * shift)
-        return head, tail
+    anchor_estimator = AnchorEstimator(
+        frame_size=(width, height),
+        flow_vector=(flow_start, flow_end),
+        logic_cfg=logic_cfg,
+    )
+    anchor_trace_recorded = set()
 
-    def anchor_point_for(box):
-        head, tail = dual_anchor_for(box)
-        return tail or head
+    def anchor_result_for(track_id, box, frame_idx):
+        result = anchor_estimator.estimate(track_id, box, frame_idx)
+        if result is None:
+            return None
+        trace_key = (int(result.track_id), int(result.frame_idx))
+        if trace_key not in anchor_trace_recorded:
+            anchor_trace_recorded.add(trace_key)
+            try:
+                event_manager.trace_record('anchor_update', result.to_dict())
+            except Exception:
+                pass
+        return result
+
+    def anchor_point_for(track_id, box, frame_idx):
+        result = anchor_result_for(track_id, box, frame_idx)
+        return result.selected_point if result is not None else None
 
     output_dir = getattr(args, 'output_dir', None)
     if output_dir:
@@ -1591,13 +1589,6 @@ def process_video(path, args):
                     thickness=2,
                     anchor='lb',
                 )
-            if debug_anchor_points:
-                anchor_pt = anchor_point_for(det_ref['box'])
-                if anchor_pt:
-                    ax, ay = int(anchor_pt[0]), int(anchor_pt[1])
-                    cv2.circle(frame_img, (ax, ay), 4, (255, 140, 0), -1)
-                    cv2.putText(frame_img, f'A{track_id}', (ax + 4, ay - 4),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
     def apply_stable_plate_fields(track_id, det_ref, rows_ref):
         if det_ref is None or det_ref.get('cls') != LICENSE_CLASS:
@@ -1721,22 +1712,62 @@ def process_video(path, args):
                         (0, 255, 255),
                         -1,
                     )
-            if debug_anchor_points and cls_id in VEHICLE_CLASS_IDS:
-                anchor_pt = anchor_point_for([x1, y1, x2, y2])
-                if anchor_pt:
-                    ax, ay = int(anchor_pt[0]), int(anchor_pt[1])
-                    cv2.circle(frame_img, (ax, ay), 4, (255, 140, 0), -1)
-                    if track_id:
-                        cv2.putText(
-                            frame_img,
-                            f'A{track_id}',
-                            (ax + 4, ay - 4),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.45,
-                            (255, 255, 255),
-                            1,
-                            cv2.LINE_AA,
-                        )
+
+    def draw_anchor_comparison_overlay(frame_img, vehicle_refs, frame_idx):
+        if frame_img is None or not (debug_anchor_points or anchor_estimator.shadow_compare):
+            return
+        for det_ref in vehicle_refs or []:
+            track_id = _normalize_track_id(det_ref.get('track_id'))
+            box = det_ref.get('box')
+            if track_id is None or not box or len(box) != 4:
+                continue
+            result = anchor_result_for(track_id, box, frame_idx)
+            if result is None:
+                continue
+            history = anchor_estimator.get_history(track_id)
+            legacy_history = np.array(
+                [[int(round(item[1][0])), int(round(item[1][1]))] for item in history],
+                dtype=np.int32,
+            )
+            neutral_history = np.array(
+                [[int(round(item[2][0])), int(round(item[2][1]))] for item in history],
+                dtype=np.int32,
+            )
+            directional_history = np.array(
+                [[int(round(item[3][0])), int(round(item[3][1]))] for item in history],
+                dtype=np.int32,
+            )
+            if len(legacy_history) >= 2:
+                cv2.polylines(frame_img, [legacy_history], False, (0, 140, 255), 2, cv2.LINE_AA)
+            if len(neutral_history) >= 2:
+                cv2.polylines(frame_img, [neutral_history], False, (0, 255, 255), 2, cv2.LINE_AA)
+            if len(directional_history) >= 2:
+                cv2.polylines(frame_img, [directional_history], False, (255, 255, 0), 2, cv2.LINE_AA)
+            lx, ly = [int(round(value)) for value in result.legacy_point]
+            hx, hy = [int(round(value)) for value in result.neutral_point]
+            dx, dy = [int(round(value)) for value in result.directional_point]
+            sx, sy = [int(round(value)) for value in result.selected_point]
+            cv2.line(frame_img, (lx, ly), (hx, hy), (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.line(frame_img, (hx, hy), (dx, dy), (180, 180, 180), 1, cv2.LINE_AA)
+            cv2.circle(frame_img, (lx, ly), 6, (0, 140, 255), -1)
+            cv2.circle(frame_img, (hx, hy), 6, (0, 255, 255), -1)
+            cv2.circle(frame_img, (dx, dy), 6, (255, 255, 0), -1)
+            cv2.circle(frame_img, (sx, sy), 9, (255, 255, 255), 2)
+            cv2.putText(frame_img, f'L{track_id}', (lx + 7, ly - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 140, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame_img, f'H{track_id}', (hx + 7, hy - 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame_img, f'D{track_id}', (dx + 7, dy + 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 0), 2, cv2.LINE_AA)
+            edge_text = '/'.join(result.truncated_edges) if result.truncated_edges else '-'
+            status_text = (
+                f'anchor={result.mode} dir={result.motion_direction} '
+                f'conf={result.direction_confidence:.2f} blend={result.direction_blend:.2f} '
+                f'edge={edge_text}'
+            )
+            x1, y1, _, _ = [int(round(value)) for value in box]
+            cv2.putText(frame_img, status_text, (x1, max(18, y1 - 30)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 2, cv2.LINE_AA)
 
     def draw_debug_track_state(frame_img, vehicle_refs):
         if not debug_tracks or frame_img is None:
@@ -1774,12 +1805,13 @@ def process_video(path, args):
         flow_end_int = tuple(map(int, flow_end))
         cv2.arrowedLine(frame_img, flow_start_int, flow_end_int, (255, 0, 0), 2, tipLength=0.08)
 
-    def save_debug_frame(frame_img, det_items, vehicle_refs, frame_capture_ts):
+    def save_debug_frame(frame_img, det_items, vehicle_refs, frame_capture_ts, frame_idx):
         if not debug_frame_file or frame_img is None:
             return
         try:
             debug_frame = frame_img.copy()
             draw_debug_detections(debug_frame, det_items)
+            draw_anchor_comparison_overlay(debug_frame, vehicle_refs, frame_idx)
             draw_debug_track_state(debug_frame, vehicle_refs)
             draw_debug_rois(debug_frame)
             ts_now = datetime.now()
@@ -2061,7 +2093,7 @@ def process_video(path, args):
                     if vehicle_box is None:
                         if car_id > 0 and car_id in car_boxes:
                             vehicle_box = car_boxes[car_id]
-                    anchor_pt = anchor_point_for(vehicle_box or info['box'])
+                    anchor_pt = anchor_point_for(track_key, vehicle_box or info['box'], next_frame_to_write)
                     confirmed_alias = mark_alias_confirm(track_key, bool(info.get('text')), next_frame_to_write, True)
                     event_manager.update_track(
                         track_key,
@@ -2106,7 +2138,7 @@ def process_video(path, args):
                             if track_state:
                                 known_text = track_state.get('plate_text', '')
                             confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
-                            anchor_pt = anchor_point_for(det_ref['box'])
+                            anchor_pt = anchor_point_for(car_id, det_ref['box'], next_frame_to_write)
                             plate_candidate_history = _consume_pending_plate_candidates(
                                 pending_plate_cache,
                                 alias_plate_id,
@@ -2145,7 +2177,7 @@ def process_video(path, args):
                         if track_state:
                             known_text = track_state.get('plate_text', '')
                         confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
-                        anchor_pt = anchor_point_for(det_ref['box'])
+                        anchor_pt = anchor_point_for(car_id, det_ref['box'], next_frame_to_write)
                         plate_candidate_history = _consume_pending_plate_candidates(
                             pending_plate_cache,
                             cache_entry.get('plate_id'),
@@ -2177,7 +2209,7 @@ def process_video(path, args):
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = fallback_id
                     confirmed_alias = mark_alias_confirm(fallback_id, False, next_frame_to_write, True)
-                    anchor_pt = anchor_point_for(det_ref['box'])
+                    anchor_pt = anchor_point_for(fallback_id, det_ref['box'], next_frame_to_write)
                     event_manager.update_track(
                         fallback_id,
                         None,
@@ -2198,6 +2230,8 @@ def process_video(path, args):
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)
                 draw_stable_plate_overlay(frame_out, license_dets)
+                if frame_out is not None and not args.no_draw:
+                    draw_anchor_comparison_overlay(frame_out, vehicle_payload_refs, next_frame_to_write)
                 t_after_updates = time.perf_counter()
                 if debug_tracks:
                     for det_ref in vehicle_payload_refs:
@@ -2231,7 +2265,13 @@ def process_video(path, args):
                     cv2.arrowedLine(frame_out, flow_start_int, flow_end_int, (255, 0, 0), 2, tipLength=0.08)
                 debug_frame_source = raw_frame_for_idx if raw_frame_for_idx is not None else frame_out
                 if debug_frame_source is not None and (next_frame_to_write % debug_frame_interval == 0):
-                    save_debug_frame(debug_frame_source, det_payload, vehicle_payload_refs, capture_ts)
+                    save_debug_frame(
+                        debug_frame_source,
+                        det_payload,
+                        vehicle_payload_refs,
+                        capture_ts,
+                        next_frame_to_write,
+                    )
                 ensure_benchmark_recording_track(next_frame_to_write, capture_ts)
                 maybe_force_benchmark_capture(next_frame_to_write, event_frame_for_idx)
                 if enable_per_id_video and frame_out is not None:
@@ -2304,6 +2344,7 @@ def process_video(path, args):
                     next_frame_to_write,
                     finalize_per_id_for_track,
                 )
+                anchor_estimator.cleanup(next_frame_to_write, config.get('track_timeout_frames', 60))
                 t_after_flush = time.perf_counter()
                 cleanup_alias_confirm(next_frame_to_write)
                 t_after_cleanup = time.perf_counter()

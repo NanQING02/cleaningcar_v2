@@ -384,6 +384,35 @@
           <label>锚点上移比例 (0-0.9)
             <input type="number" min="0" max="0.9" step="0.01" v-model.number="form.logic.anchor_offset_ratio" />
           </label>
+          <label>正式锚点策略
+            <select v-model="form.logic.anchor_mode">
+              <option value="directional">方向感知模式（当前正式逻辑）</option>
+              <option value="legacy">旧兼容模式（仅回退使用）</option>
+            </select>
+          </label>
+          <label>
+            <input type="checkbox" v-model="form.logic.anchor_shadow_compare" />
+            同时计算并绘制 H/D/L 锚点
+          </label>
+          <label>兼容锚点反向偏移比例
+            <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.anchor_legacy_flow_shift_ratio" />
+          </label>
+          <label>方向判断窗口
+            <input type="number" min="3" max="60" v-model.number="form.logic.anchor_direction_window" />
+          </label>
+          <label>方向判断最少点数
+            <input type="number" min="3" max="60" v-model.number="form.logic.anchor_direction_min_points" />
+          </label>
+          <label>方向一致率
+            <input type="number" min="0.5" max="1" step="0.05" v-model.number="form.logic.anchor_direction_consistency" />
+          </label>
+          <label>方向最小位移（框高比例）
+            <input type="number" min="0" max="0.5" step="0.01" v-model.number="form.logic.anchor_direction_min_displacement_ratio" />
+          </label>
+          <label>D锚点过渡帧数
+            <input type="number" min="1" max="30" v-model.number="form.logic.anchor_direction_blend_frames" />
+          </label>
+          <p class="hint">H为车框底部上移后的中性点，D由H的多帧移动方向生成并正式参与Zone判断，L只作旧逻辑对照和紧急回退。G已停用，不参与画面和业务判定。</p>
           <label>Zone B 锚点延迟帧
             <input type="number" min="0" v-model.number="form.logic.zone_b_anchor_min_frames" />
           </label>
@@ -581,6 +610,15 @@
               single_lifecycle_events: true,
               require_vehicle_type_for_events: false,
               anchor_offset_ratio: 0.0,
+              anchor_mode: 'directional',
+              anchor_shadow_compare: false,
+              anchor_legacy_flow_shift_ratio: 0.3,
+              anchor_history_size: 20,
+              anchor_direction_window: 8,
+              anchor_direction_min_points: 5,
+              anchor_direction_consistency: 0.7,
+              anchor_direction_min_displacement_ratio: 0.03,
+              anchor_direction_blend_frames: 5,
               zone_b_anchor_min_frames: 0,
               shadow_plate_pool: {
                 max_candidates: 50,
@@ -982,6 +1020,17 @@
           if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
             this.form.logic.anchor_offset_ratio = 0;
           }
+          this.form.logic.anchor_mode = ['legacy', 'directional'].includes(this.form.logic.anchor_mode)
+            ? this.form.logic.anchor_mode
+            : 'directional';
+          this.form.logic.anchor_shadow_compare = !!this.form.logic.anchor_shadow_compare;
+          this.form.logic.anchor_legacy_flow_shift_ratio = Number(this.form.logic.anchor_legacy_flow_shift_ratio ?? 0.3);
+          this.form.logic.anchor_history_size = Number(this.form.logic.anchor_history_size || 20);
+          this.form.logic.anchor_direction_window = Number(this.form.logic.anchor_direction_window || 8);
+          this.form.logic.anchor_direction_min_points = Number(this.form.logic.anchor_direction_min_points || 5);
+          this.form.logic.anchor_direction_consistency = Number(this.form.logic.anchor_direction_consistency ?? 0.7);
+          this.form.logic.anchor_direction_min_displacement_ratio = Number(this.form.logic.anchor_direction_min_displacement_ratio ?? 0.03);
+          this.form.logic.anchor_direction_blend_frames = Number(this.form.logic.anchor_direction_blend_frames || 5);
           if (typeof this.form.logic.zone_b_anchor_min_frames !== 'number') {
             this.form.logic.zone_b_anchor_min_frames = 0;
           }
@@ -1167,6 +1216,15 @@
               single_lifecycle_events: this.form.logic.single_lifecycle_events,
               require_vehicle_type_for_events: this.form.logic.require_vehicle_type_for_events,
               anchor_offset_ratio: this.form.logic.anchor_offset_ratio,
+              anchor_mode: this.form.logic.anchor_mode,
+              anchor_shadow_compare: this.form.logic.anchor_shadow_compare,
+              anchor_legacy_flow_shift_ratio: this.form.logic.anchor_legacy_flow_shift_ratio,
+              anchor_history_size: this.form.logic.anchor_history_size,
+              anchor_direction_window: this.form.logic.anchor_direction_window,
+              anchor_direction_min_points: this.form.logic.anchor_direction_min_points,
+              anchor_direction_consistency: this.form.logic.anchor_direction_consistency,
+              anchor_direction_min_displacement_ratio: this.form.logic.anchor_direction_min_displacement_ratio,
+              anchor_direction_blend_frames: this.form.logic.anchor_direction_blend_frames,
               zone_b_anchor_min_frames: this.form.logic.zone_b_anchor_min_frames,
               shadow_plate_pool: {
                 max_candidates: this.form.logic.shadow_plate_pool.max_candidates

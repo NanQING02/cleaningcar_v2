@@ -94,6 +94,7 @@ run_zone_detect.py
 - `cleaningcar/video_io.py`：视频读写与回退链路。RTSP 只允许 `GStreamer+mpp direct-BGR`，打开失败即按读流失败处理；离线文件可保留非 RGA 硬解链路。单车视频仅使用 `FFmpeg` 硬编，硬编不可用时不保存视频。
 - `cleaningcar/worker.py`：RKNN worker 线程，负责检测推理、后处理、车牌识别和基础绘制。
 - `cleaningcar/tracking.py`：车辆跟踪，默认 `vehicle_tracker_impl=bytetrack`，内部使用 Kalman 预测和匹配。
+- `cleaningcar/anchor.py`：统一业务锚点估算；默认方向感知D正式，H用于多帧方向观测，L仅作调试对照和紧急回退，G暂时停用。
 - `cleaningcar/events.py`：事件状态机、事件 JSON、截图、上报 payload；`type=5` 事件会附加已锁定的 `wheelResults`。
 - `cleaningcar/event_trace.py`：默认关闭的事件层输入JSONL追踪，用于本地视频逐案例手测；不得记录RTSP密码或图片Base64。
 - `cleaningcar/wheel.py`：左右车轮 RTSP 旁路检测，结果按车辆生命周期锁定，同侧短时间连续结果按簇归属给同一辆车。
