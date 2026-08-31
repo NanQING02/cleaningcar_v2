@@ -100,7 +100,7 @@ class ZoneManagerDebounceTests(unittest.TestCase):
         self.assertTrue(flags['enter_a'])
         self.assertTrue(state.inside_a)
 
-    def test_initial_core_uses_compatibility_entry_after_three_hits(self):
+    def test_initial_core_becomes_born_inside_candidate_after_three_hits(self):
         manager = self._manager()
 
         for frame_idx in (1, 2):
@@ -111,7 +111,44 @@ class ZoneManagerDebounceTests(unittest.TestCase):
         self.assertTrue(flags['enter_a'])
         self.assertTrue(state.inside_a)
         self.assertTrue(state.initial_core_compat)
-        self.assertEqual(state.transition_reason, 'enter_a_initial_core_compat')
+        self.assertTrue(state.born_inside_a)
+        self.assertTrue(state.born_inside_pending)
+        self.assertEqual(state.born_inside_outcome, 'CANDIDATE')
+        self.assertEqual(state.transition_reason, 'born_inside_a_candidate')
+
+    def test_born_inside_promotes_after_zone_b_entry(self):
+        manager = ZoneManager(
+            zone_a=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            zone_b=[(40, 0), (100, 0), (100, 100), (40, 100)],
+            flow_vector=((0, 50), (100, 50)),
+            entry_hysteresis=3,
+            zone_a_enter_core_hits=3,
+        )
+
+        for frame_idx in (1, 2):
+            state, _ = manager.update_track(1, (50, 50), frame_idx, vehicle_height=40)
+        state, flags = manager.update_track(1, (50, 50), 3, vehicle_height=40)
+
+        self.assertTrue(flags['enter_b'])
+        self.assertTrue(state.born_inside_a)
+        self.assertFalse(state.born_inside_pending)
+        self.assertEqual(state.born_inside_outcome, 'PROMOTED')
+        self.assertEqual(state.transition_reason, 'born_inside_promoted_by_zone_b')
+
+    def test_born_inside_exits_without_zone_b_as_pass_by(self):
+        manager = self._manager()
+
+        for frame_idx in (1, 2, 3):
+            state, _ = manager.update_track(1, (50, 50), frame_idx, vehicle_height=40)
+        for frame_idx in (4, 5, 6, 7):
+            state, flags = manager.update_track(1, (-10, 50), frame_idx, vehicle_height=40)
+            self.assertFalse(flags['exit_a'])
+        state, flags = manager.update_track(1, (-10, 50), 8, vehicle_height=40)
+
+        self.assertTrue(flags['exit_a'])
+        self.assertFalse(state.born_inside_pending)
+        self.assertEqual(state.born_inside_outcome, 'PASS_BY')
+        self.assertEqual(state.transition_reason, 'born_inside_pass_by')
 
 
 if __name__ == '__main__':

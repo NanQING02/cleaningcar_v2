@@ -26,6 +26,9 @@ class ZoneState:
     enter_core_count: int = 0
     exit_outside_count: int = 0
     initial_core_compat: bool = False
+    born_inside_a: bool = False
+    born_inside_pending: bool = False
+    born_inside_outcome: str = ''
     transition_reason: str = 'initialized'
     last_observation_frame: int = -1
     enter_ratio: float = 0.0
@@ -186,10 +189,15 @@ class ZoneManager:
                         st['first_valid_region'] == 'CORE'
                         and not st['outside_confirmed_before_entry']
                     )
+                    state.born_inside_a = state.initial_core_compat
+                    state.born_inside_pending = state.initial_core_compat
+                    state.born_inside_outcome = (
+                        'CANDIDATE' if state.initial_core_compat else ''
+                    )
                     state.enter_ratio = self._relative_position(normalized_anchor)
                     state.entry_point = normalized_anchor
                     state.transition_reason = (
-                        'enter_a_initial_core_compat'
+                        'born_inside_a_candidate'
                         if state.initial_core_compat
                         else 'enter_a_core_confirmed'
                     )
@@ -238,6 +246,15 @@ class ZoneManager:
                 state.transition_reason = 'buffer_after_outside'
             else:
                 state.transition_reason = 'buffer_without_clear_region'
+
+        if flags['enter_b'] and state.born_inside_pending:
+            state.born_inside_pending = False
+            state.born_inside_outcome = 'PROMOTED'
+            state.transition_reason = 'born_inside_promoted_by_zone_b'
+        elif flags['exit_a'] and state.born_inside_pending:
+            state.born_inside_pending = False
+            state.born_inside_outcome = 'PASS_BY'
+            state.transition_reason = 'born_inside_pass_by'
 
         return state, flags
 

@@ -579,6 +579,16 @@ def process_video(path, args):
         result = anchor_result_for(track_id, box, frame_idx)
         return result.selected_point if result is not None else None
 
+    def anchor_evidence_for(track_id, box, frame_idx):
+        result = anchor_result_for(track_id, box, frame_idx)
+        if result is None:
+            return None, None
+        return result.selected_point, {
+            'motion_direction': result.motion_direction,
+            'direction_confidence': result.direction_confidence,
+            'direction_locked': result.direction_locked,
+        }
+
     output_dir = getattr(args, 'output_dir', None)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -1506,6 +1516,7 @@ def process_video(path, args):
                 set(),
                 total_frames + int(config.get('track_timeout_frames', 60)) + 1,
                 finalize_per_id_for_track,
+                timeout_reason='file_eof' if is_file_input else 'runtime_stop',
             )
         except Exception:
             pass
@@ -2093,7 +2104,11 @@ def process_video(path, args):
                     if vehicle_box is None:
                         if car_id > 0 and car_id in car_boxes:
                             vehicle_box = car_boxes[car_id]
-                    anchor_pt = anchor_point_for(track_key, vehicle_box or info['box'], next_frame_to_write)
+                    anchor_pt, anchor_direction = anchor_evidence_for(
+                        track_key,
+                        vehicle_box or info['box'],
+                        next_frame_to_write,
+                    )
                     confirmed_alias = mark_alias_confirm(track_key, bool(info.get('text')), next_frame_to_write, True)
                     event_manager.update_track(
                         track_key,
@@ -2116,6 +2131,7 @@ def process_video(path, args):
                         plate_color_conf=info.get('plate_color_conf'),
                         plate_type=info.get('plate_type', ''),
                         plate_candidate_history=info.get('plate_candidate_history'),
+                        anchor_direction=anchor_direction,
                     )
                     det_ref = info.get('det_ref')
                     if det_ref is not None:
@@ -2138,7 +2154,11 @@ def process_video(path, args):
                             if track_state:
                                 known_text = track_state.get('plate_text', '')
                             confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
-                            anchor_pt = anchor_point_for(car_id, det_ref['box'], next_frame_to_write)
+                            anchor_pt, anchor_direction = anchor_evidence_for(
+                                car_id,
+                                det_ref['box'],
+                                next_frame_to_write,
+                            )
                             plate_candidate_history = _consume_pending_plate_candidates(
                                 pending_plate_cache,
                                 alias_plate_id,
@@ -2162,6 +2182,7 @@ def process_video(path, args):
                                 cleaning_label=cleaning_label,
                                 anchor_point=anchor_pt,
                                 plate_candidate_history=plate_candidate_history,
+                                anchor_direction=anchor_direction,
                             )
                         annotate_locked_label(car_id, det_ref, rows, frame_out)
                         alias_seen.add(car_id)
@@ -2177,7 +2198,11 @@ def process_video(path, args):
                         if track_state:
                             known_text = track_state.get('plate_text', '')
                         confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
-                        anchor_pt = anchor_point_for(car_id, det_ref['box'], next_frame_to_write)
+                        anchor_pt, anchor_direction = anchor_evidence_for(
+                            car_id,
+                            det_ref['box'],
+                            next_frame_to_write,
+                        )
                         plate_candidate_history = _consume_pending_plate_candidates(
                             pending_plate_cache,
                             cache_entry.get('plate_id'),
@@ -2201,6 +2226,7 @@ def process_video(path, args):
                             cleaning_label=cleaning_label,
                             anchor_point=anchor_pt,
                             plate_candidate_history=plate_candidate_history,
+                            anchor_direction=anchor_direction,
                         )
                         alias_seen.add(car_id)
                         continue
@@ -2209,7 +2235,11 @@ def process_video(path, args):
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = fallback_id
                     confirmed_alias = mark_alias_confirm(fallback_id, False, next_frame_to_write, True)
-                    anchor_pt = anchor_point_for(fallback_id, det_ref['box'], next_frame_to_write)
+                    anchor_pt, anchor_direction = anchor_evidence_for(
+                        fallback_id,
+                        det_ref['box'],
+                        next_frame_to_write,
+                    )
                     event_manager.update_track(
                         fallback_id,
                         None,
@@ -2226,6 +2256,7 @@ def process_video(path, args):
                         confirmed=confirmed_alias,
                         cleaning_label=cleaning_label,
                         anchor_point=anchor_pt,
+                        anchor_direction=anchor_direction,
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)

@@ -47,6 +47,9 @@ class _ScriptedZoneManager:
             {
                 "inside_a": bool(spec.get("inside_a", False)),
                 "inside_b": bool(spec.get("inside_b", False)),
+                "born_inside_a": bool(spec.get("born_inside_a", False)),
+                "born_inside_pending": bool(spec.get("born_inside_pending", False)),
+                "born_inside_outcome": str(spec.get("born_inside_outcome", "") or ""),
             },
         )()
         flags = {
@@ -643,6 +646,179 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertFalse(track_state["type5_pending_exit_a"])
         self.assertEqual(track_state["type5_pending_reason"], "zone_a_reentered")
         self.assertFalse(track_state.get("closed", False))
+
+    def test_born_inside_suppresses_type1_until_zone_b_promotes_candidate(self):
+        zone = _ScriptedZoneManager({
+            1: {
+                "inside_a": True,
+                "enter_a": True,
+                "born_inside_a": True,
+                "born_inside_pending": True,
+                "born_inside_outcome": "CANDIDATE",
+            },
+            2: {
+                "inside_a": True,
+                "inside_b": True,
+                "enter_b": True,
+                "born_inside_a": True,
+                "born_inside_outcome": "PROMOTED",
+            },
+        })
+        manager = self._manager_with_zone(zone)
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+
+        self._update(manager, 1)
+        self.assertEqual(emitted, [])
+        self.assertTrue(manager.tracks[1]["born_inside_pending"])
+
+        self._update(manager, 2)
+        self.assertEqual(emitted, [1, 2])
+        self.assertFalse(manager.tracks[1]["born_inside_pending"])
+        self.assertEqual(manager.tracks[1]["born_inside_outcome"], "PROMOTED")
+
+    def test_born_inside_pass_by_never_emits_type1(self):
+        zone = _ScriptedZoneManager({
+            1: {
+                "inside_a": True,
+                "enter_a": True,
+                "born_inside_a": True,
+                "born_inside_pending": True,
+                "born_inside_outcome": "CANDIDATE",
+            },
+            2: {
+                "inside_a": False,
+                "exit_a": True,
+                "born_inside_a": True,
+                "born_inside_outcome": "PASS_BY",
+            },
+        })
+        manager = self._manager_with_zone(zone)
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+
+        self._update(manager, 1)
+        self._update(manager, 2)
+
+        self.assertEqual(emitted, [])
+        self.assertEqual(manager.tracks[1]["born_inside_outcome"], "PASS_BY")
+
+    def test_born_inside_candidate_timeout_becomes_rejected_without_events(self):
+        manager = self._manager()
+        emitted = []
+        traces = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+        manager.trace_record = lambda kind, data: traces.append((kind, data))
+        manager.tracks[1] = {
+            "events": set(),
+            "last_frame_idx": 0,
+            "last_frame": None,
+            "zone_a_dwell_frames": 20,
+            "born_inside_a": True,
+            "born_inside_pending": True,
+            "born_inside_outcome": "CANDIDATE",
+            "type2_qualified": False,
+            "vehicle_hit_frames": 20,
+            "last_vehicle_box": [0, 0, 20, 20],
+        }
+
+        manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
+
+        self.assertEqual(emitted, [])
+        self.assertNotIn(1, manager.tracks)
+        self.assertEqual(traces[-1][0], "born_inside")
+        self.assertEqual(traces[-1][1]["action"], "rejected")
+        self.assertEqual(traces[-1][1]["reason"], "track_lost_in_zone_a_timeout")
+
+    def test_lost_formal_lifecycle_marks_type4_and_type5_abnormal(self):
+        manager = self._manager()
+        emitted = []
+
+        def fake_emit(track_id, event_type, frame_idx, frame, payload, track_state):
+            del track_id, frame_idx, frame, payload
+            emitted.append((event_type, set(track_state["abnormal_reasons"])))
+
+        manager.emit_event = fake_emit
+        manager.tracks[1] = {
+            "events": {1, 2},
+            "last_frame_idx": 0,
+            "last_frame": None,
+            "zone_a_seen": True,
+            "zone_a_exited": False,
+            "zone_a_dwell_frames": 20,
+            "zone_b_dwell_frames": 20,
+            "type2_qualified": True,
+            "vehicle_hit_frames": 20,
+            "last_vehicle_box": [0, 0, 20, 20],
+            "abnormal_reasons": set(),
+        }
+
+        manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
+
+        self.assertEqual([event_type for event_type, _ in emitted], [4, 5])
+        for _, reasons in emitted:
+            self.assertIn("TRACK_LOST_IN_ZONE_A_TIMEOUT", reasons)
+
+    def test_file_eof_does_not_mark_formal_lifecycle_as_track_loss(self):
+        manager = self._manager()
+        emitted = []
+
+        def fake_emit(track_id, event_type, frame_idx, frame, payload, track_state):
+            del track_id, frame_idx, frame, payload
+            emitted.append((event_type, set(track_state["abnormal_reasons"])))
+
+        manager.emit_event = fake_emit
+        manager.tracks[1] = {
+            "events": {1, 2},
+            "last_frame_idx": 0,
+            "last_frame": None,
+            "zone_a_seen": True,
+            "zone_a_exited": False,
+            "zone_a_dwell_frames": 20,
+            "zone_b_dwell_frames": 20,
+            "type2_qualified": True,
+            "vehicle_hit_frames": 20,
+            "last_vehicle_box": [0, 0, 20, 20],
+            "abnormal_reasons": set(),
+        }
+
+        manager.flush_inactive(
+            active_ids=set(),
+            frame_idx=manager.timeout_frames + 1,
+            timeout_reason="file_eof",
+        )
+
+        self.assertEqual([event_type for event_type, _ in emitted], [4, 5])
+        for _, reasons in emitted:
+            self.assertNotIn("TRACK_LOST_IN_ZONE_A_TIMEOUT", reasons)
+
+    def test_lost_lifecycle_uses_locked_anchor_direction_when_zone_exit_unknown(self):
+        manager = self._manager()
+        track_state = {
+            "zone_state": None,
+            "abnormal_reasons": {"TRACK_LOST_IN_ZONE_A_TIMEOUT"},
+            "anchor_motion_direction": "forward",
+            "anchor_direction_confidence": 0.86,
+            "anchor_direction_locked": True,
+        }
+
+        direction_code, direction_label = manager._resolve_direction(track_state)
+
+        self.assertEqual((direction_code, direction_label), (5, "正向前出"))
+        self.assertEqual(track_state["direction_source"], "trajectory_inference")
+
+    def test_lost_lifecycle_keeps_unknown_direction_without_locked_anchor(self):
+        manager = self._manager()
+        track_state = {
+            "zone_state": None,
+            "abnormal_reasons": {"TRACK_LOST_IN_ZONE_A_TIMEOUT"},
+            "anchor_motion_direction": "forward",
+            "anchor_direction_confidence": 0.86,
+            "anchor_direction_locked": False,
+        }
+
+        self.assertEqual(manager._resolve_direction(track_state), (0, ""))
+        self.assertEqual(track_state["direction_source"], "unknown")
 
     def test_pending_plate_history_can_lock_after_vehicle_binding(self):
         manager = self._manager(plate_lock_frames=3)

@@ -491,7 +491,8 @@ class EventManager:
     def update_track(self, track_id, plate_box, vehicle_box, plate_text, frame_idx, frame,
                      water_boxes, water_active, is_plate, vehicle_label, vehicle_conf,
                      plate_conf, confirmed, cleaning_label='', anchor_point=None, plate_is_guess=False,
-                     plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None):
+                     plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None,
+                     anchor_direction=None):
         if track_id <= 0:
             return
         previous_state = self.tracks.get(track_id) or {}
@@ -512,11 +513,13 @@ class EventManager:
             'confirmed': bool(confirmed),
             'cleaningLabel': str(cleaning_label or ''),
             'anchorPoint': anchor_point,
+            'anchorDirection': anchor_direction or {},
             'previousEvents': sorted(previous_state.get('events', set())),
             'previousStage': int(previous_state.get('event_stage_max', 0) or 0),
             'previousLastFrame': previous_state.get('last_frame_idx'),
         })
         st = self.tracks.setdefault(track_id, {
+            'track_id': track_id,
             'events': set(),
             'event_stage_max': 0,
             'event_sequence_issues': [],
@@ -591,6 +594,12 @@ class EventManager:
             'type5_suppressed_quality': False,
             'type5_pending_exit_a': False,
             'type5_pending_reason': '',
+            'born_inside_a': False,
+            'born_inside_pending': False,
+            'born_inside_outcome': '',
+            'anchor_motion_direction': 'unknown',
+            'anchor_direction_confidence': 0.0,
+            'anchor_direction_locked': False,
             'wheel_results_locked': {},
             'wheel_photo_history': {'left': {}, 'right': {}},
             'wheel_photo_seq': {'left': 0, 'right': 0},
@@ -603,8 +612,20 @@ class EventManager:
             st['last_frame_idx'] = frame_idx
             self._update_wheel_track_activity(track_id, st, frame_ts=time.time(), active=False)
             return
+        st['track_id'] = track_id
         st['track_frame_count'] = st.get('track_frame_count', 0) + 1
         st['last_frame_idx'] = frame_idx
+        if isinstance(anchor_direction, dict):
+            motion_direction = str(anchor_direction.get('motion_direction', 'unknown') or 'unknown')
+            try:
+                direction_confidence = float(anchor_direction.get('direction_confidence', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                direction_confidence = 0.0
+            direction_locked = bool(anchor_direction.get('direction_locked', False))
+            if direction_locked and motion_direction in {'forward', 'reverse'}:
+                st['anchor_motion_direction'] = motion_direction
+                st['anchor_direction_confidence'] = max(0.0, min(1.0, direction_confidence))
+                st['anchor_direction_locked'] = True
         if frame is not None:
             st['last_frame'] = frame.copy() if self.copy_track_last_frame else frame
         freeze_label = st.get('vehicle_cls_frozen', False)
@@ -729,6 +750,22 @@ class EventManager:
             vehicle_height=vehicle_height,
         )
         st['zone_state'] = zone_state
+        born_inside_a = bool(getattr(zone_state, 'born_inside_a', False))
+        born_inside_pending = bool(getattr(zone_state, 'born_inside_pending', False))
+        born_inside_outcome = str(getattr(zone_state, 'born_inside_outcome', '') or '')
+        if born_inside_a:
+            st['born_inside_a'] = True
+        st['born_inside_pending'] = born_inside_pending
+        previous_born_inside_outcome = str(st.get('born_inside_outcome', '') or '')
+        st['born_inside_outcome'] = born_inside_outcome
+        if born_inside_outcome and born_inside_outcome != previous_born_inside_outcome:
+            self.trace_record('born_inside', {
+                'frameIdx': int(frame_idx),
+                'trackId': int(track_id),
+                'action': born_inside_outcome.lower(),
+                'insideA': bool(getattr(zone_state, 'inside_a', False)),
+                'insideB': bool(getattr(zone_state, 'inside_b', False)),
+            })
         self.trace_record('zone_update', {
             'frameIdx': int(frame_idx),
             'trackId': int(track_id),
@@ -744,6 +781,9 @@ class EventManager:
             'enterCoreCount': getattr(zone_state, 'enter_core_count', 0),
             'exitOutsideCount': getattr(zone_state, 'exit_outside_count', 0),
             'initialCoreCompat': bool(getattr(zone_state, 'initial_core_compat', False)),
+            'bornInsideA': born_inside_a,
+            'bornInsidePending': born_inside_pending,
+            'bornInsideOutcome': born_inside_outcome,
             'transitionReason': getattr(zone_state, 'transition_reason', ''),
         })
 
@@ -827,7 +867,17 @@ class EventManager:
         if self.disable_plate_only_events and is_plate and (vehicle_box is None and st.get('last_vehicle_box') is None):
             return
         can_type1 = self._can_emit_type1(st)
-        if bool(zone_state and zone_state.inside_a) and 1 not in st['events'] and 1 in self.allowed_events and can_type1:
+        born_inside_promoted_with_type2 = bool(
+            st.get('born_inside_outcome') == 'PROMOTED' and zone_flags.get('enter_b')
+        )
+        if (
+            bool(zone_state and zone_state.inside_a)
+            and not st.get('born_inside_pending')
+            and not born_inside_promoted_with_type2
+            and 1 not in st['events']
+            and 1 in self.allowed_events
+            and can_type1
+        ):
             self.emit_event(track_id, 1, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(1)
         if type2_ready and 2 not in st['events'] and 2 in self.allowed_events:
@@ -1000,7 +1050,7 @@ class EventManager:
                     self.upload_qualified.add(track_key)
             st['closed'] = True
 
-    def flush_inactive(self, active_ids, frame_idx, on_track_timeout=None):
+    def flush_inactive(self, active_ids, frame_idx, on_track_timeout=None, timeout_reason='track_lost'):
         active_ids = active_ids or set()
         to_remove = []
         for tid, st in self.tracks.items():
@@ -1008,13 +1058,47 @@ class EventManager:
                 continue
             if frame_idx - st.get('last_frame_idx', frame_idx) >= self.timeout_frames:
                 event_enabled = bool(st.get('zone_a_dwell_frames', 0) > 0)
+                born_inside_rejected = bool(
+                    st.get('born_inside_pending')
+                    and str(st.get('born_inside_outcome', '') or '') == 'CANDIDATE'
+                )
+                if born_inside_rejected:
+                    st['born_inside_pending'] = False
+                    st['born_inside_outcome'] = 'REJECTED'
+                    st['candidate_rejection_reason'] = 'TRACK_LOST_IN_ZONE_A_TIMEOUT'
+                    self.trace_record('born_inside', {
+                        'frameIdx': int(frame_idx),
+                        'trackId': int(tid),
+                        'action': 'rejected',
+                        'reason': 'track_lost_in_zone_a_timeout',
+                    })
+                lost_inside_a_timeout = bool(
+                    not born_inside_rejected
+                    and st.get('type2_qualified')
+                    and st.get('zone_a_seen')
+                    and not st.get('zone_a_exited')
+                    and timeout_reason == 'track_lost'
+                )
+                if lost_inside_a_timeout:
+                    reasons = st.setdefault('abnormal_reasons', set())
+                    if not isinstance(reasons, set):
+                        reasons = set(reasons)
+                        st['abnormal_reasons'] = reasons
+                    reasons.add('TRACK_LOST_IN_ZONE_A_TIMEOUT')
+                    self.trace_record('lifecycle_timeout', {
+                        'frameIdx': int(frame_idx),
+                        'trackId': int(tid),
+                        'reason': 'track_lost_in_zone_a_timeout',
+                        'type2Qualified': True,
+                    })
                 suppress_plate_only_events = bool(
                     self.disable_plate_only_events
                     and st.get('last_vehicle_box') is None
                     and int(st.get('vehicle_hit_frames', 0) or 0) <= 0
                 )
                 if (
-                    4 not in st['events']
+                    not born_inside_rejected
+                    and 4 not in st['events']
                     and 4 in self.allowed_events
                     and event_enabled
                     and not suppress_plate_only_events
@@ -1032,7 +1116,8 @@ class EventManager:
                     st['events'].add(4)
                 can_type5 = self._can_emit_type5(st)
                 if (
-                    5 not in st['events']
+                    not born_inside_rejected
+                    and 5 not in st['events']
                     and 5 in self.allowed_events
                     and can_type5
                     and event_enabled
@@ -1057,7 +1142,7 @@ class EventManager:
                     extra_frames = self._record_tail_frames()
                     last_idx = st.get('last_frame_idx', frame_idx)
                     st['record_stop_frame'] = last_idx + extra_frames
-                if self.single_lifecycle_events and 5 in st['events']:
+                if self.single_lifecycle_events and (5 in st['events'] or born_inside_rejected):
                     st['closed'] = True
 
                 stop_f = st.get('record_stop_frame')
@@ -1233,6 +1318,7 @@ class EventManager:
             dir_code, dir_label = self._resolve_direction(track_state)
             event['direction'] = dir_code
             event['directionLabel'] = dir_label
+            event['directionSource'] = track_state.get('direction_source', 'unknown')
         plate_color, plate_color_conf = self._infer_plate_color(track_state)
         event['plateColor'] = plate_color
         event['plateColorConfidence'] = plate_color_conf
@@ -3162,7 +3248,36 @@ class EventManager:
         state = None
         if track_state:
             state = track_state.get('zone_state')
-        return self.zone_mgr.resolve_direction(state)
+        direction_code, direction_label = self.zone_mgr.resolve_direction(state)
+        if direction_code:
+            if track_state is not None:
+                track_state['direction_source'] = 'zone_geometry'
+            return direction_code, direction_label
+        reasons = track_state.get('abnormal_reasons', set()) if track_state else set()
+        if not isinstance(reasons, set):
+            reasons = set(reasons or ())
+        motion_direction = str((track_state or {}).get('anchor_motion_direction', '') or '')
+        if (
+            'TRACK_LOST_IN_ZONE_A_TIMEOUT' in reasons
+            and bool((track_state or {}).get('anchor_direction_locked'))
+            and motion_direction in {'forward', 'reverse'}
+        ):
+            direction_code, direction_label = (
+                (5, '正向前出') if motion_direction == 'forward' else (7, '反向前出')
+            )
+            track_state['direction_source'] = 'trajectory_inference'
+            if not track_state.get('direction_fallback_traced'):
+                track_state['direction_fallback_traced'] = True
+                self.trace_record('direction_fallback', {
+                    'trackId': int(track_state.get('track_id', 0) or 0),
+                    'source': 'trajectory_inference',
+                    'motionDirection': motion_direction,
+                    'confidence': float(track_state.get('anchor_direction_confidence', 0.0) or 0.0),
+                })
+            return direction_code, direction_label
+        if track_state is not None:
+            track_state['direction_source'] = 'unknown'
+        return 0, ''
 
     def water_contact(self, box, water_boxes):
         if not water_boxes or box is None:
