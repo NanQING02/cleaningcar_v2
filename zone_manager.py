@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import List, Sequence, Tuple
+from math import isfinite
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -13,17 +14,20 @@ def point_in_polygon(point: Tuple[float, float], polygon: Sequence[Tuple[float, 
     return cv2.pointPolygonTest(contour, (float(x), float(y)), False) >= 0
 
 
-def polygon_mask(polygon: Sequence[Tuple[float, float]], size: Tuple[int, int]):
-    mask = np.zeros(size, dtype=np.uint8)
-    pts = np.array(polygon, dtype=np.int32)
-    cv2.fillPoly(mask, [pts], 255)
-    return mask
-
-
 @dataclass
 class ZoneState:
     inside_a: bool = False
     inside_b: bool = False
+    zone_a_state: str = 'UNSEEN'
+    zone_a_region: str = 'INVALID'
+    signed_distance: Optional[float] = None
+    dynamic_margin: float = 0.0
+    observed_outside_count: int = 0
+    enter_core_count: int = 0
+    exit_outside_count: int = 0
+    initial_core_compat: bool = False
+    transition_reason: str = 'initialized'
+    last_observation_frame: int = -1
     enter_ratio: float = 0.0
     exit_ratio: float = 0.0
     entry_point: Tuple[float, float] = (0.0, 0.0)
@@ -38,9 +42,24 @@ class ZoneManager:
     flow_vector: Tuple[Tuple[float, float], Tuple[float, float]]
     entry_hysteresis: int = 3
     exit_hysteresis: int = 3
+    zone_a_margin_ratio: float = 0.10
+    zone_a_margin_min_px: float = 4.0
+    zone_a_margin_max_px: float = 24.0
+    zone_a_observed_outside_hits: int = 3
+    zone_a_enter_core_hits: int = 3
+    zone_a_exit_outside_hits: int = 5
     state_cache: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        self.entry_hysteresis = max(1, int(self.entry_hysteresis))
+        self.exit_hysteresis = max(1, int(self.exit_hysteresis))
+        self.zone_a_margin_ratio = max(0.0, float(self.zone_a_margin_ratio))
+        self.zone_a_margin_min_px = max(0.0, float(self.zone_a_margin_min_px))
+        self.zone_a_margin_max_px = max(self.zone_a_margin_min_px, float(self.zone_a_margin_max_px))
+        self.zone_a_observed_outside_hits = max(1, int(self.zone_a_observed_outside_hits))
+        self.zone_a_enter_core_hits = max(1, int(self.zone_a_enter_core_hits))
+        self.zone_a_exit_outside_hits = max(1, int(self.zone_a_exit_outside_hits))
+        self._zone_a_contour = np.array(self.zone_a, dtype=np.float32) if len(self.zone_a) >= 3 else None
         ratios = []
         for pt in self.zone_a:
             ratios.append(self._relative_position(pt))
@@ -57,51 +76,187 @@ class ZoneManager:
             self._zone_a_min = 0.25
             self._zone_a_max = 0.75
 
-    def update_track(self, track_id: int, anchor_point: Tuple[float, float], frame_idx: int):
+    def update_track(
+        self,
+        track_id: int,
+        anchor_point: Tuple[float, float],
+        frame_idx: int,
+        vehicle_height: Optional[float] = None,
+    ):
         st = self.state_cache.setdefault(track_id, {
             'state': ZoneState(),
-            'entry_counter': 0,
-            'exit_counter': 0,
+            'b_entry_counter': 0,
+            'b_exit_counter': 0,
             'last_anchor': anchor_point,
             'last_frame': frame_idx,
+            'last_zone_a_frame': -1,
+            'last_zone_b_frame': -1,
+            'last_clear_region': '',
+            'first_valid_region': '',
+            'outside_confirmed_before_entry': False,
         })
-        st['last_anchor'] = anchor_point
         st['last_frame'] = frame_idx
         state: ZoneState = st['state']
-        state.last_anchor = anchor_point
+        flags = {'enter_a': False, 'exit_a': False, 'enter_b': False, 'exit_b': False}
+        if not self._valid_anchor(anchor_point):
+            state.zone_a_region = 'INVALID'
+            state.signed_distance = None
+            state.transition_reason = 'invalid_anchor'
+            return state, flags
 
-        inside_a = point_in_polygon(anchor_point, self.zone_a)
-        inside_b = point_in_polygon(anchor_point, self.zone_b)
+        normalized_anchor = (float(anchor_point[0]), float(anchor_point[1]))
+        st['last_anchor'] = normalized_anchor
+        state.last_anchor = normalized_anchor
 
-        enter_a = inside_a and not state.inside_a
-        exit_a = (not inside_a) and state.inside_a
-        if enter_a:
-            state.enter_ratio = self._relative_position(anchor_point)
-            state.entry_point = anchor_point
-        if exit_a:
-            state.exit_ratio = self._relative_position(anchor_point)
-            state.exit_point = anchor_point
+        inside_b = point_in_polygon(normalized_anchor, self.zone_b)
+        if st['last_zone_b_frame'] != frame_idx:
+            st['last_zone_b_frame'] = frame_idx
+            st['b_entry_counter'] = min(
+                self.entry_hysteresis,
+                st['b_entry_counter'] + 1,
+            ) if inside_b else 0
+            st['b_exit_counter'] = min(
+                self.exit_hysteresis,
+                st['b_exit_counter'] + 1,
+            ) if not inside_b else 0
 
-        st['entry_counter'] = min(self.entry_hysteresis, st['entry_counter'] + 1) if inside_b else 0
-        st['exit_counter'] = min(self.exit_hysteresis, st['exit_counter'] + 1) if (not inside_b) else 0
+            if st['b_entry_counter'] >= self.entry_hysteresis and not state.inside_b:
+                state.inside_b = True
+                flags['enter_b'] = True
+            elif st['b_exit_counter'] >= self.exit_hysteresis and state.inside_b:
+                state.inside_b = False
+                flags['exit_b'] = True
 
-        enter_b = False
-        exit_b = False
-        if st['entry_counter'] >= self.entry_hysteresis and not state.inside_b:
-            state.inside_b = True
-            enter_b = True
-        elif st['exit_counter'] >= self.exit_hysteresis and state.inside_b:
-            state.inside_b = False
-            exit_b = True
+        if self._zone_a_contour is None or not self._valid_vehicle_height(vehicle_height):
+            state.zone_a_region = 'INVALID'
+            state.signed_distance = None
+            state.dynamic_margin = 0.0
+            state.transition_reason = (
+                'invalid_zone_a_polygon' if self._zone_a_contour is None else 'invalid_vehicle_height'
+            )
+            return state, flags
+        if st['last_zone_a_frame'] == frame_idx:
+            state.transition_reason = 'duplicate_frame_ignored'
+            return state, flags
+        st['last_zone_a_frame'] = frame_idx
+        state.last_observation_frame = int(frame_idx)
 
-        state.inside_a = inside_a
-        flags = {
-            'enter_a': enter_a,
-            'exit_a': exit_a,
-            'enter_b': enter_b,
-            'exit_b': exit_b,
-        }
+        margin = min(
+            self.zone_a_margin_max_px,
+            max(self.zone_a_margin_min_px, float(vehicle_height) * self.zone_a_margin_ratio),
+        )
+        signed_distance = float(cv2.pointPolygonTest(
+            self._zone_a_contour,
+            normalized_anchor,
+            True,
+        ))
+        if signed_distance > margin:
+            region = 'CORE'
+        elif signed_distance < -margin:
+            region = 'OUTSIDE'
+        else:
+            region = 'BUFFER'
+
+        state.zone_a_region = region
+        state.signed_distance = signed_distance
+        state.dynamic_margin = margin
+        if not st['first_valid_region']:
+            st['first_valid_region'] = region
+
+        if region == 'CORE':
+            st['last_clear_region'] = 'CORE'
+            state.observed_outside_count = 0
+            state.exit_outside_count = 0
+            if state.inside_a:
+                state.enter_core_count = self.zone_a_enter_core_hits
+                state.zone_a_state = 'INSIDE_A_CANDIDATE'
+                state.transition_reason = 'stable_inside_core'
+            else:
+                state.enter_core_count = min(
+                    self.zone_a_enter_core_hits,
+                    state.enter_core_count + 1,
+                )
+                state.transition_reason = (
+                    f'core_observation_{state.enter_core_count}_of_{self.zone_a_enter_core_hits}'
+                )
+                if state.enter_core_count >= self.zone_a_enter_core_hits:
+                    state.inside_a = True
+                    state.zone_a_state = 'INSIDE_A_CANDIDATE'
+                    state.initial_core_compat = bool(
+                        st['first_valid_region'] == 'CORE'
+                        and not st['outside_confirmed_before_entry']
+                    )
+                    state.enter_ratio = self._relative_position(normalized_anchor)
+                    state.entry_point = normalized_anchor
+                    state.transition_reason = (
+                        'enter_a_initial_core_compat'
+                        if state.initial_core_compat
+                        else 'enter_a_core_confirmed'
+                    )
+                    flags['enter_a'] = True
+        elif region == 'OUTSIDE':
+            st['last_clear_region'] = 'OUTSIDE'
+            state.enter_core_count = 0
+            if state.inside_a:
+                state.observed_outside_count = 0
+                state.exit_outside_count = min(
+                    self.zone_a_exit_outside_hits,
+                    state.exit_outside_count + 1,
+                )
+                state.transition_reason = (
+                    f'exit_observation_{state.exit_outside_count}_of_{self.zone_a_exit_outside_hits}'
+                )
+                if state.exit_outside_count >= self.zone_a_exit_outside_hits:
+                    state.inside_a = False
+                    state.zone_a_state = 'OBSERVED_OUTSIDE'
+                    state.observed_outside_count = self.zone_a_observed_outside_hits
+                    state.exit_ratio = self._relative_position(normalized_anchor)
+                    state.exit_point = normalized_anchor
+                    state.transition_reason = 'exit_a_outside_confirmed'
+                    flags['exit_a'] = True
+            else:
+                state.exit_outside_count = 0
+                state.observed_outside_count = min(
+                    self.zone_a_observed_outside_hits,
+                    state.observed_outside_count + 1,
+                )
+                state.transition_reason = (
+                    f'outside_observation_{state.observed_outside_count}_of_'
+                    f'{self.zone_a_observed_outside_hits}'
+                )
+                if state.observed_outside_count >= self.zone_a_observed_outside_hits:
+                    state.zone_a_state = 'OBSERVED_OUTSIDE'
+                    st['outside_confirmed_before_entry'] = True
+                    state.transition_reason = 'observed_outside_confirmed'
+        else:
+            if st['last_clear_region'] == 'CORE':
+                state.observed_outside_count = 0
+                state.exit_outside_count = 0
+                state.transition_reason = 'buffer_after_core'
+            elif st['last_clear_region'] == 'OUTSIDE':
+                state.enter_core_count = 0
+                state.transition_reason = 'buffer_after_outside'
+            else:
+                state.transition_reason = 'buffer_without_clear_region'
+
         return state, flags
+
+    @staticmethod
+    def _valid_anchor(anchor_point) -> bool:
+        if not isinstance(anchor_point, (list, tuple)) or len(anchor_point) < 2:
+            return False
+        try:
+            return isfinite(float(anchor_point[0])) and isfinite(float(anchor_point[1]))
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _valid_vehicle_height(vehicle_height) -> bool:
+        try:
+            value = float(vehicle_height)
+        except (TypeError, ValueError):
+            return False
+        return isfinite(value) and value > 0.0
 
     def cleanup(self, current_frame: int, max_age: int):
         for track_id in list(self.state_cache.keys()):

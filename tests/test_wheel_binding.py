@@ -19,7 +19,7 @@ from cleaningcar.wheel import (
 
 class _DummyZoneManager:
     @staticmethod
-    def update_track(track_id, anchor_point, frame_idx):
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
         return None, {"enter_a": False, "exit_a": False, "enter_b": False, "exit_b": False}
 
     @staticmethod
@@ -33,7 +33,7 @@ class _DummyZoneManager:
 
 class _ZoneAZoneManager:
     @staticmethod
-    def update_track(track_id, anchor_point, frame_idx):
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
         state = SimpleNamespace(inside_a=True, inside_b=False)
         return state, {"enter_a": frame_idx == 1, "exit_a": False, "enter_b": False, "exit_b": False}
 

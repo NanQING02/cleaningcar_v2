@@ -589,6 +589,8 @@ class EventManager:
             'type2_qualified': False,
             'type2_qualified_frame': -1,
             'type5_suppressed_quality': False,
+            'type5_pending_exit_a': False,
+            'type5_pending_reason': '',
             'wheel_results_locked': {},
             'wheel_photo_history': {'left': {}, 'right': {}},
             'wheel_photo_seq': {'left': 0, 'right': 0},
@@ -711,7 +713,21 @@ class EventManager:
                 anchor_history = deque(maxlen=10)
                 st['anchor_history'] = anchor_history
             anchor_history.append((float(anchor_point[0]), float(anchor_point[1])))
-        zone_state, zone_flags = self.zone_mgr.update_track(track_id, anchor_point, frame_idx)
+        reliable_vehicle_box = vehicle_box or st.get('last_vehicle_box')
+        vehicle_height = None
+        if reliable_vehicle_box is not None and len(reliable_vehicle_box) >= 4:
+            try:
+                candidate_height = float(reliable_vehicle_box[3]) - float(reliable_vehicle_box[1])
+                if candidate_height > 0.0:
+                    vehicle_height = candidate_height
+            except (TypeError, ValueError):
+                vehicle_height = None
+        zone_state, zone_flags = self.zone_mgr.update_track(
+            track_id,
+            anchor_point,
+            frame_idx,
+            vehicle_height=vehicle_height,
+        )
         st['zone_state'] = zone_state
         self.trace_record('zone_update', {
             'frameIdx': int(frame_idx),
@@ -720,6 +736,15 @@ class EventManager:
             'insideB': bool(zone_state and zone_state.inside_b),
             'flags': zone_flags,
             'anchorPoint': anchor_point,
+            'zoneAState': getattr(zone_state, 'zone_a_state', 'UNSEEN'),
+            'zoneARegion': getattr(zone_state, 'zone_a_region', 'INVALID'),
+            'signedDistance': getattr(zone_state, 'signed_distance', None),
+            'dynamicMargin': getattr(zone_state, 'dynamic_margin', 0.0),
+            'observedOutsideCount': getattr(zone_state, 'observed_outside_count', 0),
+            'enterCoreCount': getattr(zone_state, 'enter_core_count', 0),
+            'exitOutsideCount': getattr(zone_state, 'exit_outside_count', 0),
+            'initialCoreCompat': bool(getattr(zone_state, 'initial_core_compat', False)),
+            'transitionReason': getattr(zone_state, 'transition_reason', ''),
         })
 
         timestamp = self.frame_timestamp(frame_idx)
@@ -836,10 +861,40 @@ class EventManager:
                 'washDuration': round(duration_val, 2),
             }, st)
             st['events'].add(4)
+        if inside_a and st.get('type5_pending_exit_a'):
+            st['type5_pending_exit_a'] = False
+            st['type5_pending_reason'] = 'zone_a_reentered'
+            self.trace_record('type5_gate', {
+                'frameIdx': int(frame_idx),
+                'trackId': int(track_id),
+                'action': 'cancel',
+                'reason': 'zone_a_reentered',
+            })
+        if zone_flags.get('exit_a') and 5 not in st['events']:
+            st['type5_pending_exit_a'] = True
+            st['type5_pending_reason'] = (
+                'waiting_zone_b_exit' if inside_b else 'zone_a_exit_confirmed'
+            )
+            self.trace_record('type5_gate', {
+                'frameIdx': int(frame_idx),
+                'trackId': int(track_id),
+                'action': 'pending',
+                'reason': st['type5_pending_reason'],
+                'insideB': bool(inside_b),
+            })
         can_type5 = self._can_emit_type5(st)
-        if zone_flags.get('exit_a') and 5 in self.allowed_events and 5 not in st['events'] and can_type5:
+        release_type5 = bool(st.get('type5_pending_exit_a') and not inside_b)
+        if release_type5 and 5 in self.allowed_events and 5 not in st['events'] and can_type5:
             if self._should_suppress_type5_quality(track_id, st, frame_idx):
                 st['type5_suppressed_quality'] = True
+                st['type5_pending_exit_a'] = False
+                st['type5_pending_reason'] = 'quality_suppressed'
+                self.trace_record('type5_gate', {
+                    'frameIdx': int(frame_idx),
+                    'trackId': int(track_id),
+                    'action': 'cancel',
+                    'reason': 'quality_suppressed',
+                })
                 if self.single_lifecycle_events:
                     st['closed'] = True
             else:
@@ -852,6 +907,15 @@ class EventManager:
                     'washDuration': round(duration_val, 2),
                 }, st)
                 st['events'].add(5)
+                st['type5_pending_exit_a'] = False
+                st['type5_pending_reason'] = 'released_after_zone_b_exit'
+                self.trace_record('type5_gate', {
+                    'frameIdx': int(frame_idx),
+                    'trackId': int(track_id),
+                    'action': 'release',
+                    'reason': 'zone_b_ended',
+                    'type4Emitted': 4 in st['events'],
+                })
                 if self.single_lifecycle_events:
                     st['closed'] = True
 
@@ -871,6 +935,12 @@ class EventManager:
             'zone_a_elapsed': zone_a_elapsed,
             'zone_b_elapsed': anchor_elapsed,
             'water_detected': bool(st.get('water_detected')),
+            'zone_a_state': getattr(zone_state, 'zone_a_state', 'UNSEEN'),
+            'zone_a_region': getattr(zone_state, 'zone_a_region', 'INVALID'),
+            'zone_a_signed_distance': getattr(zone_state, 'signed_distance', None),
+            'zone_a_dynamic_margin': getattr(zone_state, 'dynamic_margin', 0.0),
+            'type5_pending_exit_a': bool(st.get('type5_pending_exit_a')),
+            'type5_pending_reason': st.get('type5_pending_reason', ''),
         }
 
         elapsed_seconds = st.get('track_frame_count', 0) / max(self.fps, 1e-6)

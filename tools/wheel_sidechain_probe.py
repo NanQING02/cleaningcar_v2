@@ -11,7 +11,7 @@ from pathlib import Path
 
 class DummyZoneManager:
     @staticmethod
-    def update_track(track_id, anchor_point, frame_idx):
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
         return None, {"enter_a": False, "exit_a": False, "enter_b": False, "exit_b": False}
 
     @staticmethod

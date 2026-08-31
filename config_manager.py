@@ -280,6 +280,7 @@ class ConfigManager:
 
         logic = self.data.setdefault('logic', {})
         logic.pop('enable_global_video', None)
+        logic.pop('zone_a_mask_enable', None)
         for obsolete_key in (
             'per_id_downscale_ratio',
             'per_id_frame_stride',
@@ -292,7 +293,6 @@ class ConfigManager:
         ):
             logic.pop(obsolete_key, None)
         logic.setdefault('detection_anchor', 'bottom_center')
-        logic.setdefault('zone_a_mask_enable', True)
         logic.setdefault('zone_b_entry_hysteresis', 3)
         logic.setdefault('zone_b_exit_hysteresis', 3)
         logic.setdefault('stationary_min_frames', 0)
@@ -312,6 +312,30 @@ class ConfigManager:
         except (TypeError, ValueError):
             event_trace_queue_size = 4096
         logic['event_trace_queue_size'] = max(128, min(event_trace_queue_size, 100000))
+        for key, default, minimum, maximum in (
+            ('zone_a_margin_ratio', 0.10, 0.0, 1.0),
+            ('zone_a_margin_min_px', 4.0, 0.0, 256.0),
+            ('zone_a_margin_max_px', 24.0, 0.0, 512.0),
+        ):
+            try:
+                value = float(logic.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            logic[key] = max(minimum, min(maximum, value))
+        logic['zone_a_margin_max_px'] = max(
+            logic['zone_a_margin_min_px'],
+            logic['zone_a_margin_max_px'],
+        )
+        for key, default in (
+            ('zone_a_observed_outside_hits', 3),
+            ('zone_a_enter_core_hits', 3),
+            ('zone_a_exit_outside_hits', 5),
+        ):
+            try:
+                value = int(logic.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            logic[key] = max(1, min(100, value))
         logic.setdefault('vehicle_iou_threshold', 0.3)
         logic.setdefault('vehicle_center_gate_ratio', 0.0)
         logic.setdefault('vehicle_tracker_impl', 'bytetrack')

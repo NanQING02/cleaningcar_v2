@@ -11,7 +11,7 @@ from queue import Empty, Full, Queue
 import cv2
 import numpy as np
 
-from zone_manager import ZoneManager, polygon_mask
+from zone_manager import ZoneManager
 
 from .anchor import AnchorEstimator
 from .constants import (
@@ -548,12 +548,13 @@ def process_video(path, args):
         (flow_start, flow_end),
         entry_hysteresis=int(logic_cfg.get('zone_b_entry_hysteresis', 3)),
         exit_hysteresis=int(logic_cfg.get('zone_b_exit_hysteresis', 3)),
+        zone_a_margin_ratio=float(logic_cfg.get('zone_a_margin_ratio', 0.10)),
+        zone_a_margin_min_px=float(logic_cfg.get('zone_a_margin_min_px', 4.0)),
+        zone_a_margin_max_px=float(logic_cfg.get('zone_a_margin_max_px', 24.0)),
+        zone_a_observed_outside_hits=int(logic_cfg.get('zone_a_observed_outside_hits', 3)),
+        zone_a_enter_core_hits=int(logic_cfg.get('zone_a_enter_core_hits', 3)),
+        zone_a_exit_outside_hits=int(logic_cfg.get('zone_a_exit_outside_hits', 5)),
     )
-    detect_mask = None
-    if logic_cfg.get('zone_a_mask_enable', True) and len(zone_a_pts) >= 3:
-        detect_mask = polygon_mask(zone_a_pts, (height, width))
-        print('zone_a_mask: 启用，仅在Zone A内检测')
-
     anchor_estimator = AnchorEstimator(
         frame_size=(width, height),
         flow_vector=(flow_start, flow_end),
@@ -1325,7 +1326,6 @@ def process_video(path, args):
                 worker_core_masks[i] if i < len(worker_core_masks) else core_mask,
                 task_q,
                 result_q,
-                detect_mask,
                 plate_core_mask=plate_core_mask,
             )
             workers.append(worker)

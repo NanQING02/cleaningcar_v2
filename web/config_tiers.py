@@ -83,7 +83,6 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "wheel.photo_bucket_seconds", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮照片分桶秒数"},
     {"path": "wheel.photo_min_score", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮照片最低分数"},
     {"path": "logic.detection_anchor", "tier": TIER_DEVELOPER, "group": "logic", "label": "检测锚点"},
-    {"path": "logic.zone_a_mask_enable", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone A Mask"},
     {"path": "logic.zone_b_entry_hysteresis", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 进入迟滞"},
     {"path": "logic.zone_b_exit_hysteresis", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 离开迟滞"},
     {"path": "logic.stationary_min_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "静止最小帧数"},

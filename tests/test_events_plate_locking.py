@@ -8,7 +8,7 @@ from cleaningcar.events import EventManager
 
 class _DummyZoneManager:
     @staticmethod
-    def update_track(track_id, anchor_point, frame_idx):
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
         return None, {"enter_a": False, "exit_a": False, "enter_b": False, "exit_b": False}
 
     @staticmethod
@@ -22,7 +22,7 @@ class _DummyZoneManager:
 
 class _ZoneAZoneManager:
     @staticmethod
-    def update_track(track_id, anchor_point, frame_idx):
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
         state = type("ZoneState", (), {"inside_a": True, "inside_b": False})()
         return state, {"enter_a": frame_idx == 1, "exit_a": False, "enter_b": False, "exit_b": False}
 
@@ -39,7 +39,7 @@ class _ScriptedZoneManager:
     def __init__(self, states):
         self.states = states
 
-    def update_track(self, track_id, anchor_point, frame_idx):
+    def update_track(self, track_id, anchor_point, frame_idx, vehicle_height=None):
         spec = self.states.get(frame_idx, {})
         state = type(
             "ZoneState",
@@ -581,6 +581,68 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         self.assertIn(1, emitted)
         self.assertIn(1, manager.tracks[1]["events"])
+
+    def test_type5_waits_for_zone_b_exit_and_emits_after_type4(self):
+        zone = _ScriptedZoneManager({
+            1: {"inside_a": True, "enter_a": True},
+            2: {"inside_a": True, "inside_b": True, "enter_b": True},
+            3: {"inside_a": True, "inside_b": True},
+            4: {"inside_a": True, "inside_b": True},
+            5: {"inside_a": False, "inside_b": True, "exit_a": True},
+            6: {"inside_a": False, "inside_b": True},
+            7: {"inside_a": False, "inside_b": False, "exit_b": True},
+        })
+        manager = self._manager_with_zone(zone)
+        manager.min_type4_zone_b_dwell = 0
+        emitted = []
+
+        def fake_emit(track_id, event_type, frame_idx, frame, payload, track_state):
+            del frame, payload
+            if manager._event_stage_allowed(track_id, event_type, frame_idx, track_state):
+                emitted.append(event_type)
+                return True
+            return False
+
+        manager.emit_event = fake_emit
+        for frame_idx in range(1, 6):
+            self._update(manager, frame_idx)
+
+        track_state = manager.tracks[1]
+        self.assertEqual(emitted, [1, 2])
+        self.assertTrue(track_state["type5_pending_exit_a"])
+        self.assertFalse(track_state.get("closed", False))
+
+        self._update(manager, 6)
+        self.assertEqual(emitted, [1, 2])
+        self.assertFalse(track_state.get("closed", False))
+
+        self._update(manager, 7)
+        self.assertEqual(emitted, [1, 2, 4, 5])
+        self.assertFalse(track_state["type5_pending_exit_a"])
+        self.assertTrue(track_state["closed"])
+        self.assertEqual(track_state["event_sequence_issues"], [])
+
+    def test_type5_pending_is_cancelled_when_zone_a_is_reentered(self):
+        zone = _ScriptedZoneManager({
+            1: {"inside_a": True, "enter_a": True},
+            2: {"inside_a": True, "inside_b": True, "enter_b": True},
+            3: {"inside_a": False, "inside_b": True, "exit_a": True},
+            4: {"inside_a": True, "inside_b": True, "enter_a": True},
+            5: {"inside_a": True, "inside_b": False, "exit_b": True},
+        })
+        manager = self._manager_with_zone(zone)
+        manager.min_type4_zone_b_dwell = 0
+        emitted = []
+        manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
+
+        for frame_idx in range(1, 6):
+            self._update(manager, frame_idx)
+
+        track_state = manager.tracks[1]
+        self.assertEqual(emitted, [1, 2, 4])
+        self.assertFalse(track_state["type5_pending_exit_a"])
+        self.assertEqual(track_state["type5_pending_reason"], "zone_a_reentered")
+        self.assertFalse(track_state.get("closed", False))
 
     def test_pending_plate_history_can_lock_after_vehicle_binding(self):
         manager = self._manager(plate_lock_frames=3)

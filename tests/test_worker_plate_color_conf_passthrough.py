@@ -137,7 +137,6 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         worker.core_mask = None
         worker.task_q = queue.Queue()
         worker.result_q = queue.Queue()
-        worker.detect_mask = None
         worker.rk = rk or _FakeRK()
         worker.detector_postprocessor = postprocessor or _FakePostprocessor()
         worker.dual_lpr = dual_lpr or _FakeDualLpr()

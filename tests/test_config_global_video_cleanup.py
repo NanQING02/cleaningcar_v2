@@ -85,6 +85,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             payload = {
                 "system": {"device_id": "cam-a"},
                 "video": {"source": "demo.mp4"},
+                "logic": {"zone_a_mask_enable": True},
                 "zones": {
                     "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
                     "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
@@ -150,6 +151,13 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.logic["anchor_direction_consistency"], 0.7)
             self.assertEqual(manager.logic["anchor_direction_min_displacement_ratio"], 0.03)
             self.assertEqual(manager.logic["anchor_direction_blend_frames"], 5)
+            self.assertNotIn("zone_a_mask_enable", manager.logic)
+            self.assertEqual(manager.logic["zone_a_margin_ratio"], 0.10)
+            self.assertEqual(manager.logic["zone_a_margin_min_px"], 4.0)
+            self.assertEqual(manager.logic["zone_a_margin_max_px"], 24.0)
+            self.assertEqual(manager.logic["zone_a_observed_outside_hits"], 3)
+            self.assertEqual(manager.logic["zone_a_enter_core_hits"], 3)
+            self.assertEqual(manager.logic["zone_a_exit_outside_hits"], 5)
             self.assertFalse(manager.data["wheel"]["pause_bypass_during_wash_enabled"])
             self.assertEqual(manager.data["wheel"]["pause_bypass_config_key"], "config_绕行.json")
             self.assertEqual(manager.data["wheel"]["pause_bypass_resume_delay_seconds"], 0.5)
@@ -170,6 +178,16 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("logic.anchor_direction_consistency", field_paths)
         self.assertIn("logic.anchor_direction_min_displacement_ratio", field_paths)
         self.assertIn("logic.anchor_direction_blend_frames", field_paths)
+        self.assertNotIn("logic.zone_a_mask_enable", field_paths)
+        for path in (
+            "logic.zone_a_margin_ratio",
+            "logic.zone_a_margin_min_px",
+            "logic.zone_a_margin_max_px",
+            "logic.zone_a_observed_outside_hits",
+            "logic.zone_a_enter_core_hits",
+            "logic.zone_a_exit_outside_hits",
+        ):
+            self.assertNotIn(path, field_paths)
 
     def test_config_manager_defaults_plate_and_event_quality_controls(self):
         with tempfile.TemporaryDirectory() as tmpdir:

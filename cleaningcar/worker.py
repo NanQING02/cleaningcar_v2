@@ -19,7 +19,7 @@ from .text_render import draw_text
 
 
 class DetectWorker(threading.Thread):
-    def __init__(self, idx, args, core_mask, task_q, result_q, detect_mask=None, plate_core_mask=None):
+    def __init__(self, idx, args, core_mask, task_q, result_q, plate_core_mask=None):
         super().__init__(daemon=True)
         self.idx = idx
         self.args = args
@@ -27,7 +27,6 @@ class DetectWorker(threading.Thread):
         self.plate_core_mask = plate_core_mask
         self.task_q = task_q
         self.result_q = result_q
-        self.detect_mask = detect_mask
         self.rk = None
         self.dual_lpr = None
         logic_cfg = ((getattr(args, "_config", {}) or {}).get("logic", {}) or {})
@@ -128,11 +127,7 @@ class DetectWorker(threading.Thread):
                 else:
                     frame_idx, frame, capture_ts = item
 
-                proc_frame = frame
-                if self.detect_mask is not None:
-                    proc_frame = cv2.bitwise_and(frame, frame, mask=self.detect_mask)
-
-                img_input, lb_info = self.detector_postprocessor.prepare(proc_frame)
+                img_input, lb_info = self.detector_postprocessor.prepare(frame)
                 t0 = time.time()
                 outputs = self.rk.inference(inputs=[img_input], data_format=["nhwc"])
                 infer_time = time.time() - t0

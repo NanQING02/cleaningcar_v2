@@ -10,7 +10,7 @@ from cleaningcar.video_io import emit_per_id_video_type6
 
 
 class _ScriptedZoneManager:
-    def update_track(self, track_id, anchor_point, frame_idx):
+    def update_track(self, track_id, anchor_point, frame_idx, vehicle_height=None):
         del track_id, anchor_point
         inside_b = frame_idx >= 2
         state = type('ZoneState', (), {'inside_a': True, 'inside_b': inside_b})()
