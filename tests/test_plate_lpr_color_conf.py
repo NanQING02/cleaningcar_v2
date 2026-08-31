@@ -52,7 +52,7 @@ class PlateLprColorConfTests(unittest.TestCase):
         recognizer = DualPlateRecognizer.__new__(DualPlateRecognizer)
         recognizer.recognizer = _FakeRecognizer()
 
-        text, plate_color, color_conf = recognizer._recognize(np.ones((48, 168, 3), dtype=np.uint8))
+        text, plate_color, color_conf, text_conf = recognizer._recognize(np.ones((48, 168, 3), dtype=np.uint8))
 
         self.assertTrue(isinstance(text, str))
         self.assertTrue(plate_color)
@@ -60,6 +60,7 @@ class PlateLprColorConfTests(unittest.TestCase):
             math.exp(0.0) + math.exp(2.0) + math.exp(1.0) + math.exp(-1.0) + math.exp(-2.0)
         )
         self.assertAlmostEqual(color_conf, expected, places=6)
+        self.assertGreater(text_conf, 0.0)
 
     def test_infer_frame_includes_plate_color_conf(self):
         recognizer = DualPlateRecognizer.__new__(DualPlateRecognizer)
@@ -67,7 +68,7 @@ class PlateLprColorConfTests(unittest.TestCase):
             [[0.0, 0.0, 10.0, 10.0, 0.95, 0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0, 0.0]],
             dtype=np.float32,
         )
-        recognizer._recognize = lambda roi: ("ABC1234", "blue", 0.77)
+        recognizer._recognize = lambda roi: ("ABC1234", "blue", 0.77, 0.91)
 
         with patch("cleaningcar.plate_lpr._four_point_transform", return_value=np.ones((16, 32, 3), dtype=np.uint8)):
             results = recognizer.infer_frame(np.zeros((24, 24, 3), dtype=np.uint8))
@@ -75,6 +76,7 @@ class PlateLprColorConfTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("plate_color_conf", results[0])
         self.assertAlmostEqual(float(results[0]["plate_color_conf"]), 0.77, places=6)
+        self.assertAlmostEqual(float(results[0]["plate_text_conf"]), 0.91, places=6)
 
     def test_infer_frame_skips_tiny_plate_roi(self):
         recognizer = DualPlateRecognizer.__new__(DualPlateRecognizer)

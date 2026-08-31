@@ -16,7 +16,6 @@ from .constants import (
 _BODY_CONFUSION_MAP = {
     "O": "0",
     "I": "1",
-    "S": "5",
 }
 
 
@@ -121,12 +120,34 @@ def is_valid_plate(text):
 
 
 class PlateTextTracker:
-    def __init__(self, lock_frames=5, iou_thresh=0.4, max_age=30):
+    def __init__(self, lock_frames=5, iou_thresh=0.4, max_age=30,
+                 min_detection_confidence=0.65, min_recognition_confidence=0.75,
+                 max_streak_gap_frames=2):
         self.lock_frames = max(1, lock_frames)
         self.iou_thresh = iou_thresh
         self.max_age = max_age
+        self.min_detection_confidence = float(min_detection_confidence)
+        self.min_recognition_confidence = float(min_recognition_confidence)
+        self.max_streak_gap_frames = max(1, int(max_streak_gap_frames))
         self.tracks = {}
         self.next_id = 1
+
+    def _is_lock_eligible(self, det):
+        text = normalize_plate_candidate_text(det.get('text', ''))
+        if not is_valid_plate(text):
+            return False
+        try:
+            detection_confidence = float(det.get('score', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            detection_confidence = 0.0
+        try:
+            recognition_confidence = float(det.get('plate_text_conf', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            recognition_confidence = 0.0
+        return (
+            detection_confidence >= self.min_detection_confidence
+            and recognition_confidence >= self.min_recognition_confidence
+        )
 
     def _iou(self, boxA, boxB):
         xA = max(boxA[0], boxB[0])
@@ -168,6 +189,10 @@ class PlateTextTracker:
                         "last_seen": frame_idx,
                         "age": 0,
                         "history": [],
+                        "streak_text": "",
+                        "streak_hits": 0,
+                        "streak_last_frame": -1,
+                        "locked_text_conf": 0.0,
                         "locked": "",
                     }
                     if tid >= self.next_id:
@@ -197,14 +222,21 @@ class PlateTextTracker:
             track["box"] = det_box
             track["last_seen"] = frame_idx
             track["age"] = 0
-            if is_valid_plate(det_text):
+            if not track.get('locked') and self._is_lock_eligible(detections[det_idx]):
                 track["history"].append(det_text)
                 if len(track["history"]) > 30:
                     track["history"].pop(0)
-                counts = Counter(track["history"])
-                best_text, cnt = counts.most_common(1)[0]
-                if cnt >= self.lock_frames:
-                    track["locked"] = best_text
+                previous_text = track.get('streak_text', '')
+                previous_frame = int(track.get('streak_last_frame', -1) or -1)
+                if det_text == previous_text and frame_idx - previous_frame <= self.max_streak_gap_frames:
+                    track['streak_hits'] = int(track.get('streak_hits', 0) or 0) + 1
+                else:
+                    track['streak_text'] = det_text
+                    track['streak_hits'] = 1
+                track['streak_last_frame'] = frame_idx
+                if int(track.get('streak_hits', 0) or 0) >= self.lock_frames:
+                    track['locked'] = det_text
+                    track['locked_text_conf'] = float(detections[det_idx].get('plate_text_conf', 0.0) or 0.0)
 
         for di, det_box in enumerate(det_boxes):
             if di in assigned_dets:
@@ -213,13 +245,17 @@ class PlateTextTracker:
             self.next_id += 1
             det_text = det_texts[di]
             history = []
-            if is_valid_plate(det_text):
+            if self._is_lock_eligible(detections[di]):
                 history.append(det_text)
             self.tracks[tid] = {
                 "box": det_box,
                 "last_seen": frame_idx,
                 "age": 0,
                 "history": history,
+                "streak_text": det_text if history else "",
+                "streak_hits": 1 if history else 0,
+                "streak_last_frame": frame_idx if history else -1,
+                "locked_text_conf": 0.0,
                 "locked": "",
             }
             assigned_tracks[tid] = di
@@ -246,11 +282,20 @@ class PlateTextTracker:
             track = self.tracks.get(tid)
             text = track.get("locked") or ""
             is_guess = False
+            text_confidence = float(track.get('locked_text_conf', 0.0) or 0.0)
             if not text:
-                history = track.get("history") or []
-                if history:
-                    counts = Counter(history)
-                    text, _ = counts.most_common(1)[0]
+                raw_text = normalize_plate_candidate_text(det.get('text', ''))
+                if is_valid_plate(raw_text):
+                    text = raw_text
                     is_guess = True
-            results.append({"track_id": tid, "text": text, "is_guess": is_guess})
+                    try:
+                        text_confidence = float(det.get('plate_text_conf', 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        text_confidence = 0.0
+            results.append({
+                "track_id": tid,
+                "text": text,
+                "is_guess": is_guess,
+                "plate_text_conf": text_confidence,
+            })
         return results

@@ -23,10 +23,40 @@ from cleaningcar.pipeline import (
     _ensure_plate_binding_state,
     _refresh_car_plate_cache_from_locked,
     _stabilize_plate_binding,
+    _plate_car_match_score,
+    _plate_box_mutual_score,
 )
 
 
 class PlateBindingStabilityTests(unittest.TestCase):
+    def test_primary_and_dual_plate_boxes_support_spatial_mutual_verification(self):
+        score = _plate_box_mutual_score([100, 100, 200, 140], [105, 102, 205, 142])
+
+        self.assertGreaterEqual(score, 0.20)
+
+    def test_distant_primary_plate_box_does_not_mutually_verify(self):
+        score = _plate_box_mutual_score([100, 100, 200, 140], [600, 600, 700, 640])
+
+        self.assertLess(score, 0.20)
+
+    def test_truncated_oversized_vehicle_rejects_upper_plate_candidate(self):
+        score = _plate_car_match_score(
+            [1650, 180, 1780, 230],
+            [700, 0, 1920, 1080],
+            frame_size=(1920, 1080),
+        )
+
+        self.assertEqual(score, 0.0)
+
+    def test_truncated_oversized_vehicle_keeps_lower_plate_candidate(self):
+        score = _plate_car_match_score(
+            [1350, 900, 1500, 970],
+            [700, 0, 1920, 1080],
+            frame_size=(1920, 1080),
+        )
+
+        self.assertEqual(score, 1.0)
+
     def test_single_frame_misbind_does_not_immediately_switch_locked_car(self):
         state = _ensure_plate_binding_state(frame_idx=1)
 

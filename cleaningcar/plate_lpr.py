@@ -12,6 +12,11 @@ from .resize_accel import resize_bgr
 
 _PLATE_NAME = PLATE_DECODE_CHARS
 _PLATE_COLORS = PLATE_COLOR_NAMES
+_RAW_HEAD_ANCHORS = (
+    np.array([[4, 5], [8, 10], [13, 16]], dtype=np.float32),
+    np.array([[23, 29], [43, 55], [73, 105]], dtype=np.float32),
+    np.array([[146, 217], [231, 300], [335, 433]], dtype=np.float32),
+)
 
 
 def _is_viable_plate_roi(img: np.ndarray, min_width: int = 8, min_height: int = 4) -> bool:
@@ -87,6 +92,45 @@ def _restore_box(boxes: np.ndarray, r: float, left: int, top: int) -> np.ndarray
     return out
 
 
+def _decode_int8_detection_heads(outputs, conf_thresh: float, iou_thresh: float,
+                                 scale: float, left: int, top: int) -> np.ndarray:
+    candidates = []
+    for raw_head, anchors in zip(outputs, _RAW_HEAD_ANCHORS):
+        raw_head = np.asarray(raw_head, dtype=np.float32)
+        if raw_head.ndim != 4 or raw_head.shape[1] != 45:
+            return np.empty((0, 14), dtype=np.float32)
+        _, _, height, width = raw_head.shape
+        head = raw_head.reshape(1, 3, 15, height, width)[0].transpose(0, 2, 3, 1)
+        grid_x, grid_y = np.meshgrid(np.arange(width), np.arange(height))
+        grid = np.stack((grid_x, grid_y), axis=-1)[None]
+        stride = 640.0 / width
+        head[..., :5] = 1.0 / (1.0 + np.exp(-head[..., :5]))
+        head[..., 13:] = 1.0 / (1.0 + np.exp(-head[..., 13:]))
+        scores = head[..., 4] * np.max(head[..., 13:], axis=-1)
+        anchor = anchors[:, None, None, :]
+        centers = (head[..., :2] * 2.0 - 0.5 + grid) * stride
+        sizes = (head[..., 2:4] * 2.0) ** 2 * anchor
+        landmarks = head[..., 5:13].reshape(3, height, width, 4, 2)
+        landmarks = landmarks * anchor[..., None, :] + grid[..., None, :] * stride
+        for anchor_index, row, column in zip(*np.where(scores > float(conf_thresh))):
+            center_x, center_y = centers[anchor_index, row, column]
+            box_width, box_height = sizes[anchor_index, row, column]
+            candidates.append([
+                center_x - box_width / 2.0,
+                center_y - box_height / 2.0,
+                center_x + box_width / 2.0,
+                center_y + box_height / 2.0,
+                scores[anchor_index, row, column],
+                *landmarks[anchor_index, row, column].reshape(-1),
+                np.argmax(head[anchor_index, row, column, 13:]),
+            ])
+    if not candidates:
+        return np.empty((0, 14), dtype=np.float32)
+    detections = np.asarray(candidates, dtype=np.float32)
+    detections = detections[_nms(detections, float(iou_thresh))]
+    return _restore_box(detections, scale, left, top).astype(np.float32)
+
+
 def _order_points(pts: np.ndarray) -> np.ndarray:
     rect = np.zeros((4, 2), dtype=np.float32)
     s = pts.sum(axis=1)
@@ -139,6 +183,21 @@ def _decode_plate(indices: Sequence[int]) -> str:
             out.append(_PLATE_NAME[idx])
         prev = idx
     return "".join(out)
+
+
+def _decode_plate_with_confidence(indices: Sequence[int], confidences: Sequence[float]) -> Tuple[str, float]:
+    prev = 0
+    chars = []
+    selected_confidences = []
+    for value, confidence in zip(indices, confidences):
+        index = int(value)
+        if index != 0 and index != prev and 0 <= index < len(_PLATE_NAME):
+            chars.append(_PLATE_NAME[index])
+            selected_confidences.append(float(confidence))
+        prev = index
+    if not selected_confidences:
+        return '', 0.0
+    return ''.join(chars), float(sum(selected_confidences) / len(selected_confidences))
 
 
 class DualPlateRecognizer:
@@ -217,7 +276,7 @@ class DualPlateRecognizer:
             self._rec_shape_logged = True
         else:
             return
-        print(f"[plate-lpr] {kind} output shapes: {self._shape_list(outputs)}")
+        print(f"[dual-plate] {kind} output shapes: {self._shape_list(outputs)}")
 
     def _warn_shape_once(self, kind: str, message: str) -> None:
         if kind == "detect":
@@ -230,7 +289,7 @@ class DualPlateRecognizer:
             self._rec_shape_warned = True
         else:
             return
-        print(f"[plate-lpr] {kind} output shape warning: {message}")
+        print(f"[dual-plate] {kind} output shape warning: {message}")
 
     def _detect(self, frame_bgr: np.ndarray, conf_thresh: float, iou_thresh: float) -> np.ndarray:
         img_letterbox, r, left, top = _letter_box(frame_bgr, (640, 640))
@@ -240,6 +299,20 @@ class DualPlateRecognizer:
         self._log_shapes_once("detect", outputs)
         if not outputs:
             return np.empty((0, 14), dtype=np.float32)
+
+        if len(outputs) == 3 and all(np.asarray(item).ndim == 4 for item in outputs):
+            expected_channels = 45
+            invalid_heads = [
+                tuple(np.asarray(item).shape) for item in outputs
+                if np.asarray(item).shape[0] != 1 or np.asarray(item).shape[1] != expected_channels
+            ]
+            if invalid_heads:
+                self._warn_shape_once(
+                    'detect',
+                    f'unsupported INT8 raw-head schema, expected [1,{expected_channels},H,W], got {invalid_heads}',
+                )
+                return np.empty((0, 14), dtype=np.float32)
+            return _decode_int8_detection_heads(outputs, conf_thresh, iou_thresh, r, left, top)
 
         dets = outputs[0]
         if dets is None:
@@ -279,9 +352,15 @@ class DualPlateRecognizer:
             return np.zeros_like(vec, dtype=np.float32)
         return (exp_v / denom).astype(np.float32)
 
-    def _recognize(self, plate_bgr: np.ndarray) -> Tuple[str, str, float]:
+    @staticmethod
+    def _softmax_rows(logits: np.ndarray) -> np.ndarray:
+        shifted = logits - np.max(logits, axis=1, keepdims=True)
+        exp_values = np.exp(shifted).astype(np.float32)
+        return exp_values / np.maximum(np.sum(exp_values, axis=1, keepdims=True), 1e-12)
+
+    def _recognize(self, plate_bgr: np.ndarray) -> Tuple[str, str, float, float]:
         if not _is_viable_plate_roi(plate_bgr):
-            return "", "", 0.0
+            return "", "", 0.0, 0.0
 
         plate = resize_bgr(plate_bgr, (168, 48))
         inp = np.expand_dims(plate, axis=0).astype(np.uint8)
@@ -289,13 +368,13 @@ class DualPlateRecognizer:
         self._log_shapes_once("recognize", outputs)
         if not outputs or len(outputs) < 2:
             self._warn_shape_once("recognize", f"expected plate logits and color logits, got {self._shape_list(outputs)}")
-            return "", "", 0.0
+            return "", "", 0.0, 0.0
 
         plate_logits = outputs[0]
         color_logits = outputs[1]
         if plate_logits is None or color_logits is None:
             self._warn_shape_once("recognize", f"got None output: {self._shape_list(outputs)}")
-            return "", "", 0.0
+            return "", "", 0.0, 0.0
 
         plate_logits = np.asarray(plate_logits, dtype=np.float32)
         color_logits = np.asarray(color_logits, dtype=np.float32)
@@ -303,27 +382,30 @@ class DualPlateRecognizer:
             plate_logits = plate_logits[0]
         if plate_logits.ndim != 2:
             self._warn_shape_once("recognize", f"plate logits must be 2D after batch squeeze, got {plate_logits.shape}")
-            return "", "", 0.0
+            return "", "", 0.0, 0.0
 
         if plate_logits.shape[1] == len(_PLATE_NAME):
-            token_ids = np.argmax(plate_logits, axis=1)
+            normalized_logits = plate_logits
         elif plate_logits.shape[0] == len(_PLATE_NAME):
-            token_ids = np.argmax(plate_logits, axis=0)
+            normalized_logits = plate_logits.transpose(1, 0)
         else:
             self._warn_shape_once(
                 "recognize",
                 f"plate logits must be [T,C] or [C,T] with C={len(_PLATE_NAME)}, got {plate_logits.shape}",
             )
-            return "", "", 0.0
+            return "", "", 0.0, 0.0
 
-        text = _decode_plate(token_ids)
+        token_probabilities = self._softmax_rows(normalized_logits)
+        token_ids = np.argmax(token_probabilities, axis=1)
+        token_confidences = np.max(token_probabilities, axis=1)
+        text, text_confidence = _decode_plate_with_confidence(token_ids, token_confidences)
         color_probs = self._softmax_1d(color_logits)
         if color_probs.size == 0:
-            return text, "", 0.0
+            return text, "", 0.0, text_confidence
         color_idx = int(np.argmax(color_probs))
         plate_color = _PLATE_COLORS[color_idx] if 0 <= color_idx < len(_PLATE_COLORS) else ""
         plate_color_conf = float(color_probs[color_idx]) if 0 <= color_idx < color_probs.size else 0.0
-        return text, plate_color, plate_color_conf
+        return text, plate_color, plate_color_conf, text_confidence
 
     def infer_frame(
         self,
@@ -343,20 +425,21 @@ class DualPlateRecognizer:
 
             roi = _four_point_transform(frame_bgr, landmarks_np)
             if not _is_viable_plate_roi(roi):
-                text, plate_color, plate_color_conf = "", "", 0.0
+                text, plate_color, plate_color_conf, plate_text_conf = "", "", 0.0, 0.0
             else:
                 if plate_type_id == 1:
                     roi = _split_merge_double_plate(roi)
                 if not _is_viable_plate_roi(roi):
-                    text, plate_color, plate_color_conf = "", "", 0.0
+                    text, plate_color, plate_color_conf, plate_text_conf = "", "", 0.0, 0.0
                 else:
-                    text, plate_color, plate_color_conf = self._recognize(roi)
+                    text, plate_color, plate_color_conf, plate_text_conf = self._recognize(roi)
 
             results.append(
                 {
                     "box": box,
                     "landmarks": landmarks_np.tolist(),
                     "text": text or "",
+                    "plate_text_conf": float(plate_text_conf),
                     "plate_color": plate_color or "",
                     "plate_color_conf": float(plate_color_conf),
                     "plate_type": plate_type,

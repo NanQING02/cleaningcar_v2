@@ -596,7 +596,10 @@
               vehicle_shrink_ratio: 0.35,
               vehicle_lock_min_votes: 40,
               vehicle_lock_on_confirm: true,
-              plate_lock_frames: 6,
+              plate_track_lock_frames: 6,
+              event_plate_lock_frames: 6,
+              event_plate_fast_lock_frames: 3,
+              event_plate_fast_speed_threshold: 10.0,
               plate_output_shape_log_once: true,
               plate_draw_stable_only: true,
               default_plate_color: '',
@@ -1047,7 +1050,10 @@
           this.form.logic.vehicle_shrink_ratio = Number(this.form.logic.vehicle_shrink_ratio || 0.35);
           this.form.logic.vehicle_lock_min_votes = Number(this.form.logic.vehicle_lock_min_votes || 40);
           this.form.logic.vehicle_lock_on_confirm = !!this.form.logic.vehicle_lock_on_confirm;
-          this.form.logic.plate_lock_frames = Number(this.form.logic.plate_lock_frames || 6);
+          this.form.logic.plate_track_lock_frames = Number(this.form.logic.plate_track_lock_frames || 6);
+          this.form.logic.event_plate_lock_frames = Number(this.form.logic.event_plate_lock_frames || 6);
+          this.form.logic.event_plate_fast_lock_frames = Number(this.form.logic.event_plate_fast_lock_frames || 3);
+          this.form.logic.event_plate_fast_speed_threshold = Number(this.form.logic.event_plate_fast_speed_threshold || 10.0);
           this.form.logic.plate_output_shape_log_once = (typeof this.form.logic.plate_output_shape_log_once === 'undefined') ? true : !!this.form.logic.plate_output_shape_log_once;
           this.form.logic.plate_draw_stable_only = (typeof this.form.logic.plate_draw_stable_only === 'undefined') ? true : !!this.form.logic.plate_draw_stable_only;
           this.form.logic.plate_core_mask = this.form.logic.plate_core_mask || '';
@@ -1200,7 +1206,10 @@
               vehicle_shrink_ratio: this.form.logic.vehicle_shrink_ratio,
               vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
               vehicle_lock_on_confirm: this.form.logic.vehicle_lock_on_confirm,
-              plate_lock_frames: this.form.logic.plate_lock_frames,
+              plate_track_lock_frames: this.form.logic.plate_track_lock_frames,
+              event_plate_lock_frames: this.form.logic.event_plate_lock_frames,
+              event_plate_fast_lock_frames: this.form.logic.event_plate_fast_lock_frames,
+              event_plate_fast_speed_threshold: this.form.logic.event_plate_fast_speed_threshold,
               plate_output_shape_log_once: this.form.logic.plate_output_shape_log_once,
               plate_draw_stable_only: this.form.logic.plate_draw_stable_only,
               plate_core_mask: this.form.logic.plate_core_mask,

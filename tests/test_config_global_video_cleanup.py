@@ -205,7 +205,9 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             manager = ConfigManager(path)
 
-            self.assertEqual(manager.logic["plate_lock_frames"], 6)
+            self.assertEqual(manager.logic["plate_track_lock_frames"], 6)
+            self.assertEqual(manager.logic["event_plate_lock_frames"], 6)
+            self.assertEqual(manager.logic["event_plate_fast_lock_frames"], 3)
             self.assertTrue(manager.logic["plate_output_shape_log_once"])
             self.assertTrue(manager.logic["plate_draw_stable_only"])
             self.assertEqual(manager.logic["shadow_plate_pool"]["text_window_frames"], 50)

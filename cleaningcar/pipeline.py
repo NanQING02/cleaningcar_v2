@@ -1,5 +1,6 @@
 import atexit
 import csv
+from math import hypot
 import os
 import threading
 import time
@@ -126,15 +127,52 @@ def _ensure_plate_binding_state(frame_idx, state=None):
     return state
 
 
-def _plate_car_match_score(plate_box, car_box):
+def _plate_car_match_score(plate_box, car_box, frame_size=None):
     if plate_box is None or car_box is None:
         return 0.0
     px1, py1, px2, py2 = plate_box
+    cx1, cy1, cx2, cy2 = car_box
     pcenter = ((px1 + px2) * 0.5, (py1 + py2) * 0.5)
     score = float(box_iou(plate_box, car_box))
     if point_in_box(pcenter, car_box):
         score = max(score, 1.0)
+    if frame_size is not None and score > 0.0:
+        frame_width, frame_height = frame_size
+        car_width = max(float(cx2) - float(cx1), 1.0)
+        car_height = max(float(cy2) - float(cy1), 1.0)
+        truncated = (
+            float(cx1) <= 2.0
+            or float(cy1) <= 2.0
+            or float(cx2) >= float(frame_width) - 2.0
+            or float(cy2) >= float(frame_height) - 2.0
+        )
+        oversized = car_width >= float(frame_width) * 0.85 or car_height >= float(frame_height) * 0.85
+        vertical_ratio = (pcenter[1] - float(cy1)) / car_height
+        if truncated and oversized and vertical_ratio < 0.35:
+            return 0.0
     return score
+
+
+def _plate_box_mutual_score(dual_plate_box, primary_plate_box):
+    if dual_plate_box is None or primary_plate_box is None:
+        return 0.0
+    iou = float(box_iou(dual_plate_box, primary_plate_box))
+    dual_center = (
+        0.5 * (float(dual_plate_box[0]) + float(dual_plate_box[2])),
+        0.5 * (float(dual_plate_box[1]) + float(dual_plate_box[3])),
+    )
+    primary_center = (
+        0.5 * (float(primary_plate_box[0]) + float(primary_plate_box[2])),
+        0.5 * (float(primary_plate_box[1]) + float(primary_plate_box[3])),
+    )
+    dual_width = max(float(dual_plate_box[2]) - float(dual_plate_box[0]), 1.0)
+    dual_height = max(float(dual_plate_box[3]) - float(dual_plate_box[1]), 1.0)
+    primary_width = max(float(primary_plate_box[2]) - float(primary_plate_box[0]), 1.0)
+    primary_height = max(float(primary_plate_box[3]) - float(primary_plate_box[1]), 1.0)
+    center_distance = hypot(dual_center[0] - primary_center[0], dual_center[1] - primary_center[1])
+    scale = max(hypot(dual_width, dual_height), hypot(primary_width, primary_height), 1.0)
+    center_score = max(0.0, 1.0 - center_distance / (scale * 1.5))
+    return max(iou, center_score)
 
 
 def _stabilize_plate_binding(
@@ -302,7 +340,10 @@ def _append_pending_plate_candidate(
     plate_color='',
     plate_color_conf=None,
     plate_type='',
-    trusted=True,
+    text_conf=None,
+    mutual_verified=False,
+    motion_consistent=False,
+    trusted=False,
     max_entries=30,
 ):
     plate_id = _normalize_track_id(plate_id)
@@ -324,6 +365,9 @@ def _append_pending_plate_candidate(
         'plate_color': str(plate_color or ''),
         'plate_color_conf': plate_color_conf,
         'plate_type': str(plate_type or ''),
+        'text_conf': text_conf,
+        'mutual_verified': bool(mutual_verified),
+        'motion_consistent': bool(motion_consistent),
         'trusted': bool(trusted),
     })
     return True
@@ -594,10 +638,13 @@ def process_video(path, args):
         os.makedirs(output_dir, exist_ok=True)
     csv_writer = None
     csv_f = None
-    plate_lock_frames = int(getattr(args, 'plate_lock_frames', 2))
+    plate_track_lock_frames = int(getattr(args, 'plate_track_lock_frames', 6))
     plate_tracker = PlateTextTracker(
-        lock_frames=plate_lock_frames,
-        max_age=max(int(config.get('track_timeout_frames', 60)) * 2, plate_lock_frames * 6)
+        lock_frames=plate_track_lock_frames,
+        max_age=max(int(config.get('track_timeout_frames', 60)) * 2, plate_track_lock_frames * 6),
+        min_detection_confidence=float(logic_cfg.get('plate_text_min_detection_confidence', 0.65)),
+        min_recognition_confidence=float(logic_cfg.get('plate_text_min_recognition_confidence', 0.75)),
+        max_streak_gap_frames=max(1, int(logic_cfg.get('plate_text_max_streak_gap_frames', 2))),
     )
     vehicle_iou_thresh = float(config.get('vehicle_iou_threshold', 0.3))
     if vehicle_iou_thresh < 0.0:
@@ -1999,14 +2046,21 @@ def process_video(path, args):
                     next_frame_to_write,
                     pending_plate_cache_ttl_frames,
                 )
-                license_dets = [d for d in det_payload if d.get('cls') == LICENSE_CLASS] if det_payload else []
+                license_dets = [
+                    detection for detection in det_payload
+                    if detection.get('cls') == LICENSE_CLASS and detection.get('source') == 'dual_plate'
+                ] if det_payload else []
+                primary_plate_dets = [
+                    detection for detection in det_payload
+                    if detection.get('cls') == LICENSE_CLASS and detection.get('source') == 'primary_plate_aux'
+                ] if det_payload else []
                 if license_dets and car_boxes:
                     for det in license_dets:
                         best_id = None
                         best_score = 0.0
                         plate_box = det['box']
                         for car_id, cbox in car_boxes.items():
-                            score = _plate_car_match_score(plate_box, cbox)
+                            score = _plate_car_match_score(plate_box, cbox, frame_size=(width, height))
                             if score > best_score:
                                 best_score = score
                                 best_id = car_id
@@ -2014,11 +2068,18 @@ def process_video(path, args):
                             det['candidate_car_track'] = best_id
                             det['candidate_score'] = float(best_score)
                             det['vehicle_box_candidate'] = car_boxes[best_id]
+                        mutual_score = max(
+                            (_plate_box_mutual_score(det['box'], primary_det['box']) for primary_det in primary_plate_dets),
+                            default=0.0,
+                        )
+                        det['primary_plate_mutual_score'] = float(mutual_score)
+                        det['primary_plate_verified'] = bool(mutual_score >= 0.20)
                 plate_track_info = {}
                 updates = plate_tracker.update(next_frame_to_write, license_dets)
                 for det, upd in zip(license_dets, updates):
                     plate_id = upd.get('track_id', -1)
                     text_val = upd.get('text', '')
+                    text_conf_val = upd.get('plate_text_conf')
                     is_guess = bool(upd.get('is_guess', False))
                     det['raw_text'] = str(det.get('raw_text', det.get('text', '')) or '')
                     row_idx = det.get('row_idx', -1)
@@ -2035,7 +2096,9 @@ def process_video(path, args):
                         locked_car_id = _normalize_track_id(state.get('locked_car_id'))
                         locked_score = None
                         if locked_car_id is not None and locked_car_id in car_boxes:
-                            locked_score = _plate_car_match_score(det['box'], car_boxes[locked_car_id])
+                            locked_score = _plate_car_match_score(
+                                det['box'], car_boxes[locked_car_id], frame_size=(width, height)
+                            )
                         _stabilize_plate_binding(
                             state,
                             frame_idx=next_frame_to_write,
@@ -2043,6 +2106,16 @@ def process_video(path, args):
                             candidate_score=float(det.get('candidate_score', 0.0)),
                             locked_score=locked_score,
                         )
+                        event_manager.trace_record('plate_binding', {
+                            'frameIdx': int(next_frame_to_write),
+                            'plateTrackId': int(plate_id),
+                            'candidateCarTrackId': det.get('candidate_car_track', -1),
+                            'candidateScore': float(det.get('candidate_score', 0.0) or 0.0),
+                            'lockedCarTrackId': locked_car_id,
+                            'lockedScore': locked_score,
+                            'plateBox': det.get('box'),
+                            'plateText': text_val,
+                        })
                         locked_car_id = _normalize_track_id(state.get('locked_car_id'))
                         resolved_track = locked_car_id if locked_car_id is not None else plate_id
                         if row_idx is not None and 0 <= row_idx < len(rows):
@@ -2077,12 +2150,17 @@ def process_video(path, args):
                                 plate_color=det.get('plate_color', ''),
                                 plate_color_conf=det.get('plate_color_conf'),
                                 plate_type=det.get('plate_type', ''),
-                                trusted=True,
+                                text_conf=det.get('plate_text_conf'),
+                                mutual_verified=bool(det.get('primary_plate_verified', False)),
+                                trusted=False,
                                 max_entries=pending_plate_cache_max_entries,
                             )
                         plate_track_info[plate_id] = {
                             'box': det['box'],
                             'text': text_val,
+                            'text_conf': text_conf_val,
+                            'primary_plate_verified': bool(det.get('primary_plate_verified', False)),
+                            'primary_plate_mutual_score': float(det.get('primary_plate_mutual_score', 0.0) or 0.0),
                             'is_guess': is_guess,
                             'vehicle_box': vehicle_box,
                             'score': float(det.get('score', 0.0)),
@@ -2143,6 +2221,8 @@ def process_video(path, args):
                         vehicle_label=car_labels.get(track_key, ''),
                         vehicle_conf=None,
                         plate_conf=info.get('score'),
+                        plate_text_conf=info.get('text_conf'),
+                        plate_mutual_verified=bool(info.get('primary_plate_verified', False)),
                         confirmed=confirmed_alias,
                         cleaning_label=cleaning_label,
                         anchor_point=anchor_pt,

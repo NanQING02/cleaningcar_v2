@@ -143,6 +143,8 @@ class DetectWorker(threading.Thread):
                 primary_boxes = np.empty((0, 4), dtype=np.float32)
                 primary_scores = np.empty((0,), dtype=np.float32)
                 primary_classes = np.empty((0,), dtype=np.int32)
+                primary_plate_boxes = np.empty((0, 4), dtype=np.float32)
+                primary_plate_scores = np.empty((0,), dtype=np.float32)
 
                 if outputs:
                     boxes, classes, scores = self.detector_postprocessor.postprocess(outputs)
@@ -162,6 +164,9 @@ class DetectWorker(threading.Thread):
                             primary_boxes = boxes[primary_keep]
                             primary_scores = scores[primary_keep]
                             primary_classes = classes[primary_keep]
+                            primary_plate_mask = classes == LICENSE_CLASS
+                            primary_plate_boxes = boxes[primary_plate_mask]
+                            primary_plate_scores = scores[primary_plate_mask]
 
                 for box, score, cls_id in zip(primary_boxes, primary_scores, primary_classes):
                     x1, y1, x2, y2 = box.astype(int)
@@ -198,6 +203,24 @@ class DetectWorker(threading.Thread):
                         }
                     )
 
+                for box, score in zip(primary_plate_boxes, primary_plate_scores):
+                    x1, y1, x2, y2 = box.astype(int)
+                    det_payload.append(
+                        {
+                            "cls": int(LICENSE_CLASS),
+                            "score": float(score),
+                            "box": [int(x1), int(y1), int(x2), int(y2)],
+                            "text": "",
+                            "raw_text": "",
+                            "plate_color": "",
+                            "plate_color_conf": None,
+                            "plate_type": "",
+                            "source": "primary_plate_aux",
+                            "row_idx": -1,
+                            "label": CLASS_NAMES[LICENSE_CLASS],
+                        }
+                    )
+
                 dual_plate_results = []
                 should_run_plate = (frame_idx % self.plate_infer_stride == 0)
                 if self.plate_requires_vehicle and not has_vehicle_candidates:
@@ -221,6 +244,11 @@ class DetectWorker(threading.Thread):
                     label_name = CLASS_NAMES[LICENSE_CLASS]
                     score = float(item.get("score", 0.0))
                     plate_text = str(item.get("text", "") or "")
+                    raw_text_conf = item.get("plate_text_conf")
+                    try:
+                        plate_text_conf = float(raw_text_conf) if raw_text_conf is not None else None
+                    except (TypeError, ValueError):
+                        plate_text_conf = None
                     plate_color = str(item.get("plate_color", "") or "")
                     raw_color_conf = item.get("plate_color_conf")
                     try:
@@ -269,10 +297,12 @@ class DetectWorker(threading.Thread):
                             "box": [x1, y1, x2, y2],
                             "text": plate_text,
                             "raw_text": plate_text,
+                            "plate_text_conf": plate_text_conf,
                             "plate_color": plate_color,
                             "plate_color_conf": plate_color_conf,
                             "plate_type": plate_type,
                             "landmarks": item.get("landmarks"),
+                            "source": "dual_plate",
                             "row_idx": len(csv_rows) - 1,
                             "label": label_name,
                         }

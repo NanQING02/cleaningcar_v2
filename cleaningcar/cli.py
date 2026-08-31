@@ -41,10 +41,11 @@ def parse_args():
     ap.add_argument('--monitor_interval', type=float, default=0.0, help='Seconds between resource logs (0 disables).')
     ap.add_argument('--limit', type=int, default=0, help='Optional frame limit for quick tests.')
     ap.add_argument('--plate_detect_model', default='models/plate/plate_detect.rknn',
-                    help='Path to plate detection RKNN used by the dual-model LPR pipeline.')
+                    help='Path to the detection RKNN used by the dual-model plate pipeline.')
     ap.add_argument('--plate_rec_model', default='models/plate/plate_rec_color.rknn',
-                    help='Path to plate text/color RKNN used by the dual-model LPR pipeline.')
-    ap.add_argument('--plate_lock_frames', type=int, default=5, help='Frames required before plate text is locked.')
+                    help='Path to the recognition/color RKNN used by the dual-model plate pipeline.')
+    ap.add_argument('--plate_track_lock_frames', type=int, default=6,
+                    help='Consecutive high-confidence observations required by the plate-box tracker.')
     ap.add_argument('--plate_infer_stride', type=int, default=1,
                     help='Run dual-plate inference every N frames (>=1) to reduce CPU load.')
     ap.add_argument('--plate_core_mask', default='auto',
