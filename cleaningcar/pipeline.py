@@ -1459,7 +1459,9 @@ def process_video(path, args):
         monitor_thread.start()
 
     def close_per_id_writer(track_id, track_state):
-        writer = per_id_writers.pop(track_id, None)
+        lifecycle = event_manager.lifecycle_manager.get(track_id)
+        writer_key = lifecycle.event_id if lifecycle is not None else track_state.get('session_id', track_id)
+        writer = per_id_writers.pop(writer_key, None)
         if writer is None:
             return False
         return finalize_per_id_recording(
@@ -1521,9 +1523,20 @@ def process_video(path, args):
         except Exception:
             pass
         if enable_per_id_video and per_id_writers:
-            for tid in list(per_id_writers.keys()):
-                track_state = event_manager.tracks.get(tid) or {}
-                close_per_id_writer(tid, track_state)
+            for writer_key in list(per_id_writers.keys()):
+                track_item = next(
+                    (
+                        (tid, state) for tid, state in event_manager.tracks.items()
+                        if state.get('session_id') == writer_key
+                    ),
+                    None,
+                )
+                if track_item is None:
+                    writer = per_id_writers.pop(writer_key, None)
+                    if writer is not None:
+                        writer.release()
+                    continue
+                close_per_id_writer(*track_item)
         elif not enable_per_id_video:
             for tid, track_state in list(event_manager.tracks.items()):
                 emit_per_id_video_type6(
@@ -1937,6 +1950,7 @@ def process_video(path, args):
                 vehicle_dets = []
                 vehicle_payload_refs = []
                 car_boxes = {}
+                car_labels = {}
                 water_boxes = []
                 cleaning_label = ''
                 if det_payload:
@@ -1975,6 +1989,7 @@ def process_video(path, args):
                 for det_ref, track_id in zip(vehicle_payload_refs, assignments):
                     det_ref['track_id'] = track_id
                     car_boxes[track_id] = det_ref['box']
+                    car_labels[track_id] = det_ref.get('label', '')
                     row_idx = det_ref.get('row_idx', -1)
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = track_id
@@ -2099,6 +2114,11 @@ def process_video(path, args):
                 t_before_updates = time.perf_counter()
                 for plate_id, info in plate_track_info.items():
                     car_id = plate_to_car.get(plate_id, info.get('car_id', -1))
+                    if car_id <= 0:
+                        det_ref = info.get('det_ref')
+                        if det_ref is not None:
+                            det_ref['track_id'] = -1
+                        continue
                     track_key = car_id if car_id > 0 else plate_id
                     vehicle_box = info.get('vehicle_box')
                     if vehicle_box is None:
@@ -2120,7 +2140,7 @@ def process_video(path, args):
                         water_boxes,
                         bool(water_boxes),
                         is_plate=True,
-                        vehicle_label=None,
+                        vehicle_label=car_labels.get(track_key, ''),
                         vehicle_conf=None,
                         plate_conf=info.get('score'),
                         confirmed=confirmed_alias,
@@ -2306,7 +2326,13 @@ def process_video(path, args):
                 ensure_benchmark_recording_track(next_frame_to_write, capture_ts)
                 maybe_force_benchmark_capture(next_frame_to_write, event_frame_for_idx)
                 if enable_per_id_video and frame_out is not None:
+                    written_lifecycle_ids = set()
                     for tid, st in event_manager.tracks.items():
+                        lifecycle = event_manager.lifecycle_manager.get(tid)
+                        writer_key = lifecycle.event_id if lifecycle is not None else st.get('session_id', tid)
+                        if writer_key in written_lifecycle_ids:
+                            continue
+                        written_lifecycle_ids.add(writer_key)
                         start_f = st.get('record_start_frame')
                         stop_f = st.get('record_stop_frame')
                         if start_f is None:
@@ -2316,7 +2342,7 @@ def process_video(path, args):
                             continue
                         if next_frame_to_write < start_f:
                             continue
-                        writer = per_id_writers.get(tid)
+                        writer = per_id_writers.get(writer_key)
                         if writer is None:
                             st_capture_time = st.get('type1_capture_time')
                             if not st_capture_time:
@@ -2339,7 +2365,7 @@ def process_video(path, args):
                                 session_id = f"{device_name}-{ts_str}-{tid}"
                             writer_obj = build_per_id_writer(tid, st, dt, session_id)
                             if writer_obj is not None:
-                                per_id_writers[tid] = writer_obj
+                                per_id_writers[writer_key] = writer_obj
                                 writer = writer_obj
                             else:
                                 writer = None
@@ -2371,9 +2397,10 @@ def process_video(path, args):
                 _advance_dropped_frames()
                 t_before_flush = time.perf_counter()
                 event_manager.flush_inactive(
-                    alias_seen | retained_track_ids,
+                    alias_seen,
                     next_frame_to_write,
                     finalize_per_id_for_track,
+                    capture_ts=capture_ts,
                 )
                 anchor_estimator.cleanup(next_frame_to_write, config.get('track_timeout_frames', 60))
                 t_after_flush = time.perf_counter()

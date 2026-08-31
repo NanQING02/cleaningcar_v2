@@ -16,6 +16,7 @@ from utils.upload_queue import SQLiteUploadQueue
 from .constants import VEHICLE_LABEL_CN, WHEEL_CLASS_NAME_TO_CLEAN_VALUE, WHEEL_SIDE_TO_PHOTO_TYPE
 from .event_trace import EventTraceRecorder
 from .log_throttle import WindowedLogThrottler
+from .lifecycle import BusinessLifecycleManager
 from .npu_monitor import format_npu_status, snapshot_npu_status
 from .plate import is_valid_plate, normalize_plate_candidate_text, normalize_plate_text
 from .resize_accel import resize_bgr
@@ -276,6 +277,10 @@ class EventManager:
         self.wheel_photo_uploader = wheel_photo_uploader
         self.wheel_photo_base_dir = Path(wheel_photo_base_dir) if wheel_photo_base_dir else Path('/data/ftp')
         self.session_id = str(session_id or '').strip()
+        self.lifecycle_manager = BusinessLifecycleManager(
+            self.camera_id,
+            grace_seconds=float(self.logic.get('track_lost_grace_seconds', 8.0) or 8.0),
+        )
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
         wheel_cfg = config.get('wheel', {}) or {}
@@ -402,6 +407,87 @@ class EventManager:
         except Exception:
             return
 
+    def _capture_timestamp(self, frame_idx):
+        timing = self.frame_timing.get(int(frame_idx))
+        return timing[0] if timing else None
+
+    def _lifecycle_zone_edge(self, anchor_point, plate_box):
+        point = anchor_point
+        if point is None and plate_box is not None and len(plate_box) >= 4:
+            point = (
+                0.5 * (float(plate_box[0]) + float(plate_box[2])),
+                0.5 * (float(plate_box[1]) + float(plate_box[3])),
+            )
+        if point is None:
+            return ''
+        try:
+            ratio = float(self.zone_mgr._relative_position(point))
+        except (AttributeError, TypeError, ValueError):
+            return ''
+        return 'flow_start' if ratio <= 0.5 else 'flow_end'
+
+    def _observe_lifecycle(self, track_id, track_state, frame_idx, vehicle_label,
+                           plate_box, anchor_point, plate_is_guess, anchor_direction):
+        capture_ts = self._capture_timestamp(frame_idx)
+        if capture_ts is None:
+            return None
+        vehicle_class = str(track_state.get('vehicle_cls_locked') or track_state.get('vehicle_cls') or vehicle_label or '')
+        locked_plate = str(track_state.get('plate_text_locked') or '')
+        has_valid_plate = bool(locked_plate and not track_state.get('plate_text_locked_is_guess') and not plate_is_guess)
+        motion_direction = str((anchor_direction or {}).get('motion_direction', 'unknown') or 'unknown')
+        plate_edge = self._lifecycle_zone_edge(anchor_point, plate_box)
+        lifecycle = self.lifecycle_manager.get(track_id)
+        if lifecycle is None and has_valid_plate and vehicle_class and not track_state.get('handoff_attempted'):
+            track_state['handoff_attempted'] = True
+            candidates = self.lifecycle_manager.find_handoff_candidates(
+                vehicle_class,
+                capture_ts,
+                plate_edge,
+                plate_box,
+                has_valid_plate=True,
+                motion_direction=motion_direction,
+            )
+            if len(candidates) == 1:
+                lifecycle = candidates[0]
+                from_track_id = next(iter(lifecycle.tracker_ids), 0)
+                previous_state = self.tracks.get(from_track_id) or {}
+                lifecycle = self.lifecycle_manager.handoff(lifecycle, track_id, capture_ts)
+                if lifecycle is not None:
+                    track_state['session_id'] = lifecycle.event_id
+                    track_state['_lifecycle_handoff_from'] = int(from_track_id)
+                    track_state['events'] = set(lifecycle.stages)
+                    track_state['event_stage_max'] = max(lifecycle.stages) if lifecycle.stages else 0
+                    for field in ('record_start_frame', 'record_stop_frame', 'type1_capture_time'):
+                        if field in previous_state:
+                            track_state[field] = previous_state[field]
+                    track_state['type2_qualified'] = 2 in lifecycle.stages
+                    previous_state['_lifecycle_superseded'] = True
+                    self.trace_record('lifecycle_handoff', {
+                        'frameIdx': int(frame_idx),
+                        'trackId': int(track_id),
+                        'eventId': lifecycle.event_id,
+                        'fromTrackId': int(from_track_id),
+                        'reason': 'unique_plate_verified_candidate',
+                    })
+            elif len(candidates) > 1:
+                self.trace_record('lifecycle_handoff_rejected', {
+                    'frameIdx': int(frame_idx),
+                    'trackId': int(track_id),
+                    'reason': 'ambiguous_candidates',
+                    'candidateCount': len(candidates),
+                })
+        if lifecycle is not None:
+            self.lifecycle_manager.touch(
+                track_id,
+                capture_ts=capture_ts,
+                vehicle_class=vehicle_class,
+                plate_text=locked_plate if has_valid_plate else '',
+                plate_box=plate_box if has_valid_plate else None,
+                plate_edge=plate_edge,
+                motion_direction=motion_direction,
+            )
+        return lifecycle
+
     def frame_timestamp(self, frame_idx):
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -494,6 +580,8 @@ class EventManager:
                      plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None,
                      anchor_direction=None):
         if track_id <= 0:
+            return
+        if self.disable_plate_only_events and is_plate and vehicle_box is None:
             return
         previous_state = self.tracks.get(track_id) or {}
         self.trace_record('track_input', {
@@ -607,6 +695,7 @@ class EventManager:
             'wheel_activity_start_ts': None,
             'wheel_activity_last_ts': None,
             'wheel_activity_end_ts': None,
+            'handoff_attempted': False,
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -677,6 +766,16 @@ class EventManager:
             plate_type=plate_type,
         )
         self._sync_plate_legacy_fields(st)
+        self._observe_lifecycle(
+            track_id,
+            st,
+            frame_idx,
+            vehicle_label,
+            plate_box,
+            anchor_point,
+            plate_is_guess,
+            anchor_direction,
+        )
         if confirmed:
             st['confirmed'] = True
             if self.vehicle_lock_on_confirm and st.get('vehicle_cls_locked'):
@@ -1009,7 +1108,8 @@ class EventManager:
                 if prev_stop is None or stop_frame > prev_stop:
                     st['record_stop_frame'] = stop_frame
             if self.uploader:
-                track_key = f'{self.camera_id}_{track_id}'
+                lifecycle = self.lifecycle_manager.get(track_id)
+                track_key = lifecycle.event_id if lifecycle is not None else f'{self.camera_id}_{track_id}'
                 buffer = self.upload_buffer.pop(track_key, [])
                 if buffer:
                     updated = []
@@ -1050,13 +1150,35 @@ class EventManager:
                     self.upload_qualified.add(track_key)
             st['closed'] = True
 
-    def flush_inactive(self, active_ids, frame_idx, on_track_timeout=None, timeout_reason='track_lost'):
+    def flush_inactive(self, active_ids, frame_idx, on_track_timeout=None, timeout_reason='track_lost',
+                       capture_ts=None):
         active_ids = active_ids or set()
         to_remove = []
         for tid, st in self.tracks.items():
             if tid in active_ids:
                 continue
-            if frame_idx - st.get('last_frame_idx', frame_idx) >= self.timeout_frames:
+            if st.get('_lifecycle_superseded'):
+                to_remove.append(tid)
+                continue
+            lifecycle = self.lifecycle_manager.get(tid)
+            now_capture_ts = capture_ts if capture_ts is not None else self._capture_timestamp(frame_idx)
+            if lifecycle is not None and now_capture_ts is not None:
+                if lifecycle.active_tracker_id == tid:
+                    self.lifecycle_manager.mark_lost(tid, capture_ts=now_capture_ts)
+                    self.trace_record('lifecycle_lost', {
+                        'frameIdx': int(frame_idx),
+                        'trackId': int(tid),
+                        'eventId': lifecycle.event_id,
+                        'captureTs': float(now_capture_ts),
+                    })
+                if self.lifecycle_manager.is_waiting(tid, now_capture_ts):
+                    continue
+            timed_out = (
+                frame_idx - st.get('last_frame_idx', frame_idx) >= self.timeout_frames
+                if now_capture_ts is None or lifecycle is None
+                else True
+            )
+            if timed_out:
                 event_enabled = bool(st.get('zone_a_dwell_frames', 0) > 0)
                 born_inside_rejected = bool(
                     st.get('born_inside_pending')
@@ -1144,6 +1266,8 @@ class EventManager:
                     st['record_stop_frame'] = last_idx + extra_frames
                 if self.single_lifecycle_events and (5 in st['events'] or born_inside_rejected):
                     st['closed'] = True
+                if lifecycle is not None:
+                    self.lifecycle_manager.finalize(tid)
 
                 stop_f = st.get('record_stop_frame')
                 tail_pending = stop_f is not None and frame_idx <= stop_f
@@ -1162,7 +1286,8 @@ class EventManager:
             self.shadow_pool.pop(tid, None)
             self.zone_mgr.drop_track(tid)
             self.pending_events.pop(tid, None)
-            key = f'{self.camera_id}_{tid}'
+            lifecycle = self.lifecycle_manager.get(tid)
+            key = lifecycle.event_id if lifecycle is not None else f'{self.camera_id}_{tid}'
             self.upload_buffer.pop(key, None)
             self.tracks.pop(tid, None)
 
@@ -1210,7 +1335,14 @@ class EventManager:
             stage = int(event_type)
         except (TypeError, ValueError):
             return False
-        previous_stage = int(track_state.get('event_stage_max', 0) or 0)
+        lifecycle = self.lifecycle_manager.get(track_id)
+        lifecycle_stages = lifecycle.stages if lifecycle is not None else set()
+        if stage in lifecycle_stages:
+            return False
+        previous_stage = max(
+            int(track_state.get('event_stage_max', 0) or 0),
+            max(lifecycle_stages) if lifecycle_stages else 0,
+        )
         if stage < previous_stage:
             self._record_event_sequence_issue(
                 track_id,
@@ -1237,6 +1369,11 @@ class EventManager:
             track_state['last_event_capture_time'] = capture_time
         except Exception:
             pass
+        capture_ts = self._capture_timestamp(frame_idx) or time.time()
+        lifecycle = self.lifecycle_manager.get(track_id)
+        if lifecycle is None:
+            lifecycle = self.lifecycle_manager.create(track_id, vehicle_type, capture_ts=capture_ts)
+        self.lifecycle_manager.touch(track_id, capture_ts=capture_ts, vehicle_class=vehicle_type)
         if event_type == 1:
             prev_type1_time = track_state.get('type1_capture_time')
             if not prev_type1_time:
@@ -1247,19 +1384,8 @@ class EventManager:
                     dt = datetime.now()
                 ts_str = dt.strftime("%Y%m%d%H%M")
                 device_name = self.config.get('system', {}).get('device_id') or self.camera_id
-                session_id = f"{device_name}-{ts_str}-{track_id}"
-                track_state['session_id'] = session_id
-        session_id = track_state.get('session_id')
-        if not session_id:
-            base_time = track_state.get('type1_capture_time') or capture_time
-            try:
-                dt = datetime.strptime(base_time, "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                dt = datetime.now()
-            ts_str = dt.strftime("%Y%m%d%H%M")
-            device_name = self.config.get('system', {}).get('device_id') or self.camera_id
-            session_id = f"{device_name}-{ts_str}-{track_id}"
-            track_state['session_id'] = session_id
+        session_id = lifecycle.event_id
+        track_state['session_id'] = session_id
         if event_type == 1:
             prev_start = track_state.get('record_start_frame')
             if prev_start is None or frame_idx < prev_start:
@@ -1342,6 +1468,9 @@ class EventManager:
             self._attach_wheel_results(event, track_state=track_state, track_id=track_id)
         if event_type == 6:
             event['perIdVideoEnabled'] = bool(payload.get('perIdVideoEnabled', False))
+        self.lifecycle_manager.mark_stage(track_id, event_type)
+        if event_type >= 5:
+            self.lifecycle_manager.finalize(track_id)
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
         self.trace_record('event', {

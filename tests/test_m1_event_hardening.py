@@ -31,6 +31,27 @@ class _ScriptedZoneManager:
         return 0, ''
 
 
+class _NoEventZoneManager:
+    @staticmethod
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
+        del track_id, anchor_point, frame_idx, vehicle_height
+        return None, {'enter_a': False, 'exit_a': False, 'enter_b': False, 'exit_b': False}
+
+    @staticmethod
+    def drop_track(track_id):
+        del track_id
+
+    @staticmethod
+    def resolve_direction(state):
+        del state
+        return 0, ''
+
+    @staticmethod
+    def _relative_position(point):
+        del point
+        return 0.0
+
+
 class _CollectingUploader:
     def __init__(self):
         self.payloads = []
@@ -139,6 +160,74 @@ class M1EventHardeningTests(unittest.TestCase):
         )
 
         self.assertEqual(emitted, [5, 6])
+
+    def test_inactive_timeout_uses_capture_time_grace_window(self):
+        manager = self._manager()
+        manager.record_frame_timing(1, 100.0, 100.1)
+        self._update(manager, frame_idx=1)
+        manager.record_frame_timing(2, 101.0, 101.1)
+        self._update(manager, frame_idx=2)
+        lifecycle = manager.lifecycle_manager.get(1)
+        self.assertIsNotNone(lifecycle)
+
+        manager.flush_inactive(set(), frame_idx=3, capture_ts=102.0)
+        self.assertIn(1, manager.tracks)
+        self.assertFalse(lifecycle.closed)
+
+        manager.flush_inactive(set(), frame_idx=4, capture_ts=109.9)
+        self.assertIn(1, manager.tracks)
+        self.assertFalse(lifecycle.closed)
+
+        manager.flush_inactive(set(), frame_idx=5, capture_ts=110.1)
+        self.assertTrue(lifecycle.closed)
+
+    def test_verified_plate_handoff_reuses_lost_lifecycle_event_id(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        manager = EventManager(
+            {
+                'logic': {'plate_lock_frames': 3, 'event_trace_enabled': False},
+                'event_capture_dir': temp_dir.name,
+                'event_output_dir': temp_dir.name,
+                'lane_name': 'lane-a',
+            },
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_NoEventZoneManager(),
+        )
+        lifecycle = manager.lifecycle_manager.create(1, 'car', capture_ts=100.0)
+        manager.lifecycle_manager.touch(
+            1,
+            capture_ts=100.0,
+            plate_text='鲁A12345',
+            plate_box=[10, 10, 30, 20],
+            plate_edge='flow_start',
+        )
+        manager.lifecycle_manager.mark_lost(1, capture_ts=101.0)
+
+        for frame_idx in range(1, 4):
+            manager.record_frame_timing(frame_idx, 102.0 + frame_idx * 0.1, 102.1 + frame_idx * 0.1)
+            manager.update_track(
+                track_id=2,
+                plate_box=[11, 11, 31, 21],
+                vehicle_box=[0, 0, 60, 60],
+                plate_text='鲁A12345',
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=True,
+                vehicle_label='car',
+                vehicle_conf=0.95,
+                plate_conf=0.95,
+                confirmed=True,
+                anchor_point=(10.0, 10.0),
+            )
+
+        self.assertEqual(manager.tracks[2]['plate_text_locked'], '鲁A12345')
+        self.assertIs(manager.lifecycle_manager.get(2), lifecycle)
+        self.assertEqual(manager.tracks[2]['session_id'], lifecycle.event_id)
+        self.assertEqual(lifecycle.active_tracker_id, 2)
 
     def test_event_trace_writes_files_and_sanitizes_source(self):
         with tempfile.TemporaryDirectory() as tmpdir:
