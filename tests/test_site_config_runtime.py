@@ -52,7 +52,7 @@ class SiteConfigRuntimeTests(unittest.TestCase):
         self.assertTrue(main["wheel"]["enabled"])
         self.assertFalse(bypass["wheel"]["enabled"])
         self.assertEqual(main["wheel"]["pause_bypass_config_key"], "config_绕行.json")
-        self.assertIsNone(main["logic"].get("plate_requires_vehicle"))
+        self.assertTrue(main["logic"].get("plate_requires_vehicle"))
         self.assertFalse(bypass["logic"]["plate_requires_vehicle"])
 
     def test_site_configs_enable_performance_lock(self):

@@ -241,7 +241,7 @@
     "plate_infer_stride": 2,
     "enable_event_disk": true,
     "vehicle_tracker_impl": "bytetrack",
-    "plate_requires_vehicle": null,
+    "plate_requires_vehicle": true,
     "pending_plate_cache_ttl_frames": 40,
     "pending_plate_cache_max_entries": 30,
     "per_id_type6_require_plate_candidate": false
