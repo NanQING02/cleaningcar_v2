@@ -79,6 +79,37 @@ def _capture_dirs(key: Optional[str]) -> list[Path]:
     return dirs
 
 
+def _per_id_video_dirs(key: Optional[str]) -> list[Path]:
+    if key == "__all__":
+        dirs = []
+        for config_path in state.CONFIG_PATH.parent.glob("*.json"):
+            for path in _per_id_video_dirs(config_path.name):
+                if path not in dirs:
+                    dirs.append(path)
+        return dirs
+    cfg = _load_config(key)
+    configured = _resolve_path(cfg.data.get("logic", {}).get("per_id_video_dir"), state.ROOT)
+    dirs = [path for path in (configured, state.ROOT / "video_result" / "per_id") if path]
+    return list(dict.fromkeys(dirs))
+
+
+def _find_per_id_video(event_id: str, key: Optional[str]) -> str:
+    filename = f"{event_id}.mp4"
+    for directory in _per_id_video_dirs(key):
+        if not directory.exists():
+            continue
+        direct = directory / filename
+        if direct.exists() and direct.is_file():
+            return str(direct)
+        try:
+            match = next(directory.rglob(filename), None)
+        except OSError:
+            match = None
+        if match and match.is_file():
+            return str(match)
+    return ""
+
+
 def _allowed_file(path: Path, key: Optional[str]) -> bool:
     try:
         candidate = path.resolve()
@@ -226,6 +257,7 @@ def workbench_events(
 def workbench_event_detail(event_id: str, key: Optional[str] = None):
     for row in _read_events(key):
         if str(row.get("id")) == str(event_id):
+            row["videoPath"] = _find_per_id_video(event_id, key)
             return row
     raise HTTPException(status_code=404, detail="事件不存在")
 
