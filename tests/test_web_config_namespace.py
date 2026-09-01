@@ -116,22 +116,25 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertNotIn("shadow_plate_pool: this.form.logic.shadow_plate_pool", text)
         self.assertIn("max_candidates: this.form.logic.shadow_plate_pool.max_candidates", text)
 
-    def test_developer_config_can_enable_annotated_per_id_video(self):
+    def test_user_config_can_select_annotated_per_id_video(self):
         active = self.write_config("config.json", "camera-a")
         state.set_config_path(active)
 
-        result = server.update_developer_config(
+        result = server.update_user_config(
             server.ConfigPayload(
                 logic={
                     "per_id_video_source": "annotated",
-                    "shadow_plate_pool": {"max_candidates": 60},
                 }
             )
+        )
+        developer_result = server.update_developer_config(
+            server.ConfigPayload(logic={"shadow_plate_pool": {"max_candidates": 60}})
         )
         saved = json.loads(active.read_text(encoding="utf-8"))
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["tier"], "developer")
+        self.assertEqual(result["tier"], "user")
+        self.assertEqual(developer_result["tier"], "developer")
         self.assertEqual(saved["logic"]["per_id_video_source"], "annotated")
         self.assertEqual(saved["logic"]["shadow_plate_pool"]["max_candidates"], 60)
 

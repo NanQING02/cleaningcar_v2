@@ -70,6 +70,7 @@ from .models import (
     SnapshotKeepPayload,
     ZonePayload,
 )
+from .workbench import router as workbench_router
 
 
 def _payload_dict(payload: ConfigPayload) -> dict:
@@ -140,6 +141,8 @@ async def _app_lifespan(_app: FastAPI):
 
 
 app = FastAPI(title='CleaningCar Zone Editor', lifespan=_app_lifespan, default_response_class=SafeJSONResponse)
+for workbench_route in workbench_router.routes:
+    app.router.routes.append(workbench_route)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -149,6 +152,14 @@ app.add_middleware(
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    workbench_path = state.ROOT / "web" / "templates" / "workbench.html"
+    if not workbench_path.exists():
+        raise HTTPException(status_code=500, detail="工作台模板缺失")
+    return workbench_path.read_text(encoding="utf-8")
+
+
+@app.get("/legacy/zone-editor", response_class=HTMLResponse)
+def legacy_zone_editor():
     if not state.TEMPLATE_PATH.exists():
         raise HTTPException(status_code=500, detail="Template missing.")
     return state.TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -330,6 +341,12 @@ def update_user_config(payload: ConfigPayload, key: Optional[str] = None):
 @app.post("/config/developer")
 def update_developer_config(payload: ConfigPayload, key: Optional[str] = None):
     return _apply_config_update(_payload_dict(payload), TIER_DEVELOPER, key=key)
+
+
+@app.get("/config/developer")
+def read_developer_config(key: Optional[str] = None):
+    cfg = _load_config(key)
+    return extract_tier_subset(cfg.data, TIER_DEVELOPER)
 
 
 @app.post("/inference/start")
