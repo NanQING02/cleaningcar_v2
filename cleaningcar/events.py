@@ -298,6 +298,10 @@ class EventManager:
             self.camera_id,
             grace_seconds=float(self.logic.get('track_lost_grace_seconds', 8.0) or 8.0),
         )
+        self.track_lost_grace_seconds = max(
+            0.0,
+            float(self.logic.get('track_lost_grace_seconds', 8.0) or 8.0),
+        )
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
         wheel_cfg = config.get('wheel', {}) or {}
@@ -371,7 +375,7 @@ class EventManager:
         self.single_lifecycle_events = True
         self.require_vehicle_type_for_events = bool(self.logic.get('require_vehicle_type_for_events', False))
         self.max_per_id_video_seconds = 1500.0
-        self.per_id_video_tail_seconds = 10.0
+        self.per_id_video_tail_seconds = 8.0
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
         self.per_id_type6_require_plate_candidate = bool(
             self.logic.get('per_id_type6_require_plate_candidate', False)
@@ -1330,6 +1334,10 @@ class EventManager:
                         'reason': 'track_lost_in_zone_a_timeout',
                         'type2Qualified': True,
                     })
+                    if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
+                        last_idx = st.get('last_frame_idx', frame_idx)
+                        timeout_tail_frames = int(round(max(self.fps, 1.0) * self.track_lost_grace_seconds))
+                        st['record_stop_frame'] = last_idx + max(0, timeout_tail_frames)
                 suppress_plate_only_events = bool(
                     self.disable_plate_only_events
                     and st.get('last_vehicle_box') is None
@@ -1378,7 +1386,7 @@ class EventManager:
                         self.emit_event(tid, 5, last_frame_idx, st.get('last_frame'), extras, st)
                         st['events'].add(5)
                 if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
-                    extra_frames = self._record_tail_frames()
+                    extra_frames = self._record_tail_frames_for_event(5, st)
                     last_idx = st.get('last_frame_idx', frame_idx)
                     st['record_stop_frame'] = last_idx + extra_frames
                 if self.single_lifecycle_events and (5 in st['events'] or born_inside_rejected):
@@ -1511,7 +1519,7 @@ class EventManager:
             track_state['record_start_frame'] = frame_idx
         if event_type == 5:
             self._wait_for_wheel_results_for_type5(track_id, track_state)
-            extra_frames = self._record_tail_frames()
+            extra_frames = self._record_tail_frames_for_event(event_type, track_state)
             stop_frame = frame_idx + extra_frames
             prev_stop = track_state.get('record_stop_frame')
             if prev_stop is None or stop_frame > prev_stop:
@@ -2139,6 +2147,15 @@ class EventManager:
         if not bool(getattr(self, 'per_id_video_enabled', False)):
             return 0
         return int(max(self.fps, 1.0) * self.per_id_video_tail_seconds)
+
+    def _record_tail_frames_for_event(self, event_type, track_state=None):
+        if (
+            int(event_type) == 5
+            and isinstance(track_state, dict)
+            and 'TRACK_LOST_IN_ZONE_A_TIMEOUT' in (track_state.get('abnormal_reasons') or set())
+        ):
+            return int(round(max(self.fps, 1.0) * self.track_lost_grace_seconds))
+        return self._record_tail_frames()
 
     def _track_avg_vehicle_conf(self, track_state):
         return self._avg(track_state.get('vehicle_conf_history') or [])

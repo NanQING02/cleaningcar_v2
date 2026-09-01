@@ -107,13 +107,14 @@ def _resolve_per_id_recording_params(width, height, source_fps, logic_cfg=None):
 
 
 def _resolve_per_id_video_source(logic_cfg=None, no_draw=False, draw_enabled=False):
+    del no_draw, draw_enabled
     logic_cfg = logic_cfg or {}
     raw_value = str(logic_cfg.get('per_id_video_source', 'auto') or 'auto').strip().lower()
     if raw_value in {'raw', 'source', 'original', 'origin'}:
         return 'raw'
     if raw_value in {'annotated', 'draw', 'debug'}:
         return 'annotated'
-    return 'annotated' if (not no_draw and draw_enabled) else 'raw'
+    return 'raw'
 
 
 def _ensure_plate_binding_state(frame_idx, state=None):
@@ -722,15 +723,24 @@ def process_video(path, args):
         csv_writer = csv.writer(csv_f)
         csv_writer.writerow(['frame', 'class', 'score', 'x1', 'y1', 'x2', 'y2', 'track_id', 'text', 'raw_text'])
 
-    debug_overlay_flag = bool(logic_cfg.get('debug_overlay', False))
+    enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
+    per_id_video_source = _resolve_per_id_video_source(logic_cfg)
+    per_id_debug_enabled = bool(enable_per_id_video and per_id_video_source == 'annotated')
+    debug_overlay_flag = bool(logic_cfg.get('debug_overlay', False) or per_id_debug_enabled)
     debug_tracks_cfg = bool(logic_cfg.get('debug_track_state', False))
     debug_anchor_points = bool(logic_cfg.get('debug_anchor_points', False) or debug_overlay_flag)
     debug_water_boxes = bool(logic_cfg.get('debug_water_boxes', False) or debug_overlay_flag)
     debug_rois = getattr(args, 'debug_rois', False) or debug_overlay_flag
     debug_tracks = getattr(args, 'debug_tracks', False) or debug_tracks_cfg or debug_overlay_flag
-    draw_plate_boxes = bool(getattr(args, 'draw_plate_boxes', False) or logic_cfg.get('draw_plate_boxes', False))
+    draw_plate_boxes = bool(
+        getattr(args, 'draw_plate_boxes', False)
+        or logic_cfg.get('draw_plate_boxes', False)
+        or debug_overlay_flag
+    )
     setattr(args, 'draw_plate_boxes', draw_plate_boxes)
     plate_draw_stable_only = bool(logic_cfg.get('plate_draw_stable_only', True))
+    if per_id_debug_enabled:
+        args.no_draw = False
     event_use_annotated_frame = bool(not args.no_draw and (draw_plate_boxes or debug_water_boxes))
     per_id_draw_enabled = bool(not args.no_draw)
 
@@ -744,11 +754,6 @@ def process_video(path, args):
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
     copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
-    per_id_video_source = _resolve_per_id_video_source(
-        logic_cfg,
-        no_draw=args.no_draw,
-        draw_enabled=per_id_draw_enabled,
-    )
     if (
         args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points)
     ) or (
@@ -797,7 +802,6 @@ def process_video(path, args):
     pending_plate_cache_max_entries = max(1, int(logic_cfg.get('pending_plate_cache_max_entries', 30) or 30))
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
-    enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
     event_manager.per_id_video_enabled = enable_per_id_video
     benchmark_force_recording_track_id = int(logic_cfg.get('benchmark_force_recording_track_id', 0) or 0)
     benchmark_force_capture_stride = max(0, int(logic_cfg.get('benchmark_force_capture_stride', 0) or 0))
@@ -809,6 +813,12 @@ def process_video(path, args):
     per_id_output_fps = per_id_params['fps']
     per_id_record_stride = per_id_params['frame_stride']
     per_id_video_queue_size = max(1, int(logic_cfg.get('per_id_video_queue_size', 8) or 8))
+    per_id_timeout_tail_frames = int(
+        round(
+            max(fps, 1.0)
+            * max(0.0, float(logic_cfg.get('track_lost_grace_seconds', 8.0) or 8.0))
+        )
+    )
     resize_backend_label = (
         'passthrough'
         if per_id_target_width == width and per_id_target_height == height
@@ -2360,6 +2370,11 @@ def process_video(path, args):
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)
+                if per_id_debug_enabled and frame_out is not None:
+                    draw_debug_detections(
+                        frame_out,
+                        [det for det in det_payload if det.get('cls') in VEHICLE_CLASS_IDS],
+                    )
                 draw_stable_plate_overlay(frame_out, license_dets)
                 if frame_out is not None and not args.no_draw:
                     draw_anchor_comparison_overlay(frame_out, vehicle_payload_refs, next_frame_to_write)
@@ -2417,6 +2432,15 @@ def process_video(path, args):
                         stop_f = st.get('record_stop_frame')
                         if start_f is None:
                             continue
+                        if (
+                            stop_f is None
+                            and tid not in active_car_ids
+                            and per_id_timeout_tail_frames > 0
+                            and st.get('last_frame_idx') is not None
+                            and next_frame_to_write > int(st.get('last_frame_idx')) + per_id_timeout_tail_frames
+                        ):
+                            stop_f = int(st.get('last_frame_idx')) + per_id_timeout_tail_frames
+                            st['record_stop_frame'] = stop_f
                         if stop_f is not None and next_frame_to_write > stop_f:
                             close_per_id_writer(tid, st)
                             continue

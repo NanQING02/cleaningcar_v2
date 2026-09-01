@@ -49,7 +49,7 @@ run_zone_detect.py
 - 同一侧短时间连续命中的车轮结果会按连续簇整串归属给同一辆车，避免同一波旁路结果拆给后车
 - 上传给接口的车轮图片为原图，不带调试标注
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
-- `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 按主路原始解码帧写单车录像；`logic.no_draw=false` 按绘制帧写
+- 单车录像帧源由 `logic.per_id_video_source` 唯一控制：`annotated` 写入包含车辆/车牌框、Zone、轨迹状态和 H/D/L 锚点的完整调试画面；`raw` 只写干净原始画面；`auto` 兼容默认按 `raw` 处理
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存
 - 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
@@ -73,7 +73,7 @@ run_zone_detect.py
 - 车牌副链路降频：`logic.plate_infer_stride=2`
 - 单车视频：`logic.enable_per_id_video=true`
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
-- 单车视频帧源：`logic.per_id_video_source=auto`，`logic.no_draw=true` 时走原始解码帧
+- 单车视频帧源：建议明确设置 `logic.per_id_video_source=raw` 或 `annotated`，不再依赖分散的 `no_draw`、`debug_*` 参数推断
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
 - 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.5`，稳定桶实时入上传队列，最终 `type=5` 前强制 flush 未上传照片
 - 检测 CSV：`video.csv=./video_result/test.csv`

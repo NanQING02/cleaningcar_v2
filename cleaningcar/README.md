@@ -158,6 +158,7 @@ flowchart TD
 - 运行期清理已收口为默认禁用，仅保留 `storage_cleanup.py` 旧实现
 - RTSP 读流已收口为 GStreamer direct-BGR 唯一路径，不回退到 FFmpeg 或 safe 管线；离线文件仍可使用非 RGA 硬解。单车视频只使用 FFmpeg 硬编，不使用 GStreamer 写出或软件链路兜底
 - 全局视频保存残留已删除，仅保留 `logic.enable_per_id_video`
+- 单车录像帧源由 `logic.per_id_video_source` 统一控制：`annotated` 保存完整调试画面，`raw` 保存干净原始画面，`auto` 默认按 `raw` 处理
 - Web 不再浏览 per-id 单车录像，但 `pipeline.py` 仍保存单车录像文件
 - 实时调试图与事件截图已分流：调试图带绘制，事件截图默认优先原图
 - 当前主链路只保留双模型车牌流程，旧单模型 LPR 仅保留在 `future_modules/legacy_lpr/`
