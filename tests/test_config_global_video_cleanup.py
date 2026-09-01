@@ -209,7 +209,6 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.logic["event_plate_lock_frames"], 6)
             self.assertEqual(manager.logic["event_plate_fast_lock_frames"], 3)
             self.assertTrue(manager.logic["plate_output_shape_log_once"])
-            self.assertTrue(manager.logic["plate_draw_stable_only"])
             self.assertEqual(manager.logic["shadow_plate_pool"]["text_window_frames"], 50)
             self.assertEqual(manager.logic["shadow_plate_pool"]["color_min_confidence"], 0.70)
             self.assertTrue(manager.logic["event_track_quality"]["enabled"])
@@ -220,7 +219,6 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertIn("logic.plate_output_shape_log_once", field_paths)
-        self.assertIn("logic.plate_draw_stable_only", field_paths)
         self.assertIn("logic.shadow_plate_pool.text_window_frames", field_paths)
         self.assertIn("logic.shadow_plate_pool.color_min_confidence", field_paths)
         self.assertIn("logic.event_track_quality.min_hits_type1", field_paths)

@@ -116,10 +116,6 @@
             <input v-model="form.wheel.right_source" placeholder="rtsp://right-wheel" />
           </label>
           <label>
-            <input type="checkbox" v-model="form.video.hw_decode" />
-            启用硬件解码 (GStreamer+mpp)
-          </label>
-          <label>
             <input type="checkbox" v-model="form.logic.enable_per_id_video" />
             启用按车辆ID录像保存
           </label>
@@ -205,12 +201,6 @@
           <p class="hint">这里集中放算法阈值、调试输出和运行时路径。基础业务参数请只在“用户参数”面板修改。</p>
           <div class="subsection">
             <h4>运行时与输出</h4>
-            <label>FP 输出模式
-              <select v-model="form.video.fp_output_mode">
-                <option value="6">6</option>
-                <option value="9">9</option>
-              </select>
-            </label>
             <label>监控打印间隔（秒）
               <input type="number" min="0" step="0.5" v-model.number="form.system.monitor_interval" />
             </label>
@@ -347,9 +337,6 @@
           </label>
           <label>Type3/4 重复触发最小间隔帧
             <input type="number" min="1" v-model.number="form.logic.type34_min_interval_frames" />
-          </label>
-          <label>Track 超时时间 (帧)
-            <input type="number" min="30" v-model.number="form.logic.track_timeout_frames" />
           </label>
           <label>Track 丢失宽限 (秒，按源FPS换算)
             <input type="number" min="0" max="60" step="0.5" v-model.number="form.logic.track_lost_grace_seconds" />
@@ -533,11 +520,9 @@
             video: {
               source: '',
               source_mode: 'auto',
-              hw_decode: true,
               workers: 1,
               core_mask: '0',
               worker_core_strategy: 'auto',
-              fp_output_mode: '6',
               csv: '',
               debug_frame_path: '',
               debug_frame_interval: 30,
@@ -580,16 +565,12 @@
               stationary_min_frames: 0,
               stationary_speed_thresh: 8.0,
               type34_min_interval_frames: 5,
-              track_timeout_frames: 90,
-              track_max_age: 120,
               track_lost_grace_seconds: 8.0,
               event_trace_enabled: false,
               event_trace_dir: 'event_traces',
               event_trace_queue_size: 4096,
               vehicle_iou_threshold: 0.3,
               vehicle_center_gate_ratio: 0.0,
-              no_draw: false,
-              draw_plate_boxes: false,
               enable_per_id_video: false,
               per_id_video_source: 'auto',
               lane_name: '冲洗',
@@ -601,7 +582,6 @@
               event_plate_fast_lock_frames: 3,
               event_plate_fast_speed_threshold: 10.0,
               plate_output_shape_log_once: true,
-              plate_draw_stable_only: true,
               default_plate_color: '',
               default_plate_color_conf: 0.0,
               default_cleanliness: 0,
@@ -650,10 +630,6 @@
                 suppress_obvious_false_type5: true,
                 suspicious_cooldown_seconds: 6
               },
-              debug_overlay: false,
-              debug_track_state: false,
-              debug_anchor_points: false,
-              debug_water_boxes: false,
               wash_duration_offset_seconds: 0.0,
               min_zone_b_dwell_frames_for_type4: 60,
               per_id_video_dir: './video_result/per_id',
@@ -707,7 +683,7 @@
         perIdDebugVideo: {
           get() {
             const source = String(this.form.logic.per_id_video_source || '').trim().toLowerCase();
-            return !this.form.logic.no_draw && ['annotated', 'draw', 'debug'].includes(source);
+            return ['annotated', 'draw', 'debug'].includes(source);
           },
           set(enabled) {
             this.applyPerIdVideoDisplayMode(enabled);
@@ -749,13 +725,6 @@
         applyPerIdVideoDisplayMode(enabled) {
           const debugEnabled = !!enabled;
           this.form.logic.per_id_video_source = debugEnabled ? 'annotated' : 'raw';
-          this.form.logic.no_draw = !debugEnabled;
-          this.form.logic.draw_plate_boxes = debugEnabled;
-          this.form.logic.plate_draw_stable_only = !debugEnabled;
-          this.form.logic.debug_overlay = debugEnabled;
-          this.form.logic.debug_track_state = debugEnabled;
-          this.form.logic.debug_anchor_points = debugEnabled;
-          this.form.logic.debug_water_boxes = debugEnabled;
         },
         normalizeConfigName(name) {
           const text = String(name || '').trim();
@@ -919,11 +888,9 @@
           this.form.system.api.capture_mode = this.form.system.api.capture_mode || 'path';
           this.form.video.source = this.form.video.source || '';
           this.form.video.source_mode = this.form.video.source_mode || 'auto';
-          this.form.video.hw_decode = !!this.form.video.hw_decode;
           this.form.video.workers = Number(this.form.video.workers || 1);
           this.form.video.core_mask = this.form.video.core_mask || '0';
           this.form.video.worker_core_strategy = this.form.video.worker_core_strategy || 'auto';
-          this.form.video.fp_output_mode = String(this.form.video.fp_output_mode || '6');
           this.form.video.csv = this.form.video.csv || '';
           this.form.logic.shadow_plate_pool = this.form.logic.shadow_plate_pool || { max_candidates: 50, max_age_frames: 120 };
           this.form.logic.shadow_plate_pool.max_candidates = Number(this.form.logic.shadow_plate_pool.max_candidates || 50);
@@ -998,10 +965,6 @@
           this.form.wheel.bind_wait_poll_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_poll_seconds, 0.08));
           this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 0.5);
           this.form.wheel.photo_min_score = Number(wheelValueOr(this.form.wheel.photo_min_score, 0.3));
-          this.form.logic.debug_overlay = !!this.form.logic.debug_overlay;
-          this.form.logic.debug_track_state = !!(this.form.logic.debug_track_state || this.form.logic.debug_overlay);
-          this.form.logic.debug_anchor_points = !!(this.form.logic.debug_anchor_points || this.form.logic.debug_overlay);
-          this.form.logic.draw_plate_boxes = !!this.form.logic.draw_plate_boxes;
           if (typeof this.form.logic.require_vehicle_type_for_events === 'undefined') {
             this.form.logic.require_vehicle_type_for_events = false;
           }
@@ -1016,10 +979,7 @@
           } else {
             this.form.logic.per_id_video_source = 'auto';
           }
-          this.form.logic.debug_water_boxes = !!(this.form.logic.debug_water_boxes || this.form.logic.debug_overlay);
-          this.applyPerIdVideoDisplayMode(
-            this.form.logic.per_id_video_source === 'annotated' && !this.form.logic.no_draw
-          );
+          this.applyPerIdVideoDisplayMode(this.form.logic.per_id_video_source === 'annotated');
           if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
             this.form.logic.anchor_offset_ratio = 0;
           }
@@ -1038,7 +998,6 @@
             this.form.logic.zone_b_anchor_min_frames = 0;
           }
           this.form.logic.stationary_speed_thresh = Number(this.form.logic.stationary_speed_thresh || 8.0);
-          this.form.logic.track_max_age = Number(this.form.logic.track_max_age || 120);
           this.form.logic.track_lost_grace_seconds = Number(
             (typeof this.form.logic.track_lost_grace_seconds === 'undefined')
               ? 8.0
@@ -1055,7 +1014,6 @@
           this.form.logic.event_plate_fast_lock_frames = Number(this.form.logic.event_plate_fast_lock_frames || 3);
           this.form.logic.event_plate_fast_speed_threshold = Number(this.form.logic.event_plate_fast_speed_threshold || 10.0);
           this.form.logic.plate_output_shape_log_once = (typeof this.form.logic.plate_output_shape_log_once === 'undefined') ? true : !!this.form.logic.plate_output_shape_log_once;
-          this.form.logic.plate_draw_stable_only = (typeof this.form.logic.plate_draw_stable_only === 'undefined') ? true : !!this.form.logic.plate_draw_stable_only;
           this.form.logic.plate_core_mask = this.form.logic.plate_core_mask || '';
           this.form.logic.plate_infer_stride = Number(this.form.logic.plate_infer_stride || 1);
           this.form.logic.default_plate_color = this.form.logic.default_plate_color || '';
@@ -1111,7 +1069,6 @@
             video: {
               source: this.form.video.source,
               source_mode: this.form.video.source_mode,
-              hw_decode: this.form.video.hw_decode,
               workers: this.form.video.workers,
               core_mask: this.form.video.core_mask
             },
@@ -1152,7 +1109,6 @@
               performance_lock_script: this.form.system.performance_lock_script
             },
             video: {
-              fp_output_mode: this.form.video.fp_output_mode,
               csv: this.form.video.csv,
               debug_frame_path: this.form.video.debug_frame_path,
               debug_frame_interval: this.form.video.debug_frame_interval,
@@ -1192,16 +1148,12 @@
               stationary_min_frames: this.form.logic.stationary_min_frames,
               stationary_speed_thresh: this.form.logic.stationary_speed_thresh,
               type34_min_interval_frames: this.form.logic.type34_min_interval_frames,
-              track_timeout_frames: this.form.logic.track_timeout_frames,
-              track_max_age: this.form.logic.track_max_age,
               track_lost_grace_seconds: this.form.logic.track_lost_grace_seconds,
               event_trace_enabled: this.form.logic.event_trace_enabled,
               event_trace_dir: this.form.logic.event_trace_dir,
               event_trace_queue_size: this.form.logic.event_trace_queue_size,
               vehicle_iou_threshold: this.form.logic.vehicle_iou_threshold,
               vehicle_center_gate_ratio: this.form.logic.vehicle_center_gate_ratio,
-              no_draw: this.form.logic.no_draw,
-              draw_plate_boxes: this.form.logic.draw_plate_boxes,
               per_id_video_source: this.form.logic.per_id_video_source,
               vehicle_shrink_ratio: this.form.logic.vehicle_shrink_ratio,
               vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
@@ -1211,7 +1163,6 @@
               event_plate_fast_lock_frames: this.form.logic.event_plate_fast_lock_frames,
               event_plate_fast_speed_threshold: this.form.logic.event_plate_fast_speed_threshold,
               plate_output_shape_log_once: this.form.logic.plate_output_shape_log_once,
-              plate_draw_stable_only: this.form.logic.plate_draw_stable_only,
               plate_core_mask: this.form.logic.plate_core_mask,
               plate_infer_stride: this.form.logic.plate_infer_stride,
               default_plate_color: this.form.logic.default_plate_color,
@@ -1239,10 +1190,6 @@
                 max_candidates: this.form.logic.shadow_plate_pool.max_candidates
               },
               event_track_quality: this.form.logic.event_track_quality,
-              debug_overlay: this.form.logic.debug_overlay,
-              debug_track_state: this.form.logic.debug_track_state,
-              debug_anchor_points: this.form.logic.debug_anchor_points,
-              debug_water_boxes: this.form.logic.debug_water_boxes,
               wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
               min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4
             },

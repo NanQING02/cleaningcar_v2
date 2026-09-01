@@ -9,6 +9,29 @@
 - `config_绕行.json`
   - 备用 / 绕行配置
 
+两份正式配置都采用当前车牌基线：INT8 车牌检测 + FP 识别/颜色，`logic.plate_infer_stride=2`。
+
+| 配置 | 车道 | 主路 Core | 车牌 Core | 车辆门控 | per-id 录像 | 录像画面 | 车轮旁路 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `config.json` | 冲洗 | 0 | 0 | `true` | 开启 | `annotated` | 开启 |
+| `config_绕行.json` | 绕行 | 1 | 1 | `false` | 开启 | `annotated` | 关闭 |
+
+其中 `annotated` 是单车录像的完整调试画面，包含车辆/车牌框、Zone、轨迹状态、方向和 H/D/L 锚点；若只需要干净画面，将对应配置的 `logic.per_id_video_source` 改为 `raw`。
+
+## 正式路径默认值
+
+路径仍可按部署现场修改；首次部署或恢复默认时，以两份正式配置中的地址为准：
+
+| 项目 | `config.json`（冲洗） | `config_绕行.json`（绕行） |
+| --- | --- | --- |
+| 主视频源 | `rtsp://admin:***@192.168.1.111:8557/h264` | `rtsp://admin:***@192.168.1.222:8557/h264` |
+| 事件 JSON | `events/config` | `events/config_绕行` |
+| 事件截图 | `/data/ftp/event_captures/config` | `/data/ftp/event_captures/config_绕行` |
+| 单车录像 | `/data/ftp/per_id` | `/data/ftp/per_id` |
+| 运行指标 | `/dev/shm/metrics_laneA.json` | `/dev/shm/metrics_bypass.json` |
+
+冲洗配置额外使用左右车轮源 `192.168.1.20`、`192.168.1.21`；绕行配置不启动车轮旁路。不要在文档或新配置中写入真实密码。
+
 ## 重点配置项
 
 ### `system.device_id`
@@ -33,25 +56,24 @@
 ### `video.source` / `video.source_mode`
 
 - `video.source`：视频源地址，可以是 RTSP、摄像头索引或本地文件
-- `video.source_mode`：建议优先用 `auto`
+- `video.source_mode`：正式 RTSP 配置固定为 `camera`；离线录像测试固定为 `file`
 - 当输入被识别为本地文件时，会按文件源处理，默认跑完一遍后退出
 
 ### `video.hw_decode`
 
-- `true` 且输入为 RTSP 时，只使用 `GStreamer+mpp direct-BGR`；打开失败即读流失败，不回退到 FFmpeg 或 safe 管线
+- 正式配置固定为 `true`；RTSP/camera 强制使用 `GStreamer+mpp direct-BGR`，不提供运行时切换开关
 - 两份现场配置固定 `video.decode_backend=gstreamer`。离线文件可按需要使用 `auto`/`gstreamer`/`ffmpeg`，但不得使用任何 RGA 后端
 - RGA 管控（2026-08-26）：原 `ffmpeg_rga` 后端已移除，配置段会被丢弃；RTSP/camera 强制归一到 `gstreamer + direct-BGR`，离线文件的无效后端归一到 `auto`
 - 若两级硬解都不可用，不再切软件解码；主链路会按读流失败处理并重连或退出
 
 ### `video.fp_output_mode`
 
-FP 检测模型后处理模式：
+`FP` 指主检测模型输出的历史后处理名称，不是车牌模型的量化精度开关。
 
-- `6`
-  - 默认值
-  - 即使模型给出 `9` 个输出，也只使用每个尺度的 `box + class`
-- `9`
-  - 使用每个尺度的 `box + class + score`
+- 当前车牌链路已固定为 **INT8 检测 + FP 识别/颜色**；模型选择不由该字段控制
+- 主检测后处理固定为模式 `6`：只使用 `box + class`，不读取 score 分支
+- 不启用模式 `9`，因为 score 分支会再次压缩置信度，干扰后续类别阈值
+- `video.fp_output_mode=6` 保留在正式 JSON 中作为模型 schema 基线，不在 Web 或 CLI 开放调整
 
 ### `logic.per_id_video_dir`
 
@@ -62,9 +84,8 @@ FP 检测模型后处理模式：
 
 - 当前只保留单车视频留存开关 `logic.enable_per_id_video`
 - 单车视频仅使用 `FFmpeg` 硬编写出；FFmpeg 硬编不可用时不保存该段单车视频
-- `logic.per_id_video_source=auto` 时，`logic.no_draw=true` 默认写主路原始解码帧；`logic.no_draw=false` 时写绘制后的帧
-- Web 开发者参数只保留一个录像画面开关：关闭时写 `raw` 原始帧并禁用绘制；开启时写 `annotated`，同时启用 Zone、轨迹、锚点、水雾和双模型车牌结果绘制
-- `logic.per_id_type6_require_plate_candidate=false` 时，Type6 不再因缺少有效车牌候选被拦截；需要恢复旧门槛时可改为 `true`
+- 单车录像画面只由 `logic.per_id_video_source` 控制：`annotated` 写完整调试帧，`raw` 写干净原始帧，`auto` 为兼容值并按 `raw` 处理
+- `annotated` 模式会统一启用车辆框、车牌框/关键点、Zone、轨迹状态、方向、H/D/L 锚点、水流框和双模型车牌结果绘制，不再由多个 `debug_*` 参数分别拼装 per-id 画面
 - `logic.track_lost_grace_seconds=8.0` 按视频源FPS换算tracker丢失保留帧数；25 FPS时为200帧，事件状态额外保留1秒
 - `logic.event_trace_enabled=false` 默认关闭事件输入追踪；本地视频手测时可临时开启
 - `logic.event_trace_dir=event_traces` 控制追踪输出根目录，相对路径按项目根目录解析
@@ -72,10 +93,24 @@ FP 检测模型后处理模式：
 - Web 端不再浏览这些单车录像，但后台仍会继续保存
 - 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效
 
-### `logic.draw_plate_boxes`
+### 参数收口建议
 
-- 代码缺省值为 `false`；当前主配置 `configs/config.json` 中为 `true`
-- 只有同时未启用 `logic.no_draw` 且开启该项时，车牌绘制才会出现在调试帧与事件截图中
+per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_video_source` 选择。以下字段也不再是正式配置参数：
+
+- `logic.no_draw`、`logic.draw_plate_boxes`
+- `logic.debug_overlay`、`logic.debug_track_state`、`logic.debug_anchor_points`、`logic.debug_water_boxes`
+- `logic.track_timeout_frames`、`logic.track_max_age`
+- `logic.plate_draw_stable_only`、`logic.per_id_type6_require_plate_candidate`
+
+旧配置中出现上述字段时，ConfigManager 会忽略或清除，不参与运行逻辑。
+
+以下字段是正式运行应固定的基线，不建议频繁调整：
+
+- `video.decode_backend=gstreamer`、RTSP `source_mode=camera`、主/车牌 NPU Core 分配
+- `logic.plate_infer_stride=2`、`logic.per_id_video_source`、`logic.enable_per_id_video`
+- `logic.zone_a_margin_*`、`logic.zone_a_*_hits`、`logic.track_lost_grace_seconds` 等已验证的空间和生命周期参数
+
+以下旧能力已经删除，不应重新加入配置：`video.save_video`、`logic.enable_global_video`、显式 RGA 后端，以及远程车轮检测服务字段。
 
 ### `wheel.*`
 
@@ -141,11 +176,11 @@ FP 检测模型后处理模式：
 - 当留空或仍使用旧默认值 `/dev/shm/cleaningcar_debug.jpg` 时，运行时会自动改写到：
   - `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
 
-### 旧功能：运行产物清理
+### 未来功能：运行产物清理
 
-- 当前默认配置和 Web 配置页已不再暴露 `storage.*`
-- `storage_cleanup.py` 旧实现仍保留在代码中，但运行期默认禁用
-- 后续如果需要重新启用，建议单独评审清理策略、回收范围和误删风险后再恢复
+- 当前运行期不加载清理器
+- 实现暂存于 `future_modules/storage_cleanup.py`
+- 后续重新启用前，需要单独评审清理策略、回收范围和误删风险
 
 ## 常用启动命令
 
@@ -154,12 +189,7 @@ source venv-gst/bin/activate
 python run_zone_detect.py --config configs/config.json
 ```
 
-临时切换 FP 后处理：
-
-```bash
-python run_zone_detect.py --config configs/config.json --fp_output_mode 6
-python run_zone_detect.py --config configs/config.json --fp_output_mode 9
-```
+主检测后处理固定为 mode 6，不提供运行时切换参数。
 
 启动 Web：
 

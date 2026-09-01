@@ -41,7 +41,6 @@ from .runtime_signals import (
     save_snapshot_images,
     write_json_atomic,
 )
-from .storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
 from .text_render import draw_text
 from .tracking import VehicleTracker, resolve_track_retention_frames
 from .video_io import (
@@ -106,8 +105,7 @@ def _resolve_per_id_recording_params(width, height, source_fps, logic_cfg=None):
     }
 
 
-def _resolve_per_id_video_source(logic_cfg=None, no_draw=False, draw_enabled=False):
-    del no_draw, draw_enabled
+def _resolve_per_id_video_source(logic_cfg=None):
     logic_cfg = logic_cfg or {}
     raw_value = str(logic_cfg.get('per_id_video_source', 'auto') or 'auto').strip().lower()
     if raw_value in {'raw', 'source', 'original', 'origin'}:
@@ -576,7 +574,6 @@ def process_video(path, args):
     debug_frame_file = runtime_settings.get('debug_frame_path')
     heartbeat_interval_seconds = float(runtime_settings['heartbeat_interval_seconds'])
     command_poll_interval = min(heartbeat_interval_seconds, 0.5)
-    storage_cfg = config.get('storage', {}) or {}
     zones_cfg = config.get('zones', {})
     logic_cfg = config.get('logic', {})
     zone_b_anchor_min_frames = int(logic_cfg.get('zone_b_anchor_min_frames', 0))
@@ -726,23 +723,14 @@ def process_video(path, args):
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
     per_id_video_source = _resolve_per_id_video_source(logic_cfg)
     per_id_debug_enabled = bool(enable_per_id_video and per_id_video_source == 'annotated')
-    debug_overlay_flag = bool(logic_cfg.get('debug_overlay', False) or per_id_debug_enabled)
-    debug_tracks_cfg = bool(logic_cfg.get('debug_track_state', False))
-    debug_anchor_points = bool(logic_cfg.get('debug_anchor_points', False) or debug_overlay_flag)
-    debug_water_boxes = bool(logic_cfg.get('debug_water_boxes', False) or debug_overlay_flag)
-    debug_rois = getattr(args, 'debug_rois', False) or debug_overlay_flag
-    debug_tracks = getattr(args, 'debug_tracks', False) or debug_tracks_cfg or debug_overlay_flag
-    draw_plate_boxes = bool(
-        getattr(args, 'draw_plate_boxes', False)
-        or logic_cfg.get('draw_plate_boxes', False)
-        or debug_overlay_flag
-    )
-    setattr(args, 'draw_plate_boxes', draw_plate_boxes)
-    plate_draw_stable_only = bool(logic_cfg.get('plate_draw_stable_only', True))
-    if per_id_debug_enabled:
-        args.no_draw = False
-    event_use_annotated_frame = bool(not args.no_draw and (draw_plate_boxes or debug_water_boxes))
-    per_id_draw_enabled = bool(not args.no_draw)
+    debug_overlay_flag = per_id_debug_enabled
+    debug_anchor_points = per_id_debug_enabled
+    debug_water_boxes = per_id_debug_enabled
+    debug_rois = per_id_debug_enabled
+    debug_tracks = per_id_debug_enabled
+    draw_plate_boxes = per_id_debug_enabled
+    plate_draw_stable_only = not per_id_debug_enabled
+    event_use_annotated_frame = False
 
     if debug_frame_file:
         debug_frame_file = Path(debug_frame_file)
@@ -754,11 +742,7 @@ def process_video(path, args):
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
     copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
-    if (
-        args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points)
-    ) or (
-        bool(logic_cfg.get('enable_per_id_video', False)) and per_id_video_source == 'raw'
-    ):
+    if bool(logic_cfg.get('enable_per_id_video', False)) and per_id_video_source == 'raw':
         copy_raw_frame_cache = True
     debug_frame_max_width = max(0, int(video_cfg.get('debug_frame_max_width', 960) or 0))
     debug_frame_quality = min(max(int(video_cfg.get('debug_frame_quality', 80) or 80), 1), 100)
@@ -813,12 +797,6 @@ def process_video(path, args):
     per_id_output_fps = per_id_params['fps']
     per_id_record_stride = per_id_params['frame_stride']
     per_id_video_queue_size = max(1, int(logic_cfg.get('per_id_video_queue_size', 8) or 8))
-    per_id_timeout_tail_frames = int(
-        round(
-            max(fps, 1.0)
-            * max(0.0, float(logic_cfg.get('track_lost_grace_seconds', 8.0) or 8.0))
-        )
-    )
     resize_backend_label = (
         'passthrough'
         if per_id_target_width == width and per_id_target_height == height
@@ -972,75 +950,6 @@ def process_video(path, args):
                 f'source={per_id_video_source} queue={per_id_video_queue_size} '
                 f'resize_backend={resize_backend_label}'
             )
-
-    def collect_per_id_cleanup_roots():
-        roots = [DEFAULT_PER_ID_VIDEO_DIR]
-        raw_path = str(logic_cfg.get('per_id_video_dir', '') or '').strip()
-        if raw_path:
-            configured_dir = _resolve_runtime_path(raw_path, PROJECT_ROOT)
-            if configured_dir:
-                roots.insert(0, configured_dir)
-        unique = []
-        seen = set()
-        for root in roots:
-            resolved = Path(root).resolve()
-            key = str(resolved)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(resolved)
-        return unique
-
-    cleanup_policies = []
-    capture_keep_days = int(storage_cfg.get('capture_keep_days', 30) or 0)
-    capture_keep_count = int(storage_cfg.get('capture_keep_count', 3000) or 0)
-    per_id_video_keep_days = int(storage_cfg.get('per_id_video_keep_days', 15) or 0)
-    per_id_video_keep_count = int(storage_cfg.get('per_id_video_keep_count', 500) or 0)
-    event_capture_dir = _resolve_runtime_path(config.get('event_capture_dir'), base_dir)
-    if event_capture_dir:
-        cleanup_policies.append(
-            RetentionPolicy(
-                root=event_capture_dir,
-                keep_days=capture_keep_days,
-                keep_count=capture_keep_count,
-                label='event-captures',
-            )
-        )
-    if startup_capture_dir:
-        cleanup_policies.append(
-            RetentionPolicy(
-                root=startup_capture_dir,
-                keep_days=capture_keep_days,
-                keep_count=capture_keep_count,
-                label='startup-captures',
-                preserve_latest_groups=1,
-                snapshot_grouping=True,
-            )
-        )
-    if manual_capture_dir:
-        cleanup_policies.append(
-            RetentionPolicy(
-                root=manual_capture_dir,
-                keep_days=capture_keep_days,
-                keep_count=capture_keep_count,
-                label='manual-captures',
-                preserve_latest_groups=1,
-                snapshot_grouping=True,
-            )
-        )
-    for cleanup_root in collect_per_id_cleanup_roots():
-        cleanup_policies.append(
-            RetentionPolicy(
-                root=cleanup_root,
-                keep_days=per_id_video_keep_days,
-                keep_count=per_id_video_keep_count,
-                label='per-id-video',
-            )
-        )
-    storage_cleaner = RuntimeStorageCleaner(
-        cleanup_policies,
-        int(storage_cfg.get('clean_interval_seconds', 600) or 600),
-    )
 
     for runtime_dir in (command_dir, heartbeat_path.parent, startup_flag_path.parent):
         try:
@@ -1359,7 +1268,6 @@ def process_video(path, args):
                 except Exception:
                     pass
 
-    storage_cleaner.run_once(reason='startup')
     write_heartbeat(status='starting', force=True)
 
     startup_heartbeat_stop = threading.Event()
@@ -1654,7 +1562,7 @@ def process_video(path, args):
         mismatch = bool(locked and label_now and locked != label_now)
         if mismatch:
             return
-        if not args.no_draw and frame_img is not None:
+        if per_id_debug_enabled and frame_img is not None:
             x1, y1, x2, y2 = det_ref['box']
             color = select_box_color(label_now or locked or '')
             cv2.rectangle(frame_img, (x1, y1), (x2, y2), color, 2)
@@ -1690,7 +1598,7 @@ def process_video(path, args):
             rows_ref[row_idx][-1] = raw_text
 
     def draw_stable_plate_overlay(frame_img, det_items):
-        if args.no_draw or frame_img is None or not draw_plate_boxes:
+        if not per_id_debug_enabled or frame_img is None or not draw_plate_boxes:
             return
         for det in det_items or []:
             if det.get('cls') != LICENSE_CLASS:
@@ -2022,7 +1930,7 @@ def process_video(path, args):
                                 cleaning_label = 'manual'
                             elif not cleaning_label:
                                 cleaning_label = name
-                if debug_water_boxes and not args.no_draw and water_boxes and frame_out is not None:
+                if debug_water_boxes and per_id_debug_enabled and water_boxes and frame_out is not None:
                     for wb in water_boxes:
                         wx1, wy1, wx2, wy2 = wb
                         cv2.rectangle(frame_out, (wx1, wy1), (wx2, wy2), CLASS_COLORS.get('water', (0, 160, 255)), 2)
@@ -2376,7 +2284,7 @@ def process_video(path, args):
                         [det for det in det_payload if det.get('cls') in VEHICLE_CLASS_IDS],
                     )
                 draw_stable_plate_overlay(frame_out, license_dets)
-                if frame_out is not None and not args.no_draw:
+                if frame_out is not None and per_id_debug_enabled:
                     draw_anchor_comparison_overlay(frame_out, vehicle_payload_refs, next_frame_to_write)
                 t_after_updates = time.perf_counter()
                 if debug_tracks:
@@ -2432,15 +2340,6 @@ def process_video(path, args):
                         stop_f = st.get('record_stop_frame')
                         if start_f is None:
                             continue
-                        if (
-                            stop_f is None
-                            and tid not in active_car_ids
-                            and per_id_timeout_tail_frames > 0
-                            and st.get('last_frame_idx') is not None
-                            and next_frame_to_write > int(st.get('last_frame_idx')) + per_id_timeout_tail_frames
-                        ):
-                            stop_f = int(st.get('last_frame_idx')) + per_id_timeout_tail_frames
-                            st['record_stop_frame'] = stop_f
                         if stop_f is not None and next_frame_to_write > stop_f:
                             close_per_id_writer(tid, st)
                             continue
@@ -2579,7 +2478,6 @@ def process_video(path, args):
                 time.sleep(reader_reconnect_delay)
                 continue
         write_heartbeat(status='running')
-        storage_cleaner.run_due(reason='periodic')
         if frame_limit is not None and total_frames >= frame_limit:
             break
         ret, frame = cap.read()

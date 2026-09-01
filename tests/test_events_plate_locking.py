@@ -1119,7 +1119,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         manager.flush_inactive(active_ids=set(), frame_idx=40 + manager.timeout_frames + 1)
 
         self.assertIn(5, track_state["events"])
-        self.assertEqual(track_state["record_stop_frame"], 240)
+        self.assertEqual(track_state["record_stop_frame"], manager.timeout_frames + 41)
 
 
 if __name__ == "__main__":

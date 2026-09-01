@@ -56,13 +56,11 @@ class PerIdRecordingPolicyTests(unittest.TestCase):
         )
 
     def test_per_id_video_auto_defaults_to_raw(self):
-        self.assertEqual(_resolve_per_id_video_source({}, no_draw=True), "raw")
-        self.assertEqual(_resolve_per_id_video_source({}, no_draw=False, draw_enabled=False), "raw")
-        self.assertEqual(_resolve_per_id_video_source({}, no_draw=False, draw_enabled=True), "raw")
+        self.assertEqual(_resolve_per_id_video_source({}), "raw")
 
     def test_per_id_video_source_can_be_forced(self):
-        self.assertEqual(_resolve_per_id_video_source({"per_id_video_source": "raw"}, no_draw=False), "raw")
-        self.assertEqual(_resolve_per_id_video_source({"per_id_video_source": "annotated"}, no_draw=True), "annotated")
+        self.assertEqual(_resolve_per_id_video_source({"per_id_video_source": "raw"}), "raw")
+        self.assertEqual(_resolve_per_id_video_source({"per_id_video_source": "annotated"}), "annotated")
 
 
 if __name__ == "__main__":

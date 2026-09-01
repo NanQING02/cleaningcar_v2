@@ -120,8 +120,6 @@ class WorkerPlateColorConfTests(unittest.TestCase):
     def _build_worker(
         self,
         rk=None,
-        no_draw=True,
-        draw_plate_boxes=False,
         postprocessor=None,
         dual_lpr=None,
         plate_requires_vehicle=False,
@@ -129,8 +127,6 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         worker = DetectWorker.__new__(DetectWorker)
         worker.idx = 0
         worker.args = SimpleNamespace(
-            no_draw=no_draw,
-            draw_plate_boxes=draw_plate_boxes,
             conf=0.25,
             iou=0.5,
         )
@@ -162,8 +158,8 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         self.assertEqual(len(plate_items), 1)
         self.assertAlmostEqual(float(plate_items[0]["plate_color_conf"]), 0.88, places=6)
 
-    def test_worker_plate_drawing_requires_explicit_flag(self):
-        worker = self._build_worker(no_draw=False, draw_plate_boxes=False)
+    def test_worker_returns_clean_frame_for_pipeline_rendering(self):
+        worker = self._build_worker()
 
         frame = np.zeros((48, 48, 3), dtype=np.uint8)
         worker.task_q.put((0, frame))
@@ -173,18 +169,6 @@ class WorkerPlateColorConfTests(unittest.TestCase):
 
         _, _, frame_out, _, _ = worker.result_q.get_nowait()
         self.assertTrue(np.array_equal(frame_out, frame))
-
-    def test_worker_draws_plate_when_explicitly_enabled(self):
-        worker = self._build_worker(no_draw=False, draw_plate_boxes=True)
-
-        frame = np.zeros((48, 48, 3), dtype=np.uint8)
-        worker.task_q.put((0, frame))
-        worker.task_q.put(None)
-
-        worker.run()
-
-        _, _, frame_out, _, _ = worker.result_q.get_nowait()
-        self.assertFalse(np.array_equal(frame_out, frame))
 
     def test_worker_reports_empty_result_and_finishes_queue_when_frame_fails(self):
         worker = self._build_worker(rk=_FailingRK())

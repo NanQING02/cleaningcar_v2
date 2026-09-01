@@ -133,7 +133,9 @@ class ConfigManager:
         video.pop('ffmpeg_rga', None)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
-        video.setdefault('fp_output_mode', '6')
+        video['fp_output_mode'] = '6'
+        if source_mode == 'camera' or is_rtsp_source:
+            video['hw_decode'] = True
         video.setdefault('csv', '')
         video.setdefault('debug_frame_path', 'off')
         video.setdefault('debug_frame_interval', 30)
@@ -281,6 +283,19 @@ class ConfigManager:
         logic = self.data.setdefault('logic', {})
         logic.pop('enable_global_video', None)
         logic.pop('zone_a_mask_enable', None)
+        for removed_key in (
+            'no_draw',
+            'draw_plate_boxes',
+            'debug_overlay',
+            'debug_track_state',
+            'debug_anchor_points',
+            'debug_water_boxes',
+            'plate_draw_stable_only',
+            'per_id_type6_require_plate_candidate',
+            'track_timeout_frames',
+            'track_max_age',
+        ):
+            logic.pop(removed_key, None)
         for obsolete_key in (
             'per_id_downscale_ratio',
             'per_id_frame_stride',
@@ -298,8 +313,6 @@ class ConfigManager:
         logic.setdefault('stationary_min_frames', 0)
         logic.setdefault('stationary_speed_thresh', 8.0)
         logic.setdefault('type34_min_interval_frames', 5)
-        logic.setdefault('track_timeout_frames', 90)
-        logic.setdefault('track_max_age', 120)
         try:
             track_lost_grace_seconds = float(logic.get('track_lost_grace_seconds', 8.0) or 0.0)
         except (TypeError, ValueError):
@@ -346,8 +359,6 @@ class ConfigManager:
         logic['single_lifecycle_events'] = True
         logic.setdefault('min_zone_a_dwell_frames_for_type5', 25)
         logic.setdefault('min_track_frames_for_type1', 5)
-        logic.setdefault('no_draw', False)
-        logic.setdefault('draw_plate_boxes', False)
         logic.setdefault('require_vehicle_type_for_events', False)
         logic.setdefault('lane_name', '冲洗')
         logic.setdefault('vehicle_shrink_ratio', 0.35)
@@ -364,7 +375,6 @@ class ConfigManager:
         logic.setdefault('plate_text_min_recognition_confidence', 0.75)
         logic.setdefault('plate_text_max_streak_gap_frames', 2)
         logic.setdefault('plate_output_shape_log_once', True)
-        logic.setdefault('plate_draw_stable_only', True)
         logic.setdefault('default_plate_color', '')
         logic.setdefault('default_plate_color_conf', 0.0)
         logic.setdefault('default_cleanliness', 0)
@@ -406,14 +416,9 @@ class ConfigManager:
             logic['anchor_direction_window'],
         )
         logic.setdefault('zone_b_anchor_min_frames', 0)
-        logic.setdefault('debug_overlay', False)
-        logic.setdefault('debug_track_state', False)
-        logic.setdefault('debug_anchor_points', False)
-        logic.setdefault('debug_water_boxes', False)
         logic.setdefault('wash_duration_offset_seconds', 0.0)
         logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
         logic.setdefault('enable_per_id_video', True)
-        logic.setdefault('per_id_type6_require_plate_candidate', False)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         logic.setdefault('per_id_video_queue_size', 8)
         per_id_video_source = str(logic.get('per_id_video_source', 'auto') or 'auto').strip().lower()

@@ -28,16 +28,12 @@ def parse_args():
     ap.add_argument('--conf', type=float, default=0.30)
     ap.add_argument('--iou', type=float, default=0.45)
     ap.add_argument('--max_det', type=int, default=300)
-    ap.add_argument('--fp_output_mode', choices=['6', '9'], default='6',
-                    help='FP 检测模型输出解析模式：6=只用 box+class，9=使用 box+class+score。')
     ap.add_argument('--workers', type=int, default=2, help='Number of inference workers.')
     ap.add_argument('--queue_size', type=int, default=32)
     ap.add_argument('--core_mask', default='all', help="Which NPU cores to use: e.g. '0-2', '0,2', '1', 'all', 'auto'.")
-    ap.add_argument('--hw_decode', action='store_true', help='Use hardware decode: GStreamer+mpp direct-BGR first, then FFmpeg rkmpp fallback.')
+    ap.set_defaults(hw_decode=True)
     ap.add_argument('--csv', help='CSV path, append per detection.')
     ap.add_argument('--output_dir', help='When batch processing, auto-save mp4/csv into this directory using video stem names.')
-    ap.add_argument('--no_draw', action='store_true', help='Do not draw boxes on frames.')
-    ap.add_argument('--draw_plate_boxes', action='store_true', help='Draw license plate boxes/text when drawing is enabled.')
     ap.add_argument('--monitor_interval', type=float, default=0.0, help='Seconds between resource logs (0 disables).')
     ap.add_argument('--limit', type=int, default=0, help='Optional frame limit for quick tests.')
     ap.add_argument('--plate_detect_model', default='models/plate/plate_detect.rknn',
@@ -52,8 +48,6 @@ def parse_args():
                     help="NPU cores for plate detection/recognition RKNNs; empty/auto uses RKNN default.")
     ap.add_argument('--config', default=str(DEFAULT_CONFIG_PATH), help='JSON config describing ROI/event logic.')
     ap.add_argument('--camera', help='当配置包含多个 camera 条目时，指定要运行的 key。')
-    ap.add_argument('--debug_rois', action='store_true', help='Visualize stage lines on output frames.')
-    ap.add_argument('--debug_tracks', action='store_true', help='Overlay per-track state info on frames.')
     ap.add_argument('--source_mode', choices=['auto', 'camera', 'file'], default='auto',
                     help='数据源类型：camera 为实时流（可自动重连），file 为本地视频（读到末尾即停止）。')
     ap.add_argument('--event_log', nargs='?', const='auto',

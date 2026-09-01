@@ -377,9 +377,6 @@ class EventManager:
         self.max_per_id_video_seconds = 1500.0
         self.per_id_video_tail_seconds = 8.0
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
-        self.per_id_type6_require_plate_candidate = bool(
-            self.logic.get('per_id_type6_require_plate_candidate', False)
-        )
         self.pending_events = {}
         self.upload_buffer = {}
         self.upload_qualified = set()
@@ -1335,9 +1332,7 @@ class EventManager:
                         'type2Qualified': True,
                     })
                     if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
-                        last_idx = st.get('last_frame_idx', frame_idx)
-                        timeout_tail_frames = int(round(max(self.fps, 1.0) * self.track_lost_grace_seconds))
-                        st['record_stop_frame'] = last_idx + max(0, timeout_tail_frames)
+                        st['record_stop_frame'] = frame_idx
                 suppress_plate_only_events = bool(
                     self.disable_plate_only_events
                     and st.get('last_vehicle_box') is None

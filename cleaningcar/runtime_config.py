@@ -52,8 +52,6 @@ def load_config(path):
         'zones': zones,
         'shadow_pool': shadow_cfg,
         'allowed_event_types': logic.get('allowed_event_types', [1, 2, 3, 4, 5]),
-        'track_timeout_frames': int(logic.get('track_timeout_frames', 90)),
-        'track_max_age': int(logic.get('track_max_age', 60)),
         'lane_name': logic.get('lane_name', '冲洗'),
         'stationary_speed_thresh': float(logic.get('stationary_speed_thresh', 8.0)),
         'vehicle_shrink_ratio': float(logic.get('vehicle_shrink_ratio', 0.35)),
@@ -84,10 +82,8 @@ def apply_cli_overrides(args, config):
     video_cfg = (config or {}).get('video', {})
     maybe_set('video', video_cfg.get('source'))
     maybe_set('source_mode', video_cfg.get('source_mode'))
-    maybe_set('hw_decode', video_cfg.get('hw_decode'))
     maybe_set('workers', video_cfg.get('workers'))
     maybe_set('core_mask', video_cfg.get('core_mask'))
-    maybe_set('fp_output_mode', video_cfg.get('fp_output_mode'))
     maybe_set('csv', video_cfg.get('csv'))
     cfg = config or {}
     sys_cfg = cfg.get('system', {})
@@ -100,8 +96,6 @@ def apply_cli_overrides(args, config):
     maybe_set('plate_track_lock_frames', logic.get('plate_track_lock_frames'))
     maybe_set('plate_infer_stride', logic.get('plate_infer_stride'))
     maybe_set('plate_core_mask', logic.get('plate_core_mask'))
-    maybe_set('no_draw', logic.get('no_draw'))
-    maybe_set('draw_plate_boxes', logic.get('draw_plate_boxes'))
 
 
 def apply_class_thresholds_from_config(config):

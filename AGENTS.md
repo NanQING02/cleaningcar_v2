@@ -50,8 +50,6 @@ CleaningCar v2 是部署在 RK3588 板端的实时车辆检测与冲洗监测系
 ```bash
 source venv-gst/bin/activate
 python run_zone_detect.py --config configs/config.json
-python run_zone_detect.py --config configs/config.json --fp_output_mode 6
-python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 ```
 
 ### 直接调试 Web
@@ -137,8 +135,7 @@ run_zone_detect.py
 - `system.performance_lock_enabled=true`
 - RGA 管控：**只允许** GStreamer 解码端 BGR 直出（`mppvideodec format=BGR`）隐式使用 RGA（fd/DMA-BUF 路径，失败仅丢帧不死机）；其余任何显式 RGA 用法（ffmpeg_rga/scale_rkrga、rga_resize、wrapbuffer_virtualaddr/imresize 等）已于 2026-08-26 全部移除，禁止恢复
 - NPU 分配：冲洗道主检测+车牌用 core 0，绕行道主检测+车牌用 core 1，双车轮旁路用 core 2
-- `logic.no_draw=true`
-- `logic.draw_plate_boxes=false`
+- 主路和 type1～type6 事件截图使用原始帧；per-id 录像画面由 `logic.per_id_video_source` 选择
 - `logic.plate_infer_stride=2`
 - `logic.enable_per_id_video=true`
 - `logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
@@ -154,7 +151,7 @@ run_zone_detect.py
 - 当前只保留 per-id 单车视频，不再保留全局视频保存功能。
 - Web 不再提供 per-id 单车录像浏览接口，但后台仍按 `logic.enable_per_id_video` 保存。
 - 车轮旁路独立于主相机运行，仅在 `wheel.enabled=true` 且左右源/模型可用时启动。
-- 运行产物清理代码仍保留，但 `storage_cleanup.py` 内运行期开关默认为禁用，当前不会主动删除产物。
+- 运行产物清理已移出主链路，暂存于 `future_modules/storage_cleanup.py`，当前不会主动删除产物。
 
 ## 输出目录
 

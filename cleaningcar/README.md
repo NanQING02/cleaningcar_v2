@@ -65,9 +65,9 @@
 - `runtime_signals.py`
   - 输出心跳文件、启动标志、启动截图、手动截图
 
-- `storage_cleanup.py`
-  - 保留的旧清理模块
-  - 当前运行期默认禁用
+- `future_modules/storage_cleanup.py`
+  - 运行产物清理的未来实现
+  - 当前不加载
   - 后续如需恢复，应单独评审回收策略和误删风险
 
 - `monitoring.py`
@@ -78,8 +78,7 @@
     - 检测模型推理
     - 检测后处理
     - 双模型车牌识别
-    - 基础叠框与叠字
-    - 车牌框仅在 `logic.draw_plate_boxes=true` 且未启用 `logic.no_draw` 时绘制
+    - 返回原始检测帧；annotated per-id 画面由 Pipeline 统一绘制
 
 - `wheel.py`
   - 左右车轮 RTSP 旁路检测
@@ -107,7 +106,7 @@
 4. `cleaningcar/worker.py`
 5. `cleaningcar/fp_detect.py` + `cleaningcar/plate_lpr.py`
 6. `cleaningcar/tracking.py` + `cleaningcar/events.py`
-7. `cleaningcar/runtime_signals.py` + `cleaningcar/storage_cleanup.py`
+7. `cleaningcar/runtime_signals.py` + `future_modules/storage_cleanup.py`
 
 ## 主链路依赖图
 
@@ -124,7 +123,7 @@ flowchart TD
     D --> I["cleaningcar/runtime_signals.py"]
     D --> J["cleaningcar/monitoring.py"]
     D --> K["cleaningcar/vision.py"]
-    D --> L["cleaningcar/storage_cleanup.py"]
+    D --> L["future_modules/storage_cleanup.py"]
     D --> R["cleaningcar/wheel.py"]
 
     F --> M["cleaningcar/fp_detect.py"]
@@ -147,7 +146,7 @@ flowchart TD
 - `worker.py` 是检测与双模型车牌识别的执行层
 - `plate_lpr.py` 负责双模型车牌推理，`plate.py` 只负责文本后处理和锁定
 - `runtime_signals.py` 独立负责心跳、启动标志、启动截图和手动截图
-- `storage_cleanup.py` 保留为旧能力占位，当前默认禁用，不作为现行主链路能力
+- `future_modules/storage_cleanup.py` 保留为未来能力，占位于主链路之外
 
 ## 当前模块级改动收口
 
@@ -155,7 +154,7 @@ flowchart TD
 - 车牌候选的序列部分必须至少包含一个数字；省份简称后全为字母的明显误识别不会进入锁定或上报
 - 中文显示新增 `text_render.py`
 - 事件截图真实落盘校验收到了 `events.py`
-- 运行期清理已收口为默认禁用，仅保留 `storage_cleanup.py` 旧实现
+- 运行期清理已移出主链路，实现暂存于 `future_modules/storage_cleanup.py`
 - RTSP 读流已收口为 GStreamer direct-BGR 唯一路径，不回退到 FFmpeg 或 safe 管线；离线文件仍可使用非 RGA 硬解。单车视频只使用 FFmpeg 硬编，不使用 GStreamer 写出或软件链路兜底
 - 全局视频保存残留已删除，仅保留 `logic.enable_per_id_video`
 - 单车录像帧源由 `logic.per_id_video_source` 统一控制：`annotated` 保存完整调试画面，`raw` 保存干净原始画面，`auto` 默认按 `raw` 处理
@@ -173,5 +172,5 @@ flowchart TD
 6. `plate.py`
 7. `events.py`
 8. `runtime_signals.py`
-9. `storage_cleanup.py`
+9. `future_modules/storage_cleanup.py`
 10. `text_render.py`

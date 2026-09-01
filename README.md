@@ -53,7 +53,7 @@ run_zone_detect.py
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存
 - 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
-- 运行产物清理当前默认禁用，`storage_cleanup.py` 旧实现仅保留在代码中备用
+- 运行产物清理当前不进入主链路，实现暂存于 `future_modules/storage_cleanup.py`
 
 ## 当前默认配置快照
 
@@ -67,13 +67,12 @@ run_zone_detect.py
 - 板端定频：`system.performance_lock_enabled=true`，推理启动前默认尝试定频
 - RGA 管控：项目内**只允许** GStreamer 解码端 BGR 直出（`mppvideodec format=BGR`，fd/DMA-BUF 路径）隐式使用 RGA；其余任何显式 RGA 用法（ffmpeg_rga/scale_rkrga、rga_resize 等）已按 2026-08-26 死机排查结论全部移除，禁止恢复
 - FP 后处理：`video.fp_output_mode=6`
-- 画面叠加：`logic.no_draw=true`
-- 车牌框绘制：`logic.draw_plate_boxes=false`
+- 主路和 type1～type6 事件截图统一使用原始帧；per-id 录像画面由 `logic.per_id_video_source` 唯一控制
 - 调试帧：`video.debug_frame_path=off`
 - 车牌副链路降频：`logic.plate_infer_stride=2`
 - 单车视频：`logic.enable_per_id_video=true`
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
-- 单车视频帧源：建议明确设置 `logic.per_id_video_source=raw` 或 `annotated`，不再依赖分散的 `no_draw`、`debug_*` 参数推断
+- 单车视频帧源：建议明确设置 `logic.per_id_video_source=raw` 或 `annotated`
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常只拉流不推理，Zone A 活跃轨迹触发后 `wheel.active_target_fps=0.0` 拉满推理
 - 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.5`，稳定桶实时入上传队列，最终 `type=5` 前强制 flush 未上传照片
 - 检测 CSV：`video.csv=./video_result/test.csv`
@@ -126,8 +125,6 @@ chmod +x start_web_server.sh
 ```bash
 source venv-gst/bin/activate
 python run_zone_detect.py --config configs/config.json
-python run_zone_detect.py --config configs/config.json --fp_output_mode 6
-python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 ```
 
 ### 3. 直接调试 Web
@@ -237,7 +234,7 @@ systemctl status cleaningcar-web --no-pager
 - `captureImage` 只表示截图文件真实落盘；对外上报是路径还是 base64 由 `system.api.capture_mode` 决定
 - 本地文件视频默认跑完一遍就退出；如果 guardian 自动重启开启，看起来会像循环跑
 - 全局视频保存字段已经移除；不要再使用旧的 `video.save_video` 或 `logic.enable_global_video`
-- 运行产物清理实现仍在 `storage_cleanup.py`，但当前运行期开关默认禁用，不会主动删除产物
+- 运行产物清理实现暂存于 `future_modules/storage_cleanup.py`，当前不会主动删除产物
 - `future_modules/` 下是历史或预留模块，默认不参与当前主链路
 
 ## 部署提醒
@@ -246,7 +243,7 @@ systemctl status cleaningcar-web --no-pager
 - `requirements.txt` 已包含 `Pillow`
 - 手工停 Web 请使用 `./start_web_server.sh stop`
 - 若甲方自行配置 `systemd`，人工停服务请使用 `systemctl stop cleaningcar-web`
-- 当前不对外开放清理策略配置项；`storage_cleanup.py` 仍保留旧实现，但运行期默认禁用
+- 当前不对外开放清理策略配置项；清理实现暂存于 `future_modules/storage_cleanup.py`
 
 ## 代码阅读路线
 

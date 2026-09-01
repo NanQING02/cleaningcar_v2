@@ -1,7 +1,6 @@
 import threading
 import time
 
-import cv2
 import numpy as np
 from rknnlite.api import RKNNLite
 
@@ -10,12 +9,9 @@ from .constants import (
     CLASS_THRESH,
     LICENSE_CLASS,
     VEHICLE_CLASS_IDS,
-    VEHICLE_LABEL_CN,
-    select_box_color,
 )
 from .fp_detect import FpModelPostprocessor
 from .plate_lpr import DualPlateRecognizer
-from .text_render import draw_text
 
 
 class DetectWorker(threading.Thread):
@@ -31,7 +27,6 @@ class DetectWorker(threading.Thread):
         self.dual_lpr = None
         logic_cfg = ((getattr(args, "_config", {}) or {}).get("logic", {}) or {})
         plate_output_shape_log_once = bool(logic_cfg.get("plate_output_shape_log_once", True))
-        self.plate_draw_stable_only = bool(logic_cfg.get("plate_draw_stable_only", True))
 
         try:
             self.rk = RKNNLite()
@@ -79,8 +74,7 @@ class DetectWorker(threading.Thread):
             print(
                 f"plate_infer_stride={self.plate_infer_stride} "
                 f"plate_core_mask={self.plate_core_mask} "
-                f"plate_requires_vehicle={self.plate_requires_vehicle} "
-                f"plate_draw_stable_only={self.plate_draw_stable_only}"
+                f"plate_requires_vehicle={self.plate_requires_vehicle}"
             )
 
         self.frames = 0
@@ -137,8 +131,7 @@ class DetectWorker(threading.Thread):
                 csv_rows = []
                 det_payload = []
                 base_frame = frame
-                draw_frame = frame if self.args.no_draw else frame.copy()
-                draw_plate_boxes = bool(getattr(self.args, "draw_plate_boxes", False)) and not self.args.no_draw
+                draw_frame = frame.copy()
                 has_vehicle_candidates = False
                 primary_boxes = np.empty((0, 4), dtype=np.float32)
                 primary_scores = np.empty((0,), dtype=np.float32)
@@ -172,22 +165,6 @@ class DetectWorker(threading.Thread):
                     x1, y1, x2, y2 = box.astype(int)
 
                     label_name = CLASS_NAMES[int(cls_id)]
-                    label = f"{label_name} {score:.2f}"
-                    draw_now = label_name not in VEHICLE_LABEL_CN
-                    if draw_now and not self.args.no_draw:
-                        color = select_box_color(label_name)
-                        cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(
-                            draw_frame,
-                            label,
-                            (x1, max(0, y1 - 12)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.75,
-                            (255, 255, 255),
-                            2,
-                            cv2.LINE_AA,
-                        )
-
                     csv_rows.append([frame_idx, label_name, f"{score:.4f}", x1, y1, x2, y2, -1, "", ""])
                     det_payload.append(
                         {
@@ -256,36 +233,6 @@ class DetectWorker(threading.Thread):
                     except (TypeError, ValueError):
                         plate_color_conf = None
                     plate_type = str(item.get("plate_type", "") or "")
-
-                    label = f"{label_name} {score:.2f}"
-                    plate_draw_stable_only = bool(getattr(self, "plate_draw_stable_only", True))
-                    if plate_text and not plate_draw_stable_only:
-                        label = f"{label} {plate_text}"
-                    if plate_color and not plate_draw_stable_only:
-                        label = f"{label} {plate_color}"
-
-                    if draw_plate_boxes:
-                        color = select_box_color(label_name)
-                        cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
-                        draw_text(
-                            draw_frame,
-                            label,
-                            (x1, max(0, y1 - 12)),
-                            font_scale=0.75,
-                            color=(255, 255, 255),
-                            thickness=2,
-                            anchor='lb',
-                        )
-                        for pt in item.get("landmarks", []) or []:
-                            if not isinstance(pt, (list, tuple)) or len(pt) != 2:
-                                continue
-                            cv2.circle(
-                                draw_frame,
-                                (int(round(pt[0])), int(round(pt[1]))),
-                                3,
-                                (0, 255, 255),
-                                -1,
-                            )
 
                     csv_rows.append(
                         [frame_idx, label_name, f"{score:.4f}", x1, y1, x2, y2, -1, plate_text, plate_text]

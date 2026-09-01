@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from cleaningcar import video_io
-from cleaningcar.storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
+from future_modules.storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
 
 
 class _DummyWriter:
@@ -19,13 +19,8 @@ class _DummyWriter:
 
 
 class _DummyEventManager:
-    def __init__(self, has_valid_plate_candidate=True, require_plate_candidate=False):
+    def __init__(self):
         self.calls = []
-        self.has_valid_plate_candidate = has_valid_plate_candidate
-        self.per_id_type6_require_plate_candidate = require_plate_candidate
-
-    def _has_valid_plate_candidate(self, track_state):
-        return self.has_valid_plate_candidate
 
     def emit_event(self, *args, **kwargs):
         self.calls.append((args, kwargs))
@@ -89,12 +84,12 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertEqual(writer.release_calls, 1)
             self.assertEqual(event_manager.calls, [])
 
-    def test_finalize_per_id_recording_emits_type6_without_plate_candidate_by_default(self):
+    def test_finalize_per_id_recording_emits_type6(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "session.mp4"
             output_path.write_text("video", encoding="utf-8")
             writer = _DummyWriter(output_path)
-            event_manager = _DummyEventManager(has_valid_plate_candidate=False)
+            event_manager = _DummyEventManager()
 
             result = video_io.finalize_per_id_recording(
                 writer,
@@ -109,34 +104,12 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertEqual(len(event_manager.calls), 1)
             self.assertEqual(event_manager.calls[0][0][1], 6)
 
-    def test_finalize_per_id_recording_can_require_valid_plate_candidate(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "session.mp4"
-            output_path.write_text("video", encoding="utf-8")
-            writer = _DummyWriter(output_path)
-            event_manager = _DummyEventManager(
-                has_valid_plate_candidate=False,
-                require_plate_candidate=True,
-            )
-
-            result = video_io.finalize_per_id_recording(
-                writer,
-                track_id=7,
-                track_state={"type2_qualified": True, "record_stop_frame": 30},
-                event_manager=event_manager,
-            )
-
-            self.assertFalse(result)
-            self.assertTrue(output_path.exists())
-            self.assertEqual(writer.release_calls, 1)
-            self.assertEqual(event_manager.calls, [])
-
     def test_finalize_per_id_recording_emits_type6_with_valid_plate_candidate(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "session.mp4"
             output_path.write_text("video", encoding="utf-8")
             writer = _DummyWriter(output_path)
-            event_manager = _DummyEventManager(has_valid_plate_candidate=True)
+            event_manager = _DummyEventManager()
 
             result = video_io.finalize_per_id_recording(
                 writer,
@@ -154,7 +127,7 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertEqual(event_manager.calls[0][0][4], {"perIdVideoEnabled": True})
 
     def test_emit_per_id_video_type6_reports_disabled_recording(self):
-        event_manager = _DummyEventManager(has_valid_plate_candidate=True)
+        event_manager = _DummyEventManager()
         track_state = {"type2_qualified": True, "record_stop_frame": 30}
 
         result = video_io.emit_per_id_video_type6(
@@ -173,7 +146,7 @@ class CleanupDisabledTests(unittest.TestCase):
         self.assertTrue(track_state.get("per_id_type6_emitted"))
 
     def test_emit_per_id_video_type6_deduplicates_by_track_state(self):
-        event_manager = _DummyEventManager(has_valid_plate_candidate=True)
+        event_manager = _DummyEventManager()
         track_state = {"type2_qualified": True, "record_stop_frame": 30}
 
         first = video_io.emit_per_id_video_type6(7, track_state, event_manager, False)
