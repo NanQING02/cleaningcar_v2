@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "CleaningCar v2 当前运行流程",
+    "locale": "zh-CN",
+    "animation": "none",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main-chain",
+        "label": "主检测链路",
+        "focus": ["web", "guardian", "cli", "reader", "queue", "worker", "tracker", "event", "output"],
+        "note": "从 Web 启动到事件产物的主路径。"
+      },
+      {
+        "id": "wheel-sidechain",
+        "label": "车轮旁路",
+        "focus": ["reader", "tracker", "event", "wheel", "output"],
+        "note": "左右车轮 RTSP 独立检测，并在车辆生命周期内绑定结果。"
+      },
+      {
+        "id": "health-loop",
+        "label": "守护与心跳",
+        "focus": ["guardian", "cli", "output"],
+        "note": "guardian 通过 heartbeat 和运行信号判断健康度并处理重启。"
+      }
+    ],
+    "output": "archify_cleaningcar_current_workflow.html"
+  },
+  "lanes": [
+    { "id": "main", "label": "主推理与业务链路" }
+  ],
+  "phases": [
+    { "id": "startup", "label": "启动与取流", "fromCol": 0, "toCol": 2 },
+    { "id": "infer", "label": "检测与识别", "fromCol": 3, "toCol": 3, "variant": "emphasis" },
+    { "id": "business-output", "label": "业务判定与输出", "fromCol": 4, "toCol": 4, "variant": "dashed" }
+  ],
+  "groups": [],
+  "mainPath": ["web", "guardian", "cli", "reader", "queue", "worker", "tracker", "event", "output"],
+  "semanticChecks": {
+    "allowedRoots": ["web", "wheel"],
+    "allowedTerminals": ["output"],
+    "requiredPaths": [
+      { "from": "web", "to": "output" },
+      { "from": "reader", "to": "event" },
+      { "from": "event", "to": "output" }
+    ]
+  },
+  "nodes": [
+    { "id": "web", "lane": "main", "col": 0, "type": "frontend", "label": "FastAPI Web / Workbench", "sublabel": "控制台", "width": 152 },
+    { "id": "guardian", "lane": "main", "col": 1, "type": "security", "label": "InferenceManager", "sublabel": "子进程守护 + 自动重启", "tag": "heartbeat", "width": 152 },
+    { "id": "cli", "lane": "main", "col": 2, "type": "backend", "label": "run_zone_detect.py", "sublabel": "process_video", "width": 152 },
+    { "id": "reader", "lane": "main", "col": 2, "type": "backend", "label": "VideoReader", "sublabel": "RTSP: mpp direct-BGR", "tag": "文件源可重连/读到 EOF 停止", "yOffset": 88, "width": 152 },
+    { "id": "queue", "lane": "main", "col": 3, "type": "messagebus", "label": "Frame Queue", "sublabel": "task_q / result_q；实时背压", "width": 152 },
+    { "id": "worker", "lane": "main", "col": 4, "type": "backend", "label": "DetectWorker (RKNN)", "sublabel": "FP 检测 + plate_lpr 双模型", "tag": "NPU core 0", "width": 152 },
+    { "id": "tracker", "lane": "main", "col": 4, "type": "backend", "label": "VehicleTracker + Anchor", "sublabel": "ByteTrack/Kalman + Zone A/B", "yOffset": -84, "width": 152 },
+    { "id": "event", "lane": "main", "col": 4, "type": "backend", "label": "EventManager", "sublabel": "车辆生命周期与 type 1~6 状态机", "yOffset": 90, "width": 152 },
+    { "id": "output", "lane": "main", "col": 4, "type": "database", "label": "事件与产物", "sublabel": "JSON / per-id / API", "yOffset": 160, "width": 152 },
+    { "id": "wheel", "lane": "main", "col": 5, "type": "external", "label": "WheelDetectionService", "sublabel": "左右 RTSP / 事件驱动 / core 2", "yOffset": -10, "width": 152 }
+  ],
+  "edges": [
+    { "id": "web-guardian", "from": "web", "to": "guardian", "label": "启动 / 停止 / 重启", "role": "main", "variant": "emphasis" },
+    { "id": "guardian-cli", "from": "guardian", "to": "cli", "label": "subprocess + config", "role": "main", "fromSide": "top", "toSide": "top", "route": "up-channel" },
+    { "id": "cli-reader", "from": "cli", "to": "reader", "label": "process_video(path, args)", "role": "main" },
+    { "id": "reader-queue", "from": "reader", "to": "queue", "label": "BGR frame + timestamp", "role": "main" },
+    { "id": "queue-worker", "from": "queue", "to": "worker", "label": "task_q", "role": "main" },
+    { "id": "worker-tracker", "from": "worker", "to": "tracker", "label": "det_payload + plate fields", "role": "main", "variant": "emphasis" },
+    { "id": "tracker-event", "from": "tracker", "to": "event", "label": "track / anchor / water / zones", "role": "main", "variant": "emphasis" },
+    { "id": "event-output", "from": "event", "to": "output", "label": "emit event + capture + upload", "role": "main", "variant": "emphasis" },
+    { "id": "wheel-event", "from": "wheel", "to": "event", "label": "cached wheelResults", "role": "return", "variant": "dashed" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "当前配置快照",
+      "items": [
+        "主相机为 camera + hw_decode=true + gstreamer；RTSP 只走 mpp direct-BGR",
+        "主检测/车牌使用 core 0，车轮旁路使用 core 2；plate_infer_stride=2",
+        "wheel.enabled=true 且 event_driven=true；per-id 视频已开启"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "运行边界",
+      "items": [
+        "本地文件默认跑完 EOF 后停止；camera 读流失败达到阈值后重连",
+        "RGA 只允许解码端隐式 fd/DMA-BUF 路径，禁止显式 librga/virtual address 调用",
+        "事件截图优先原始帧，type=5 事件可附加已锁定的 wheelResults"
+      ]
+    }
+  ]
+}

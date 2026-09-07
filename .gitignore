@@ -57,3 +57,9 @@ packages/*wheel_sidechain*.tar.gz
 packages/*wheel_sidechain*.zip
 web_server_*.log
 web_server_*.pid
+
+# Archify 生成的过程快照、视觉验收旁证和工作台临时包
+.archify-delivery-*/
+.tmp_board_compare/
+*.visual-check.*
+.workbench-*.bundle
