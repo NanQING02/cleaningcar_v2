@@ -176,6 +176,16 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - 当留空或仍使用旧默认值 `/dev/shm/cleaningcar_debug.jpg` 时，运行时会自动改写到：
   - `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
 
+### `agent` 大模型过车报告
+
+- `enabled`：是否在工作台启用大模型分析，默认关闭
+- `base_url`：OpenAI 兼容接口根地址，默认 `https://api.deepseek.com`
+- `model`：模型名称，默认 `deepseek-v4-flash`
+- `api_key_env`：保存 API Key 的服务端环境变量名，默认 `DEEPSEEK_API_KEY`
+- `timeout_seconds`、`temperature`、`max_tokens`：生成超时、温度和最大输出 Token
+
+API Key 本身禁止写入 JSON 配置。Web 服务只从 `api_key_env` 指定的环境变量读取密钥；更改环境变量后需要重启 Web 服务。
+
 ### 未来功能：运行产物清理
 
 - 当前运行期不加载清理器

@@ -213,8 +213,23 @@ systemctl status cleaningcar-web --no-pager
 - `GET /debug_frame_meta`、`GET /debug_frame`：手动读取最新调试帧
 - `POST /snapshot/keep`：保留手动截图
 - `GET /logs/*`：查看推理、事件和检测日志
+- `GET /workbench/events/{id}/agent/status`：检查完整过车记录的大模型报告能力
+- `POST /workbench/events/{id}/agent/report`：以 SSE 流式生成过车分析报告
 
 多路运行时，辅助接口要带 `?key=<配置文件名>`。`POST /snapshot/keep` 是异步入队，不是同步返回图片，真正的截图结果在同目录下的 `*.done.json` / `*.failed.json`。
+
+## 大模型过车分析
+
+工作台的已结束过车记录支持调用 OpenAI 兼容接口（默认 DeepSeek）生成中文分析报告。发送给模型的是事件白名单摘要，仅包含车牌/车型、车道、阶段时间、冲洗时长、异常标记和车轮类别；不会发送截图、录像、源文件路径、图片 Base64 或 RTSP 信息。
+
+首次使用：
+
+1. 在 Web 服务进程环境中设置 `DEEPSEEK_API_KEY`，不要把密钥写入仓库配置。
+2. 打开“系统设置 → 大模型报告”，确认接口地址和模型名称，勾选启用并保存。
+3. 重启 Web 服务，使新增或变更的环境变量生效。
+4. 在事件台账打开一条“已结束”记录，点击“大模型分析”。生成过程中会流式显示，可停止；完成后会自动保存到 `event_output_dir/agent_reports/`，并可下载 Markdown 或导出 PNG 报告截图。
+
+再次打开同一记录时优先读取本地报告，不调用模型；只有手动点击“重新分析并更新”才会重新请求并覆盖缓存。相关配置位于 `agent`：`enabled`、`base_url`、`model`、`api_key_env`、`timeout_seconds`、`temperature`、`max_tokens`。报告属于算法记录辅助分析，页面和提示词均不会将其表述为自动验收结论。type1～type6 的保存、展示和送模边界见 `docs/过车记录字段审计.md`。
 
 ## 现场排查顺序
 

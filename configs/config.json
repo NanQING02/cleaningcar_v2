@@ -236,6 +236,15 @@
     "pending_plate_cache_ttl_frames": 40,
     "pending_plate_cache_max_entries": 30
   },
+  "agent": {
+    "enabled": false,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "timeout_seconds": 120,
+    "temperature": 0.2,
+    "max_tokens": 1800
+  },
   "event_output_dir": "events/config",
   "event_capture_dir": "/data/ftp/event_captures/config",
   "event_capture_quality": 70

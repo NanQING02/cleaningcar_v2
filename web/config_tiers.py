@@ -13,6 +13,13 @@ class ConfigTierError(ValueError):
 
 
 CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
+    {"path": "agent.enabled", "tier": TIER_DEVELOPER, "group": "agent", "label": "启用大模型报告"},
+    {"path": "agent.base_url", "tier": TIER_DEVELOPER, "group": "agent", "label": "大模型接口地址"},
+    {"path": "agent.model", "tier": TIER_DEVELOPER, "group": "agent", "label": "大模型名称"},
+    {"path": "agent.api_key_env", "tier": TIER_DEVELOPER, "group": "agent", "label": "API Key 环境变量"},
+    {"path": "agent.timeout_seconds", "tier": TIER_DEVELOPER, "group": "agent", "label": "报告生成超时秒数"},
+    {"path": "agent.temperature", "tier": TIER_DEVELOPER, "group": "agent", "label": "报告生成温度"},
+    {"path": "agent.max_tokens", "tier": TIER_DEVELOPER, "group": "agent", "label": "报告最大 Token"},
     {"path": "system.device_id", "tier": TIER_USER, "group": "system", "label": "设备 ID"},
     {"path": "system.api.url", "tier": TIER_USER, "group": "system", "label": "API 地址"},
     {"path": "system.api.token", "tier": TIER_USER, "group": "system", "label": "API Token"},

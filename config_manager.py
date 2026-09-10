@@ -465,6 +465,18 @@ class ConfigManager:
 
         self.data.pop('storage', None)
 
+        agent = self.data.setdefault('agent', {})
+        if not isinstance(agent, dict):
+            agent = {}
+            self.data['agent'] = agent
+        agent.setdefault('enabled', False)
+        agent.setdefault('base_url', 'https://api.deepseek.com')
+        agent.setdefault('model', 'deepseek-v4-flash')
+        agent.setdefault('api_key_env', 'DEEPSEEK_API_KEY')
+        agent.setdefault('timeout_seconds', 120.0)
+        agent.setdefault('temperature', 0.2)
+        agent.setdefault('max_tokens', 1800)
+
         self.data.setdefault('event_capture_quality', 70)
 
         cfg_name = self.path.stem or 'default'

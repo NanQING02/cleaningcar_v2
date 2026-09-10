@@ -80,6 +80,12 @@ python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000
   - 手动保留原图/叠加图截图
 - `GET /inference/status`
   - 推理 guardian 状态
+- `GET /workbench/events/{event_id}/agent/status`
+  - 检查报告服务、密钥环境变量和记录完整性
+- `POST /workbench/events/{event_id}/agent/report`
+  - 将精简事件摘要送入模型并返回 SSE 文本流
+- `GET /workbench/events/{event_id}/agent/report`
+  - 读取该记录已保存的本地报告，不调用模型
 
 说明：
 
@@ -87,3 +93,7 @@ python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000
 - 开发者面板现在只走 `/config/developer`
 - 若用户面板提交了开发者字段，后端会直接拒绝保存
 - 旧的 `/videos/per_id` Web 浏览接口已删除，不再暴露按车 ID 录像下载入口
+- 大模型报告只允许对“已结束”的过车记录生成
+- API Key 仅从 `agent.api_key_env` 指定的服务端环境变量读取，不进入配置或浏览器
+- Markdown 下载和 PNG 报告截图均在浏览器本地生成
+- 完整生成的报告自动写入对应 `event_output_dir/agent_reports/`；重新打开记录直接读取，手动更新才再次调用模型

@@ -236,6 +236,15 @@
     "enable_event_disk": true,
     "vehicle_tracker_impl": "bytetrack"
   },
+  "agent": {
+    "enabled": false,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "timeout_seconds": 120,
+    "temperature": 0.2,
+    "max_tokens": 1800
+  },
   "event_output_dir": "events/config_绕行",
   "event_capture_dir": "/data/ftp/event_captures/config_绕行",
   "event_capture_quality": 70

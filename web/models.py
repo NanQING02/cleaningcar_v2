@@ -18,6 +18,7 @@ class ConfigPayload(BaseModel):
     video: Optional[Dict[str, Any]] = None
     wheel: Optional[Dict[str, Any]] = None
     logic: Optional[Dict[str, Any]] = None
+    agent: Optional[Dict[str, Any]] = None
     zones: Optional[Dict[str, Any]] = None
     event_output_dir: Optional[str] = None
     event_capture_dir: Optional[str] = None
