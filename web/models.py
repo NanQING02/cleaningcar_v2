@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,7 @@ class ZonePayload(BaseModel):
     zone_a_detection: List[List[float]]
     zone_b_wash: List[List[float]]
     flow_vector: FlowVector
+    direction_reference_edge: Union[int, str] = "auto"
 
 
 class ConfigPayload(BaseModel):

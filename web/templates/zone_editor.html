@@ -371,17 +371,14 @@
           <label>锚点上移比例 (0-0.9)
             <input type="number" min="0" max="0.9" step="0.01" v-model.number="form.logic.anchor_offset_ratio" />
           </label>
-          <label>正式锚点策略
-            <select v-model="form.logic.anchor_mode">
-              <option value="directional">方向感知模式（当前正式逻辑）</option>
-              <option value="legacy">旧兼容模式（仅回退使用）</option>
-            </select>
+          <label>正式Zone锚点
+            <input value="中性锚点（固定，不随方向移动）" disabled />
           </label>
           <label>
             <input type="checkbox" v-model="form.logic.anchor_shadow_compare" />
             同时计算并绘制 H/D/L 锚点
           </label>
-          <label>兼容锚点反向偏移比例
+          <label>对照锚点偏移比例（不参与Zone）
             <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.anchor_legacy_flow_shift_ratio" />
           </label>
           <label>方向判断窗口
@@ -396,10 +393,10 @@
           <label>方向最小位移（框高比例）
             <input type="number" min="0" max="0.5" step="0.01" v-model.number="form.logic.anchor_direction_min_displacement_ratio" />
           </label>
-          <label>D锚点过渡帧数
+          <label>方向对照锚点过渡帧数（不参与Zone）
             <input type="number" min="1" max="30" v-model.number="form.logic.anchor_direction_blend_frames" />
           </label>
-          <p class="hint">H为车框底部上移后的中性点，D由H的多帧移动方向生成并正式参与Zone判断，L只作旧逻辑对照和紧急回退。G已停用，不参与画面和业务判定。</p>
+          <p class="hint">H为车框底部上移后的中性点，并固定参与Zone判断。D和L仅保留为方向诊断对照，不会移动业务锚点。G已停用。</p>
           <label>Zone B 锚点延迟帧
             <input type="number" min="0" v-model.number="form.logic.zone_b_anchor_min_frames" />
           </label>
@@ -454,6 +451,7 @@
           <ul class="hint">
             <li>单击画布添加顶点；拖动顶点可微调；按 Delete 键删除最近的一个顶点。</li>
             <li>切换到“流向箭头”后，可拖动起点/终点，或在空白处单击重新定位。</li>
+            <li>白色虚线为方向0.5分界；绿色边为方向参考边。默认自动选择最接近垂直流向的Zone A边，也可手动指定。</li>
             <li>点击“保存区域”后即写入 config.json，推理进程需重启一次生效。</li>
             <li>可在任意电脑浏览器访问： http://设备IP:8000 </li>
           </ul>
@@ -462,6 +460,14 @@
             <button class="secondary" @click="resetZone">重置当前区域</button>
             <button @click="saveZones" :disabled="busy">保存区域</button>
           </div>
+          <label>方向参考边
+            <select v-model="form.zones.direction_reference_edge" @change="repaint">
+              <option value="auto">自动选择最接近垂直流向的边</option>
+              <option v-for="(_, index) in form.zones.zone_a_detection" :key="`direction-edge-${index}`" :value="index">
+                边 {{ index + 1 }}（点{{ index + 1 }} → 点{{ (index + 1) % form.zones.zone_a_detection.length + 1 }}）
+              </option>
+            </select>
+          </label>
           <h3>实时调试画面</h3>
           <p class="hint">推理脚本每隔固定帧写入带绘制的 <code>{{ form.video.debug_frame_path || './debug/latest.jpg' }}</code>；页面不会自动轮询，点击按钮才读取最新调试帧。</p>
           <img v-if="debugImageUrl" :src="debugImageUrl" alt="调试画面" class="debug-img"/>
@@ -638,7 +644,8 @@
             zones: {
               zone_a_detection: [],
               zone_b_wash: [],
-              flow_vector: { start: [0.5, 0.2], end: [0.5, 0.8] }
+              flow_vector: { start: [0.5, 0.2], end: [0.5, 0.8] },
+              direction_reference_edge: 'auto'
             },
             event_output_dir: 'events/config',
             event_capture_dir: '/data/ftp/event_captures/config',
@@ -862,6 +869,16 @@
           z.zone_a_detection = z.zone_a_detection || [];
           z.zone_b_wash = z.zone_b_wash || [];
           z.flow_vector = z.flow_vector || { start: [0.5, 0.2], end: [0.5, 0.8] };
+          const referenceEdge = z.direction_reference_edge;
+          if (referenceEdge !== 'auto') {
+            const parsedEdge = Number(referenceEdge);
+            z.direction_reference_edge = Number.isInteger(parsedEdge)
+              && parsedEdge >= 0
+              && parsedEdge < z.zone_a_detection.length
+              ? parsedEdge
+              : 'auto';
+          }
+          if (typeof z.direction_reference_edge === 'undefined') z.direction_reference_edge = 'auto';
           this.form.zones = z;
           this.form.system.device_id = this.form.system.device_id || '';
           this.form.system.monitor_interval = Number(this.form.system.monitor_interval || 2.0);
@@ -983,9 +1000,7 @@
           if (typeof this.form.logic.anchor_offset_ratio !== 'number') {
             this.form.logic.anchor_offset_ratio = 0;
           }
-          this.form.logic.anchor_mode = ['legacy', 'directional'].includes(this.form.logic.anchor_mode)
-            ? this.form.logic.anchor_mode
-            : 'directional';
+          this.form.logic.anchor_mode = 'neutral';
           this.form.logic.anchor_shadow_compare = !!this.form.logic.anchor_shadow_compare;
           this.form.logic.anchor_legacy_flow_shift_ratio = Number(this.form.logic.anchor_legacy_flow_shift_ratio ?? 0.3);
           this.form.logic.anchor_history_size = Number(this.form.logic.anchor_history_size || 20);
@@ -1176,7 +1191,6 @@
               single_lifecycle_events: this.form.logic.single_lifecycle_events,
               require_vehicle_type_for_events: this.form.logic.require_vehicle_type_for_events,
               anchor_offset_ratio: this.form.logic.anchor_offset_ratio,
-              anchor_mode: this.form.logic.anchor_mode,
               anchor_shadow_compare: this.form.logic.anchor_shadow_compare,
               anchor_legacy_flow_shift_ratio: this.form.logic.anchor_legacy_flow_shift_ratio,
               anchor_history_size: this.form.logic.anchor_history_size,
@@ -1236,13 +1250,22 @@
           this.busy = true;
           this.status = '保存区域中…';
           try {
+            const requestedReferenceEdge = this.form.zones.direction_reference_edge;
+            const parsedReferenceEdge = Number(requestedReferenceEdge);
+            const directionReferenceEdge = requestedReferenceEdge === 'auto'
+              || !Number.isInteger(parsedReferenceEdge)
+              || parsedReferenceEdge < 0
+              || parsedReferenceEdge >= this.form.zones.zone_a_detection.length
+              ? 'auto'
+              : parsedReferenceEdge;
             const payload = {
               zone_a_detection: this.form.zones.zone_a_detection.map(this.clampNormPoint),
               zone_b_wash: this.form.zones.zone_b_wash.map(this.clampNormPoint),
               flow_vector: {
                 start: this.clampNormPoint(this.form.zones.flow_vector.start),
                 end: this.clampNormPoint(this.form.zones.flow_vector.end)
-              }
+              },
+              direction_reference_edge: directionReferenceEdge
             };
             this.form.zones = payload;
             const res = await fetch(this.buildKeyedUrl('/zones'), {
@@ -1253,6 +1276,7 @@
             if (!res.ok) throw new Error('保存区域失败');
             this.lastSave = new Date().toLocaleString();
             this.status = '区域已保存';
+            this.repaint();
           } catch (err) {
             this.status = err.message;
           } finally {
@@ -1479,6 +1503,7 @@
             this.form.zones.flow_vector = { start: [0.5, 0.2], end: [0.5, 0.8] };
           } else if (this.editMode === 'zone_a') {
             this.form.zones.zone_a_detection = [];
+            this.form.zones.direction_reference_edge = 'auto';
           } else {
             this.form.zones.zone_b_wash = [];
           }
@@ -1533,11 +1558,101 @@
           });
           this.ctx.lineWidth = 1;
         },
+        directionDividerGeometry() {
+          const polygon = this.form.zones.zone_a_detection || [];
+          if (polygon.length < 3) return null;
+          const points = polygon.map(point => this.toPx(point));
+          const flowStart = this.toPx(this.form.zones.flow_vector.start);
+          const flowEnd = this.toPx(this.form.zones.flow_vector.end);
+          const flowX = flowEnd.x - flowStart.x;
+          const flowY = flowEnd.y - flowStart.y;
+          const flowLength = Math.hypot(flowX, flowY);
+          if (flowLength < 1e-6) return null;
+          const flowUnit = { x: flowX / flowLength, y: flowY / flowLength };
+          let edgeIndex = Number(this.form.zones.direction_reference_edge);
+          if (this.form.zones.direction_reference_edge === 'auto'
+              || !Number.isInteger(edgeIndex)
+              || edgeIndex < 0
+              || edgeIndex >= points.length) {
+            let best = null;
+            points.forEach((start, index) => {
+              const end = points[(index + 1) % points.length];
+              const edgeX = end.x - start.x;
+              const edgeY = end.y - start.y;
+              const length = Math.hypot(edgeX, edgeY);
+              if (length < 1e-6) return;
+              const error = Math.abs((edgeX / length) * flowUnit.x + (edgeY / length) * flowUnit.y);
+              if (!best || error < best.error - 1e-9
+                  || (Math.abs(error - best.error) <= 1e-9 && length > best.length)) {
+                best = { index, error, length };
+              }
+            });
+            if (!best) return null;
+            edgeIndex = best.index;
+          }
+          const edgeStart = points[edgeIndex];
+          const edgeEnd = points[(edgeIndex + 1) % points.length];
+          const edgeX = edgeEnd.x - edgeStart.x;
+          const edgeY = edgeEnd.y - edgeStart.y;
+          const edgeLength = Math.hypot(edgeX, edgeY);
+          if (edgeLength < 1e-6) return null;
+          const edgeUnit = { x: edgeX / edgeLength, y: edgeY / edgeLength };
+          let normal = { x: -edgeUnit.y, y: edgeUnit.x };
+          if (normal.x * flowUnit.x + normal.y * flowUnit.y < 0) {
+            normal = { x: -normal.x, y: -normal.y };
+          }
+          const supports = points.map(point => point.x * normal.x + point.y * normal.y);
+          const splitSupport = (Math.min(...supports) + Math.max(...supports)) / 2;
+          const centroid = points.reduce((sum, point) => ({
+            x: sum.x + point.x / points.length,
+            y: sum.y + point.y / points.length
+          }), { x: 0, y: 0 });
+          const shift = splitSupport - (centroid.x * normal.x + centroid.y * normal.y);
+          const center = { x: centroid.x + normal.x * shift, y: centroid.y + normal.y * shift };
+          const extent = Math.hypot(this.canvas.width, this.canvas.height) * 2;
+          return {
+            edgeIndex,
+            edgeStart,
+            edgeEnd,
+            center,
+            normal,
+            lineStart: { x: center.x - edgeUnit.x * extent, y: center.y - edgeUnit.y * extent },
+            lineEnd: { x: center.x + edgeUnit.x * extent, y: center.y + edgeUnit.y * extent }
+          };
+        },
+        drawDirectionDivider() {
+          const geometry = this.directionDividerGeometry();
+          if (!geometry) return;
+          this.ctx.save();
+          this.ctx.strokeStyle = '#52ff52';
+          this.ctx.lineWidth = 4;
+          this.ctx.setLineDash([]);
+          this.ctx.beginPath();
+          this.ctx.moveTo(geometry.edgeStart.x, geometry.edgeStart.y);
+          this.ctx.lineTo(geometry.edgeEnd.x, geometry.edgeEnd.y);
+          this.ctx.stroke();
+          this.ctx.strokeStyle = '#ffffff';
+          this.ctx.lineWidth = 3;
+          this.ctx.setLineDash([14, 10]);
+          this.ctx.beginPath();
+          this.ctx.moveTo(geometry.lineStart.x, geometry.lineStart.y);
+          this.ctx.lineTo(geometry.lineEnd.x, geometry.lineEnd.y);
+          this.ctx.stroke();
+          this.ctx.setLineDash([]);
+          this.ctx.fillStyle = '#ffffff';
+          this.ctx.font = 'bold 18px sans-serif';
+          this.ctx.fillText('0.5', geometry.center.x + 8, geometry.center.y - 8);
+          this.ctx.fillStyle = '#52ff52';
+          this.ctx.font = 'bold 15px sans-serif';
+          this.ctx.fillText(`参考边 ${geometry.edgeIndex + 1}`, geometry.edgeStart.x + 8, geometry.edgeStart.y - 8);
+          this.ctx.restore();
+        },
        repaint() {
           if (!this.ctx) return;
           this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
           this.drawPolygon(this.form.zones.zone_a_detection, 'rgba(0,200,0,0.9)');
           this.drawPolygon(this.form.zones.zone_b_wash, 'rgba(220,80,80,0.9)');
+          this.drawDirectionDivider();
           this.drawFlow();
         },
         async refreshDebugImage() {

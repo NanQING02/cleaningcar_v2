@@ -179,6 +179,16 @@ def read_zones(key: Optional[str] = None):
 @app.post("/zones")
 def update_zones(payload: ZonePayload, key: Optional[str] = None):
     cfg = _load_config(key)
+    reference_edge = payload.direction_reference_edge
+    if isinstance(reference_edge, str) and reference_edge.strip().lower() == "auto":
+        reference_edge = "auto"
+    else:
+        try:
+            reference_edge = int(reference_edge)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="方向参考边必须为 auto 或有效边序号") from exc
+        if not 0 <= reference_edge < len(payload.zone_a_detection):
+            raise HTTPException(status_code=400, detail="方向参考边超出 Zone A 边数")
     cfg.data.setdefault("zones", {})
     cfg.data["zones"]["zone_a_detection"] = payload.zone_a_detection
     cfg.data["zones"]["zone_b_wash"] = payload.zone_b_wash
@@ -186,6 +196,7 @@ def update_zones(payload: ZonePayload, key: Optional[str] = None):
         "start": payload.flow_vector.start,
         "end": payload.flow_vector.end,
     }
+    cfg.data["zones"]["direction_reference_edge"] = reference_edge
     cfg.save()
     return {"status": "ok"}
 

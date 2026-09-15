@@ -116,6 +116,44 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertNotIn("shadow_plate_pool: this.form.logic.shadow_plate_pool", text)
         self.assertIn("max_candidates: this.form.logic.shadow_plate_pool.max_candidates", text)
 
+    def test_zone_editor_shows_direction_reference_edge_and_midline(self):
+        template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
+        text = template_path.read_text(encoding="utf-8")
+
+        self.assertIn('v-model="form.zones.direction_reference_edge"', text)
+        self.assertIn("drawDirectionDivider", text)
+        self.assertIn("中性锚点（固定，不随方向移动）", text)
+        self.assertIn("fillText('0.5'", text)
+
+    def test_zone_update_persists_manual_direction_reference_edge(self):
+        active = self.write_config("config.json", "camera-a")
+        state.set_config_path(active)
+
+        result = server.update_zones(server.ZonePayload(
+            zone_a_detection=[[0, 0], [1, 0], [1, 1], [0, 1]],
+            zone_b_wash=[[0, 0], [1, 0], [1, 1]],
+            flow_vector={"start": [0, 0], "end": [1, 1]},
+            direction_reference_edge=2,
+        ))
+        saved = json.loads(active.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(saved["zones"]["direction_reference_edge"], 2)
+
+    def test_zone_update_rejects_invalid_direction_reference_edge(self):
+        active = self.write_config("config.json", "camera-a")
+        state.set_config_path(active)
+
+        with self.assertRaises(HTTPException) as ctx:
+            server.update_zones(server.ZonePayload(
+                zone_a_detection=[[0, 0], [1, 0], [1, 1]],
+                zone_b_wash=[],
+                flow_vector={"start": [0, 0], "end": [1, 1]},
+                direction_reference_edge=4,
+            ))
+
+        self.assertEqual(ctx.exception.status_code, 400)
+
     def test_developer_config_can_enable_annotated_per_id_video(self):
         active = self.write_config("config.json", "camera-a")
         state.set_config_path(active)
