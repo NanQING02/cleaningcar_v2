@@ -51,6 +51,7 @@
     "event_driven": true,
     "reader_event_driven": false,
     "reader_idle_fps": 5.0,
+    "ignore_broken_rtp_info": true,
     "left_source": "",
     "right_source": "",
     "model": "models/wheel/2026.4.28CRwheel.rknn",

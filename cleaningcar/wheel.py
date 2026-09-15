@@ -14,12 +14,74 @@ import numpy as np
 from .fp_detect import FpModelPostprocessor
 from .log_throttle import WindowedLogThrottle
 from .video_io import create_video_reader, parse_core_mask
+from .wheel_gstreamer import create_wheel_gstreamer_capture, safe_rtsp_source_label
 
 DEFAULT_WHEEL_CLASSES = ["0-25", "25-50", "50-75", "75-100"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WHEEL_MODEL_PATH = (PROJECT_ROOT / "models" / "wheel" / "2026.4.28CRwheel.rknn").resolve()
 DEFAULT_ENTRY_CLUSTER_SECONDS = 1.5
 WHEEL_SIDES = ("left", "right")
+
+
+_safe_source_label = safe_rtsp_source_label
+
+
+def create_wheel_video_reader(
+    source,
+    reader_args,
+    side,
+    reconnect_count=0,
+    state_callback=None,
+    cancel_event=None,
+):
+    config = getattr(reader_args, "_config", {}) or {}
+    wheel_cfg = config.get("wheel", {}) or {}
+    video_cfg = config.get("video", {}) or {}
+    ignore_broken_rtp_info = _safe_bool(wheel_cfg.get("ignore_broken_rtp_info", True), True)
+    is_rtsp = str(source or "").strip().lower().startswith(("rtsp://", "rtsps://"))
+    if not ignore_broken_rtp_info or not is_rtsp or not bool(getattr(reader_args, "hw_decode", False)):
+        if state_callback is not None:
+            state_callback("starting")
+        cap, meta = create_video_reader(source, reader_args)
+        if state_callback is not None:
+            state_callback("bgr_ready" if cap is not None and cap.isOpened() else "failed")
+        return cap, meta
+
+    try:
+        latency_ms = max(0, int(video_cfg.get("rtsp_latency_ms", 200)))
+    except (TypeError, ValueError):
+        latency_ms = 200
+    try:
+        max_buffers = max(1, int(video_cfg.get("rtsp_appsink_max_buffers", 1)))
+    except (TypeError, ValueError):
+        max_buffers = 1
+    try:
+        timeout_seconds = max(0.1, float(video_cfg.get("reader_frame_timeout_seconds", 5.0)))
+    except (TypeError, ValueError):
+        timeout_seconds = 5.0
+    cap = create_wheel_gstreamer_capture(
+        source=source,
+        side=side,
+        latency_ms=latency_ms,
+        max_buffers=max_buffers,
+        open_timeout_seconds=timeout_seconds,
+        read_timeout_seconds=timeout_seconds,
+        ignore_broken_rtp_info=True,
+        reconnect_count=reconnect_count,
+        state_callback=state_callback,
+        cancel_event=cancel_event,
+    )
+    meta = {
+        "decode_mode": "hw" if cap.isOpened() else "none",
+        "decode_backend": "wheel_gstreamer" if cap.isOpened() else "none",
+        "fallback_used": False,
+        "fallback_reason": "" if cap.isOpened() else "wheel_gstreamer_open_failed",
+        "source_kind": "rtsp",
+        "attempt_order": ["wheel_gstreamer"],
+        "reader_frame_timeout_seconds": timeout_seconds,
+        "requested_backend": "gstreamer",
+    }
+    return cap, meta
 
 
 def _safe_float(value, default):
@@ -135,6 +197,7 @@ def resolve_wheel_settings(config, base_dir=None):
             _safe_int(raw.get("reader_stale_check_interval_frames", 15), 15),
         ),
         "reader_stale_hash_size": max(4, min(_safe_int(raw.get("reader_stale_hash_size", 16), 16), 64)),
+        "ignore_broken_rtp_info": _safe_bool(raw.get("ignore_broken_rtp_info", True), True),
     }
 
 
@@ -524,6 +587,7 @@ class WheelReaderThread(threading.Thread):
         self.stale_check_interval_frames = max(1, int(stale_check_interval_frames))
         self.stale_hash_size = max(4, min(int(stale_hash_size), 64))
         self.frames = 0
+        self.open_attempt_count = 0
         self.open_count = 0
         self.reconnect_count = 0
         self.frames_since_open = 0
@@ -534,10 +598,25 @@ class WheelReaderThread(threading.Thread):
         self.last_open_delay = 0.0
         self.last_frame_ts = 0.0
         self.last_stale_seconds = 0.0
+        self.reader_state = "starting"
+        self._capture = None
+        self._last_capture_diagnostics = {}
         self._log_throttle = WindowedLogThrottle()
 
     def _log(self, key, message, window_seconds=10.0):
         self._log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
+
+    def _set_reader_state(self, state):
+        self.reader_state = str(state or "failed")
+
+    def capture_diagnostics(self):
+        cap = self._capture
+        if cap is not None and hasattr(cap, "diagnostics"):
+            try:
+                return dict(cap.diagnostics() or {})
+            except Exception:
+                pass
+        return dict(self._last_capture_diagnostics)
 
     @staticmethod
     def _capture_failure_summary(cap):
@@ -593,6 +672,7 @@ class WheelReaderThread(threading.Thread):
                     open_age = now - open_started_ts if open_started_ts > 0.0 else -1.0
                     next_reconnect = self.reconnect_count + 1
                     self.last_reconnect_reason = "not_opened"
+                    self._set_reader_state("reconnecting")
                     self.last_frame_gap = last_gap
                     self.last_open_age = open_age
                     self.frames_since_open = frames_since_open
@@ -601,15 +681,17 @@ class WheelReaderThread(threading.Thread):
                         message=(
                             f"[wheel:{self.side}] reader lost opened-state, reconnect #{next_reconnect} "
                             f"reason=not_opened frames_since_open={frames_since_open} "
-                            f"last_frame_gap={last_gap:.2f}s open_age={open_age:.2f}s source={self.source}"
+                            f"last_frame_gap={last_gap:.2f}s open_age={open_age:.2f}s source={_safe_source_label(self.source)}"
                         ),
                         window_seconds=10.0,
                     )
                     try:
+                        self._last_capture_diagnostics = self.capture_diagnostics()
                         cap.release()
                     except Exception:
                         pass
                     cap = None
+                    self._capture = None
                     consecutive_fails = 0
                     self.reconnect_count = next_reconnect
                     last_open_reason = "not_opened"
@@ -620,14 +702,29 @@ class WheelReaderThread(threading.Thread):
 
                 if cap is None or not cap_is_open:
                     last_open_started_ts = time.time()
-                    cap, decode_meta = create_video_reader(self.source, self.reader_args)
+                    self.open_attempt_count += 1
+                    self._set_reader_state("starting" if self.reconnect_count == 0 else "reconnecting")
+                    cap, decode_meta = create_wheel_video_reader(
+                        self.source,
+                        self.reader_args,
+                        side=self.side,
+                        reconnect_count=self.reconnect_count,
+                        state_callback=self._set_reader_state,
+                        cancel_event=self.stop_event,
+                    )
+                    self._capture = cap
                     if cap is None or not hasattr(cap, "isOpened") or not cap.isOpened():
+                        next_reconnect = self.reconnect_count + 1
+                        failure_summary = self._capture_failure_summary(cap)
+                        self._last_capture_diagnostics = self.capture_diagnostics()
+                        self._set_reader_state("failed")
                         self._log(
                             key=f"wheel.reader.open.{self.side}",
                             message=(
                                 f"[wheel:{self.side}] reader open failed, "
-                                f"attempt={self.open_count + 1} reopen_count={self.reconnect_count} "
-                                f"reason={last_open_reason} source={self.source}"
+                                f"attempt={self.open_attempt_count} reopen_count={next_reconnect} "
+                                f"reason={last_open_reason} source={_safe_source_label(self.source)}"
+                                f"{(' ' + failure_summary) if failure_summary else ''}"
                             ),
                             window_seconds=10.0,
                         )
@@ -637,12 +734,18 @@ class WheelReaderThread(threading.Thread):
                         except Exception:
                             pass
                         cap = None
+                        self._capture = None
+                        self.reconnect_count = next_reconnect
+                        self.last_reconnect_reason = "open_failed"
+                        last_open_reason = "open_failed"
+                        self.last_open_reason = last_open_reason
                         if self.stop_event.wait(self.reconnect_delay):
                             break
                         continue
                     mode = str((decode_meta or {}).get("decode_mode") or "none")
                     backend = str((decode_meta or {}).get("decode_backend") or "none")
                     self.open_count += 1
+                    self._set_reader_state("bgr_ready")
                     open_started_ts = time.time()
                     frames_since_open = 0
                     stale_signature = None
@@ -658,7 +761,7 @@ class WheelReaderThread(threading.Thread):
                         f"[wheel:{self.side}] reader opened mode={mode} backend={backend} "
                         f"open_count={self.open_count} reopen_count={self.reconnect_count} "
                         f"reason={last_open_reason} open_delay={open_delay:.2f}s "
-                        f"last_frame_gap={last_gap:.2f}s source={self.source}"
+                        f"last_frame_gap={last_gap:.2f}s source={_safe_source_label(self.source)}"
                     )
                     consecutive_fails = 0
 
@@ -675,6 +778,7 @@ class WheelReaderThread(threading.Thread):
                     last_gap = now - last_frame_ts if last_frame_ts > 0.0 else -1.0
                     open_age = now - open_started_ts if open_started_ts > 0.0 else -1.0
                     self.last_reconnect_reason = "read_fail_threshold"
+                    self._set_reader_state("reconnecting")
                     self.last_frame_gap = last_gap
                     self.last_open_age = open_age
                     self.frames_since_open = frames_since_open
@@ -684,16 +788,18 @@ class WheelReaderThread(threading.Thread):
                             f"[wheel:{self.side}] reader stalled, reconnect #{next_reconnect} "
                             f"reason=read_fail_threshold consecutive_fails={consecutive_fails} "
                             f"threshold={self.reader_fail_threshold} frames_since_open={frames_since_open} "
-                            f"last_frame_gap={last_gap:.2f}s open_age={open_age:.2f}s source={self.source}"
+                            f"last_frame_gap={last_gap:.2f}s open_age={open_age:.2f}s source={_safe_source_label(self.source)}"
                             f"{(' ' + failure_summary) if failure_summary else ''}"
                         ),
                         window_seconds=10.0,
                     )
                     try:
+                        self._last_capture_diagnostics = self.capture_diagnostics()
                         cap.release()
                     except Exception:
                         pass
                     cap = None
+                    self._capture = None
                     consecutive_fails = 0
                     self.reconnect_count = next_reconnect
                     last_open_reason = "read_fail_threshold"
@@ -720,6 +826,7 @@ class WheelReaderThread(threading.Thread):
                                 next_reconnect = self.reconnect_count + 1
                                 open_age = last_frame_ts - open_started_ts if open_started_ts > 0.0 else -1.0
                                 self.last_reconnect_reason = "stale_frame"
+                                self._set_reader_state("reconnecting")
                                 self.last_frame_gap = 0.0
                                 self.last_open_age = open_age
                                 self.frames_since_open = frames_since_open
@@ -729,15 +836,17 @@ class WheelReaderThread(threading.Thread):
                                         f"[wheel:{self.side}] reader frame stale, reconnect #{next_reconnect} "
                                         f"reason=stale_frame stale_age={stale_age:.2f}s "
                                         f"threshold={self.stale_seconds:.2f}s frames_since_open={frames_since_open} "
-                                        f"open_age={open_age:.2f}s source={self.source}"
+                                        f"open_age={open_age:.2f}s source={_safe_source_label(self.source)}"
                                     ),
                                     window_seconds=10.0,
                                 )
                                 try:
+                                    self._last_capture_diagnostics = self.capture_diagnostics()
                                     cap.release()
                                 except Exception:
                                     pass
                                 cap = None
+                                self._capture = None
                                 consecutive_fails = 0
                                 self.reconnect_count = next_reconnect
                                 last_open_reason = "stale_frame"
@@ -754,9 +863,11 @@ class WheelReaderThread(threading.Thread):
         finally:
             try:
                 if cap is not None:
+                    self._last_capture_diagnostics = self.capture_diagnostics()
                     cap.release()
             except Exception:
                 pass
+            self._capture = None
 
 
 class WheelProcessorThread(threading.Thread):
@@ -1078,7 +1189,7 @@ class WheelDetectionService:
                 if worker is None:
                     continue
                 try:
-                    worker.join(timeout=1.0)
+                    worker.join(timeout=3.0 if key == "reader" else 1.0)
                 except Exception:
                     pass
 
@@ -1141,7 +1252,11 @@ class WheelDetectionService:
                     if float(getattr(processor, "last_hit_capture_ts", 0.0) or 0.0) > 0.0 else -1.0
                 ),
                 "reader_open_count": int(getattr(reader, "open_count", 0) or 0),
+                "reader_open_attempt_count": int(getattr(reader, "open_attempt_count", 0) or 0),
                 "reader_reconnect_count": int(getattr(reader, "reconnect_count", 0) or 0),
+                "reader_state": str(getattr(reader, "reader_state", "failed") or "failed"),
+                "reader_ready": str(getattr(reader, "reader_state", "") or "") == "bgr_ready",
+                "reader_diagnostics": reader.capture_diagnostics() if reader is not None else {},
                 "reader_frames_since_open": int(getattr(reader, "frames_since_open", 0) or 0),
                 "reader_last_open_reason": str(getattr(reader, "last_open_reason", "") or ""),
                 "reader_last_reconnect_reason": str(getattr(reader, "last_reconnect_reason", "") or ""),

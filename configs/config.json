@@ -51,6 +51,7 @@
     "event_driven": true,
     "reader_event_driven": false,
     "reader_idle_fps": 5.0,
+    "ignore_broken_rtp_info": true,
     "left_source": "rtsp://admin:YanyA.999.@192.168.1.20:554/stream1",
     "right_source": "rtsp://admin:YanyA.999.@192.168.1.21:554/stream1",
     "model": "models/wheel/2026.4.28CRwheel.rknn",

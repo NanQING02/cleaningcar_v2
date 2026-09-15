@@ -59,6 +59,11 @@ def parse_args():
     parser.add_argument("--left-source", default="", help="Override wheel.left_source.")
     parser.add_argument("--right-source", default="", help="Override wheel.right_source.")
     parser.add_argument("--wheel-photo-url", default="", help="Override POST /api/vehicle/wheel-photo URL.")
+    parser.add_argument(
+        "--use-config-wheel-photo-url",
+        action="store_true",
+        help="Explicitly allow the configured wheel-photo endpoint. Default keeps all payloads local.",
+    )
     parser.add_argument("--api-token", default="", help="Bearer token for the mock or real API.")
     parser.add_argument("--photo-base-dir", default="", help="Override system.wheel_photo_base_dir.")
     parser.add_argument("--output-dir", default="", help="Probe output dir. Default: wheel_probe_output/<timestamp>.")
@@ -164,6 +169,7 @@ def main():
     from cleaningcar.events import EventManager, WheelPhotoUploader
     from cleaningcar.runtime_config import load_config
     from cleaningcar.wheel import WheelDetectionService, resolve_wheel_settings
+    from cleaningcar.wheel_gstreamer import safe_rtsp_source_label
 
     config = load_config(str(config_path))
     wheel_cfg = config.setdefault("wheel", {})
@@ -184,15 +190,17 @@ def main():
     if wheel_cfg.get("left_source") or wheel_cfg.get("right_source"):
         wheel_cfg["enabled"] = True
 
-    wheel_photo_url = args.wheel_photo_url or config.get("wheel_photo_url") or ""
-    photo_base_dir = args.photo_base_dir or config.get("wheel_photo_base_dir") or "/data/ftp"
+    wheel_photo_url = args.wheel_photo_url
+    if args.use_config_wheel_photo_url and not wheel_photo_url:
+        wheel_photo_url = config.get("wheel_photo_url") or ""
+    photo_base_dir = args.photo_base_dir or str(output_dir / "photos")
     settings = resolve_wheel_settings(config, base_dir=config_path.parent)
     resolved = {
         "config": str(config_path),
         "output_dir": str(output_dir),
         "wheel_enabled": settings.get("enabled"),
-        "left_source": settings.get("left_source"),
-        "right_source": settings.get("right_source"),
+        "left_source": safe_rtsp_source_label(settings.get("left_source")),
+        "right_source": safe_rtsp_source_label(settings.get("right_source")),
         "model": settings.get("model"),
         "classes": settings.get("classes"),
         "target_fps": settings.get("target_fps"),

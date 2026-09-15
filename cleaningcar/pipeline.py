@@ -1050,6 +1050,7 @@ def process_video(path, args):
             'wash_priority_active': wash_priority_active,
             'wash_priority_active_tracks': wash_priority_active_tracks,
             'wash_priority_last_change_ts': wash_priority_last_change_ts,
+            'wheel': wheel_service.snapshot_stats() if wheel_service is not None else {},
         }
         try:
             write_json_atomic(heartbeat_path, payload)
@@ -1092,6 +1093,7 @@ def process_video(path, args):
             'wash_priority_active': wash_priority_active,
             'wash_priority_active_tracks': wash_priority_active_tracks,
             'wash_priority_last_change_ts': wash_priority_last_change_ts,
+            'wheel': wheel_service.snapshot_stats() if wheel_service is not None else {},
         }
         if extra:
             payload.update(extra)
@@ -2700,6 +2702,7 @@ def process_video(path, args):
                     f'/age={float(item.get("reader_last_open_age", -1.0) or -1.0):.1f}s'
                     f'/gap={float(item.get("reader_last_frame_gap", -1.0) or -1.0):.1f}s'
                     f'/reason={item.get("reader_last_reconnect_reason") or item.get("reader_last_open_reason") or "-"}'
+                    f'/state={item.get("reader_state") or "failed"}'
                     f'/alive={int(bool(item.get("reader_alive", False)))}'
                 )
             service_stats = wheel_stats_now.get('_service', {}) if isinstance(wheel_stats_now, dict) else {}

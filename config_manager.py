@@ -181,6 +181,11 @@ class ConfigManager:
             wheel['reader_event_driven'] = reader_event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['reader_event_driven'] = bool(reader_event_driven)
+        ignore_broken_rtp_info = wheel.get('ignore_broken_rtp_info', True)
+        if isinstance(ignore_broken_rtp_info, str):
+            wheel['ignore_broken_rtp_info'] = ignore_broken_rtp_info.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            wheel['ignore_broken_rtp_info'] = bool(ignore_broken_rtp_info)
         wheel.pop('run_mode', None)
         wheel.pop('service_url', None)
         wheel.pop('service_timeout_seconds', None)
