@@ -1086,6 +1086,7 @@ class EventManager:
         if zone_flags.get('exit_a'):
             st['zone_a_exited'] = True
         if zone_flags.get('enter_a'):
+            st['zone_a_exited'] = False
             st['zone_a_enter_frame'] = frame_idx
             st['zone_a_dwell_frames'] = 0
         enter_a_frame = st.get('zone_a_enter_frame', -1)

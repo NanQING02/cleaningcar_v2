@@ -31,8 +31,8 @@ class ZoneState:
     born_inside_outcome: str = ''
     transition_reason: str = 'initialized'
     last_observation_frame: int = -1
-    enter_ratio: float = 0.0
-    exit_ratio: float = 0.0
+    enter_ratio: Optional[float] = None
+    exit_ratio: Optional[float] = None
     entry_point: Tuple[float, float] = (0.0, 0.0)
     exit_point: Tuple[float, float] = (0.0, 0.0)
     last_anchor: Tuple[float, float] = (0.0, 0.0)
@@ -43,6 +43,8 @@ class ZoneManager:
     zone_a: List[Tuple[float, float]]
     zone_b: List[Tuple[float, float]]
     flow_vector: Tuple[Tuple[float, float], Tuple[float, float]]
+    direction_reference_edge: object = 'auto'
+    direction_split_ratio: float = 0.5
     entry_hysteresis: int = 3
     exit_hysteresis: int = 3
     zone_a_margin_ratio: float = 0.10
@@ -62,22 +64,80 @@ class ZoneManager:
         self.zone_a_observed_outside_hits = max(1, int(self.zone_a_observed_outside_hits))
         self.zone_a_enter_core_hits = max(1, int(self.zone_a_enter_core_hits))
         self.zone_a_exit_outside_hits = max(1, int(self.zone_a_exit_outside_hits))
+        self.direction_split_ratio = max(0.0, min(1.0, float(self.direction_split_ratio)))
         self._zone_a_contour = np.array(self.zone_a, dtype=np.float32) if len(self.zone_a) >= 3 else None
-        ratios = []
-        for pt in self.zone_a:
-            ratios.append(self._relative_position(pt))
-        if ratios:
-            lo = min(ratios)
-            hi = max(ratios)
-            if hi - lo < 1e-6:
-                self._zone_a_min = 0.25
-                self._zone_a_max = 0.75
-            else:
-                self._zone_a_min = lo
-                self._zone_a_max = hi
-        else:
-            self._zone_a_min = 0.25
-            self._zone_a_max = 0.75
+        self._direction_edge_index = self._resolve_direction_reference_edge()
+        self._direction_axis = None
+        self._direction_min = 0.0
+        self._direction_max = 0.0
+        self._configure_direction_axis()
+
+    @property
+    def direction_reference_edge_index(self) -> Optional[int]:
+        return self._direction_edge_index
+
+    def _flow_unit(self) -> Optional[Tuple[float, float]]:
+        flow_start, flow_end = self.flow_vector
+        fx = float(flow_end[0]) - float(flow_start[0])
+        fy = float(flow_end[1]) - float(flow_start[1])
+        norm = float(np.hypot(fx, fy))
+        if norm <= 1e-6:
+            return None
+        return fx / norm, fy / norm
+
+    def _resolve_direction_reference_edge(self) -> Optional[int]:
+        edge_count = len(self.zone_a)
+        if edge_count < 2:
+            return None
+        raw = self.direction_reference_edge
+        if not isinstance(raw, str) or raw.strip().lower() != 'auto':
+            try:
+                index = int(raw)
+            except (TypeError, ValueError):
+                index = -1
+            if 0 <= index < edge_count:
+                return index
+        flow_unit = self._flow_unit()
+        if flow_unit is None:
+            return 0
+        fx, fy = flow_unit
+        candidates = []
+        for index, start in enumerate(self.zone_a):
+            end = self.zone_a[(index + 1) % edge_count]
+            ex = float(end[0]) - float(start[0])
+            ey = float(end[1]) - float(start[1])
+            length = float(np.hypot(ex, ey))
+            if length <= 1e-6:
+                continue
+            perpendicular_error = abs((ex / length) * fx + (ey / length) * fy)
+            candidates.append((perpendicular_error, -length, index))
+        return min(candidates)[2] if candidates else 0
+
+    def _configure_direction_axis(self):
+        index = self._direction_edge_index
+        flow_unit = self._flow_unit()
+        if index is None or flow_unit is None or len(self.zone_a) < 2:
+            return
+        start = self.zone_a[index]
+        end = self.zone_a[(index + 1) % len(self.zone_a)]
+        ex = float(end[0]) - float(start[0])
+        ey = float(end[1]) - float(start[1])
+        length = float(np.hypot(ex, ey))
+        if length <= 1e-6:
+            return
+        nx, ny = -ey / length, ex / length
+        if nx * flow_unit[0] + ny * flow_unit[1] < 0.0:
+            nx, ny = -nx, -ny
+        projections = [float(pt[0]) * nx + float(pt[1]) * ny for pt in self.zone_a]
+        if not projections:
+            return
+        lo = min(projections)
+        hi = max(projections)
+        if hi - lo <= 1e-6:
+            return
+        self._direction_axis = (nx, ny)
+        self._direction_min = lo
+        self._direction_max = hi
 
     def update_track(
         self,
@@ -196,6 +256,8 @@ class ZoneManager:
                     )
                     state.enter_ratio = self._relative_position(normalized_anchor)
                     state.entry_point = normalized_anchor
+                    state.exit_ratio = None
+                    state.exit_point = (0.0, 0.0)
                     state.transition_reason = (
                         'born_inside_a_candidate'
                         if state.initial_core_compat
@@ -293,19 +355,14 @@ class ZoneManager:
             return 0, ''
         entry_ratio = state.enter_ratio
         exit_ratio = state.exit_ratio
-        if entry_ratio <= 0.0 and state.entry_point != (0.0, 0.0):
+        if entry_ratio is None and state.entry_point != (0.0, 0.0):
             entry_ratio = self._relative_position(state.entry_point)
         exit_pt = state.exit_point if state.exit_point != (0.0, 0.0) else state.last_anchor
-        if exit_ratio <= 0.0 and exit_pt != (0.0, 0.0):
+        if exit_ratio is None and exit_pt != (0.0, 0.0):
             exit_ratio = self._relative_position(exit_pt)
-        if entry_ratio <= 0.0 and exit_ratio <= 0.0:
+        if entry_ratio is None or exit_ratio is None:
             return 0, ''
-        zone_min = getattr(self, '_zone_a_min', 0.25)
-        zone_max = getattr(self, '_zone_a_max', 0.75)
-        if zone_max - zone_min < 1e-6:
-            zone_min = 0.25
-            zone_max = 0.75
-        mid = 0.5 * (zone_min + zone_max)
+        mid = self.direction_split_ratio
         entry_forward = entry_ratio <= mid
         exit_front = exit_ratio >= mid
         if entry_forward and exit_front:
@@ -317,6 +374,13 @@ class ZoneManager:
         return 8, '反向反出'
 
     def _relative_position(self, point: Tuple[float, float]) -> float:
+        if self._direction_axis is not None:
+            nx, ny = self._direction_axis
+            span = self._direction_max - self._direction_min
+            if span > 1e-6:
+                projection = float(point[0]) * nx + float(point[1]) * ny
+                ratio = (projection - self._direction_min) / span
+                return max(0.0, min(1.0, ratio))
         flow_start, flow_end = self.flow_vector
         fx = flow_end[0] - flow_start[0]
         fy = flow_end[1] - flow_start[1]

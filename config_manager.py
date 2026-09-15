@@ -289,6 +289,18 @@ class ConfigManager:
             'start': _ensure_point(flow_vec.get('start', (0.0, 0.0))),
             'end': _ensure_point(flow_vec.get('end', (0.0, 1.0)))
         }
+        reference_edge = zones.get('direction_reference_edge', 'auto')
+        if isinstance(reference_edge, str) and reference_edge.strip().lower() == 'auto':
+            zones['direction_reference_edge'] = 'auto'
+        else:
+            try:
+                reference_edge = int(reference_edge)
+            except (TypeError, ValueError):
+                reference_edge = -1
+            edge_count = len(zones['zone_a_detection'])
+            zones['direction_reference_edge'] = (
+                reference_edge if 0 <= reference_edge < edge_count else 'auto'
+            )
 
         logic = self.data.setdefault('logic', {})
         logic.pop('enable_global_video', None)
@@ -394,10 +406,7 @@ class ConfigManager:
         logic.setdefault('car_plate_cache_ttl', 60)
         logic.setdefault('allowed_event_types', [1, 2, 3, 4, 5, 6])
         logic.setdefault('anchor_offset_ratio', 0.0)
-        anchor_mode = str(logic.get('anchor_mode', 'directional') or 'directional').strip().lower()
-        if anchor_mode not in {'legacy', 'directional'}:
-            anchor_mode = 'directional'
-        logic['anchor_mode'] = anchor_mode
+        logic['anchor_mode'] = 'neutral'
         logic['anchor_shadow_compare'] = bool(logic.get('anchor_shadow_compare', False))
         for key, default, minimum, maximum in (
             ('anchor_legacy_flow_shift_ratio', 0.3, 0.0, 1.0),

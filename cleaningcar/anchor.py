@@ -45,9 +45,7 @@ class AnchorEstimator:
         logic_cfg = logic_cfg or {}
         self.frame_w = max(1.0, float(frame_size[0]))
         self.frame_h = max(1.0, float(frame_size[1]))
-        self.mode = str(logic_cfg.get('anchor_mode', 'directional') or 'directional').strip().lower()
-        if self.mode not in {'legacy', 'directional'}:
-            self.mode = 'directional'
+        self.mode = 'neutral'
         self.shadow_compare = bool(logic_cfg.get('anchor_shadow_compare', False))
         self.legacy_vertical_ratio = self._bounded_float(logic_cfg.get('anchor_offset_ratio', 0.1), 0.1, 0.0, 0.95)
         self.legacy_flow_shift_ratio = self._bounded_float(
@@ -299,10 +297,10 @@ class AnchorEstimator:
             )
             history.append((normalized_frame_idx, adaptive_point))
 
-        if self.mode == 'directional':
-            selected_point = directional_point
-        else:
-            selected_point = legacy_point
+        # Zone A/B and event transitions always use the stable neutral point.
+        # Directional/legacy points remain diagnostic-only and must never move
+        # the business anchor after motion direction is locked.
+        selected_point = neutral_point
         result = AnchorResult(
             track_id=normalized_track_id,
             frame_idx=normalized_frame_idx,

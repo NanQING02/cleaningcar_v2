@@ -825,6 +825,22 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertIn(1, emitted)
         self.assertIn(1, manager.tracks[1]["events"])
 
+    def test_zone_a_reentry_clears_historical_exit_marker(self):
+        zone = _ScriptedZoneManager({
+            1: {"inside_a": True, "enter_a": True},
+            2: {"inside_a": False, "exit_a": True},
+            3: {"inside_a": True, "enter_a": True},
+        })
+        manager = self._manager_with_zone(zone)
+
+        self._update(manager, 1)
+        self._update(manager, 2)
+        self.assertTrue(manager.tracks[1]["zone_a_exited"])
+
+        self._update(manager, 3)
+
+        self.assertFalse(manager.tracks[1]["zone_a_exited"])
+
     def test_type5_waits_for_zone_b_exit_and_emits_after_type4(self):
         zone = _ScriptedZoneManager({
             1: {"inside_a": True, "enter_a": True},

@@ -1,6 +1,6 @@
 import unittest
 
-from zone_manager import ZoneManager
+from zone_manager import ZoneManager, ZoneState
 
 
 class ZoneManagerDebounceTests(unittest.TestCase):
@@ -99,6 +99,47 @@ class ZoneManagerDebounceTests(unittest.TestCase):
         state, flags = manager.update_track(1, (10, 50), 17, vehicle_height=40)
         self.assertTrue(flags['enter_a'])
         self.assertTrue(state.inside_a)
+        self.assertIsNone(state.exit_ratio)
+        self.assertEqual(state.exit_point, (0.0, 0.0))
+
+    def test_auto_reference_edge_uses_zone_parallel_midline(self):
+        manager = ZoneManager(
+            zone_a=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            zone_b=[],
+            flow_vector=((50, 0), (50, 100)),
+            direction_reference_edge='auto',
+        )
+
+        self.assertEqual(manager.direction_reference_edge_index, 0)
+        self.assertAlmostEqual(manager._relative_position((50, 25)), 0.25)
+        self.assertAlmostEqual(manager._relative_position((50, 75)), 0.75)
+
+    def test_manual_reference_edge_controls_direction_axis(self):
+        manager = ZoneManager(
+            zone_a=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            zone_b=[],
+            flow_vector=((0, 50), (100, 50)),
+            direction_reference_edge=1,
+        )
+
+        self.assertEqual(manager.direction_reference_edge_index, 1)
+        self.assertAlmostEqual(manager._relative_position((25, 50)), 0.25)
+        self.assertAlmostEqual(manager._relative_position((75, 50)), 0.75)
+
+    def test_direction_keeps_four_entry_exit_combinations(self):
+        manager = self._manager()
+        cases = (
+            (0.25, 0.75, (5, '正向前出')),
+            (0.25, 0.25, (6, '正向反出')),
+            (0.75, 0.75, (7, '反向前出')),
+            (0.75, 0.25, (8, '反向反出')),
+        )
+
+        for entry_ratio, exit_ratio, expected in cases:
+            self.assertEqual(
+                manager.resolve_direction(ZoneState(enter_ratio=entry_ratio, exit_ratio=exit_ratio)),
+                expected,
+            )
 
     def test_initial_core_becomes_born_inside_candidate_after_three_hits(self):
         manager = self._manager()

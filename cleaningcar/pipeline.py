@@ -590,6 +590,7 @@ def process_video(path, args):
         zone_a_pts,
         zone_b_pts,
         (flow_start, flow_end),
+        direction_reference_edge=zones_cfg.get('direction_reference_edge', 'auto'),
         entry_hysteresis=int(logic_cfg.get('zone_b_entry_hysteresis', 3)),
         exit_hysteresis=int(logic_cfg.get('zone_b_exit_hysteresis', 3)),
         zone_a_margin_ratio=float(logic_cfg.get('zone_a_margin_ratio', 0.10)),

@@ -4,7 +4,7 @@ from cleaningcar.anchor import AnchorEstimator
 
 
 class AnchorEstimatorTests(unittest.TestCase):
-    def test_legacy_mode_matches_existing_formula(self):
+    def test_legacy_mode_is_forced_to_neutral_business_anchor(self):
         estimator = AnchorEstimator(
             frame_size=(1920, 1080),
             flow_vector=((0, 0), (100, 0)),
@@ -20,7 +20,8 @@ class AnchorEstimatorTests(unittest.TestCase):
         self.assertEqual(result.legacy_point, (140.0, 280.0))
         self.assertEqual(result.neutral_point, (200.0, 280.0))
         self.assertEqual(result.directional_point, result.neutral_point)
-        self.assertEqual(result.selected_point, result.legacy_point)
+        self.assertEqual(result.mode, 'neutral')
+        self.assertEqual(result.selected_point, result.neutral_point)
         self.assertEqual(result.adaptive_point, (200.0, 284.0))
         self.assertEqual(result.motion_direction, 'unknown')
 
@@ -39,8 +40,8 @@ class AnchorEstimatorTests(unittest.TestCase):
 
         self.assertAlmostEqual(result.vertical_offset_px, 21.6, places=5)
         self.assertAlmostEqual(result.adaptive_point[1], 878.4, places=5)
-        self.assertEqual(result.mode, 'directional')
-        self.assertEqual(result.selected_point, result.directional_point)
+        self.assertEqual(result.mode, 'neutral')
+        self.assertEqual(result.selected_point, result.neutral_point)
 
     def test_adaptive_point_does_not_depend_on_flow_direction(self):
         box = [100, 100, 300, 300]
@@ -106,7 +107,7 @@ class AnchorEstimatorTests(unittest.TestCase):
         self.assertAlmostEqual(results[4].direction_blend, 0.2)
         self.assertGreater(results[4].directional_point[0], results[4].legacy_point[0])
         self.assertEqual(results[-1].directional_point, results[-1].legacy_point)
-        self.assertEqual(results[-1].selected_point, results[-1].legacy_point)
+        self.assertEqual(results[-1].selected_point, results[-1].neutral_point)
 
     def test_reverse_motion_mirrors_directional_point_across_neutral_point(self):
         estimator = AnchorEstimator(
@@ -157,7 +158,7 @@ class AnchorEstimatorTests(unittest.TestCase):
         self.assertFalse(result.direction_locked)
         self.assertEqual(result.directional_point, result.neutral_point)
 
-    def test_directional_mode_selects_d_without_changing_legacy_formula(self):
+    def test_directional_diagnostic_never_moves_business_anchor(self):
         estimator = AnchorEstimator(
             (1920, 1080),
             ((0, 0), (100, 0)),
@@ -173,7 +174,8 @@ class AnchorEstimatorTests(unittest.TestCase):
             result = estimator.estimate(1, [100 + step * 10, 100, 300 + step * 10, 300], step + 1)
 
         self.assertEqual(result.directional_point, result.legacy_point)
-        self.assertEqual(result.selected_point, result.directional_point)
+        self.assertEqual(result.selected_point, result.neutral_point)
+        self.assertNotEqual(result.selected_point, result.directional_point)
 
     def test_ground_history_expiry_does_not_clear_direction_lock(self):
         estimator = AnchorEstimator(

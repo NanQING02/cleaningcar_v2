@@ -123,7 +123,8 @@
         0.6537,
         0.8394
       ]
-    }
+    },
+    "direction_reference_edge": "auto"
   },
   "logic": {
     "class_thresholds": {
@@ -202,7 +203,7 @@
       6
     ],
     "anchor_offset_ratio": 0.1,
-    "anchor_mode": "directional",
+    "anchor_mode": "neutral",
     "anchor_shadow_compare": false,
     "anchor_legacy_flow_shift_ratio": 0.3,
     "anchor_history_size": 20,
