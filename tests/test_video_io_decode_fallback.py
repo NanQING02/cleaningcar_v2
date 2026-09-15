@@ -120,6 +120,39 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         self.assertEqual(meta["source_kind"], "file")
         self.assertEqual(meta["attempt_order"], ["gstreamer_hw", "ffmpeg_hw"])
 
+    @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
+    @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
+    def test_file_reader_falls_back_to_ffmpeg_when_gstreamer_is_explicit(
+        self,
+        ffmpeg_hw_open,
+        gstreamer_hw_open,
+    ):
+        gstreamer_hw_open.return_value = _DummyCapture(False)
+        ffmpeg_hw_open.return_value = _DummyCapture(True)
+
+        cap, meta = video_io.create_video_reader(
+            "demo.avi",
+            self._args(hw_decode=True, decode_backend="gstreamer"),
+        )
+
+        self.assertIsNotNone(cap)
+        self.assertEqual(meta["decode_backend"], "ffmpeg")
+        self.assertTrue(meta["fallback_used"])
+        self.assertEqual(meta["fallback_reason"], "gstreamer_hw_open_failed")
+        self.assertEqual(meta["attempt_order"], ["gstreamer_hw", "ffmpeg_hw"])
+
+    @patch("cleaningcar.video_io._probe_ffmpeg_stream", return_value={"codec_name": "h264"})
+    @patch("cleaningcar.video_io.cv2.VideoCapture")
+    def test_gstreamer_file_reader_uses_avi_demuxer(self, video_capture, _probe):
+        video_capture.return_value = _DummyCapture(True)
+
+        cap = video_io._open_gstreamer_hardware_capture("demo.avi")
+
+        self.assertIsNotNone(cap)
+        pipeline = video_capture.call_args.args[0]
+        self.assertIn("avidemux", pipeline)
+        self.assertNotIn("qtdemux", pipeline)
+
     @patch("cleaningcar.video_io.cv2.VideoCapture")
     @patch("cleaningcar.video_io._probe_ffmpeg_stream", return_value={"codec_name": "h264"})
     def test_rtsp_gstreamer_builder_ignores_safe_mode_and_only_tries_direct(

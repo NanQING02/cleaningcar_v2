@@ -52,6 +52,43 @@ class _NoEventZoneManager:
         return 0.0
 
 
+class _BornInsideZoneManager:
+    @staticmethod
+    def update_track(track_id, anchor_point, frame_idx, vehicle_height=None):
+        del track_id, anchor_point, vehicle_height
+        state = type(
+            'ZoneState',
+            (),
+            {
+                'inside_a': True,
+                'inside_b': True,
+                'born_inside_a': True,
+                'born_inside_pending': False,
+                'born_inside_outcome': 'PROMOTED',
+            },
+        )()
+        return state, {
+            'enter_a': frame_idx == 1,
+            'exit_a': False,
+            'enter_b': frame_idx == 1,
+            'exit_b': False,
+        }
+
+    @staticmethod
+    def drop_track(track_id):
+        del track_id
+
+    @staticmethod
+    def resolve_direction(state):
+        del state
+        return 0, ''
+
+    @staticmethod
+    def _relative_position(point):
+        del point
+        return 0.0
+
+
 class _CollectingUploader:
     def __init__(self):
         self.payloads = []
@@ -202,7 +239,11 @@ class M1EventHardeningTests(unittest.TestCase):
             plate_text='鲁A12345',
             plate_box=[10, 10, 30, 20],
             plate_edge='flow_start',
+            plate_color='蓝色',
+            plate_color_conf=0.92,
+            plate_type='single',
         )
+        manager.tracks[1] = {}
         manager.lifecycle_manager.mark_lost(1, capture_ts=101.0)
 
         for frame_idx in range(1, 4):
@@ -228,6 +269,200 @@ class M1EventHardeningTests(unittest.TestCase):
         self.assertIs(manager.lifecycle_manager.get(2), lifecycle)
         self.assertEqual(manager.tracks[2]['session_id'], lifecycle.event_id)
         self.assertEqual(lifecycle.active_tracker_id, 2)
+        self.assertEqual(manager.tracks[2]['plate_color_locked'], '蓝色')
+        self.assertAlmostEqual(manager.tracks[2]['plate_color_locked_conf'], 0.92)
+        self.assertEqual(manager.tracks[2]['plate_color_locked_text'], '鲁A12345')
+
+    def test_different_stable_plate_does_not_reuse_lost_lifecycle(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        manager = EventManager(
+            {
+                'logic': {'plate_lock_frames': 3, 'event_trace_enabled': False},
+                'event_capture_dir': temp_dir.name,
+                'event_output_dir': temp_dir.name,
+                'lane_name': 'lane-a',
+            },
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_NoEventZoneManager(),
+        )
+        lifecycle = manager.lifecycle_manager.create(1, 'car', capture_ts=100.0)
+        manager.lifecycle_manager.touch(
+            1,
+            capture_ts=100.0,
+            plate_text='鲁A12345',
+            plate_box=[10, 10, 30, 20],
+            plate_edge='flow_start',
+        )
+        manager.lifecycle_manager.mark_lost(1, capture_ts=101.0)
+
+        for frame_idx in range(1, 4):
+            manager.record_frame_timing(frame_idx, 102.0 + frame_idx * 0.1, 102.1 + frame_idx * 0.1)
+            manager.update_track(
+                track_id=2,
+                plate_box=[11, 11, 31, 21],
+                vehicle_box=[0, 0, 60, 60],
+                plate_text='鲁A54321',
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=True,
+                vehicle_label='car',
+                vehicle_conf=0.95,
+                plate_conf=0.95,
+                confirmed=True,
+                anchor_point=(10.0, 10.0),
+            )
+
+        self.assertEqual(manager.tracks[2]['plate_text_locked'], '鲁A54321')
+        self.assertIsNone(manager.lifecycle_manager.get(2))
+        self.assertEqual(lifecycle.active_tracker_id, 0)
+
+    def test_born_inside_track_defers_new_event_until_plate_attribution_resolves(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        uploader = _CollectingUploader()
+        manager = EventManager(
+            {
+                'logic': {
+                    'plate_lock_frames': 3,
+                    'event_trace_enabled': False,
+                    'min_track_frames_for_type1': 0,
+                },
+                'event_capture_dir': temp_dir.name,
+                'event_output_dir': temp_dir.name,
+                'lane_name': 'lane-a',
+            },
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_BornInsideZoneManager(),
+            uploader=uploader,
+        )
+        old_lifecycle = manager.lifecycle_manager.create(1, 'car', capture_ts=100.0)
+        manager.lifecycle_manager.touch(
+            1,
+            capture_ts=100.0,
+            plate_text='鲁A12345',
+            plate_box=[10, 10, 30, 20],
+            plate_edge='flow_start',
+        )
+        old_lifecycle.stages.update({1, 2})
+        manager.lifecycle_manager.mark_lost(1, capture_ts=101.0)
+
+        for frame_idx in range(1, 3):
+            manager.record_frame_timing(frame_idx, 102.0 + frame_idx * 0.1, 102.1 + frame_idx * 0.1)
+            manager.update_track(
+                track_id=2,
+                plate_box=None,
+                vehicle_box=[0, 0, 60, 60],
+                plate_text='',
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=False,
+                vehicle_label='car',
+                vehicle_conf=0.95,
+                plate_conf=None,
+                confirmed=True,
+                anchor_point=(10.0, 10.0),
+            )
+
+        self.assertTrue(manager.tracks[2]['lifecycle_handoff_pending'])
+        self.assertTrue(manager.tracks[2]['deferred_type2'])
+        self.assertEqual(manager.tracks[2]['events'], set())
+
+        for frame_idx in range(3, 6):
+            manager.record_frame_timing(frame_idx, 102.0 + frame_idx * 0.1, 102.1 + frame_idx * 0.1)
+            manager.update_track(
+                track_id=2,
+                plate_box=[11, 11, 31, 21],
+                vehicle_box=[0, 0, 60, 60],
+                plate_text='鲁A54321',
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=True,
+                vehicle_label='car',
+                vehicle_conf=0.95,
+                plate_conf=0.95,
+                confirmed=True,
+                anchor_point=(10.0, 10.0),
+            )
+
+        new_lifecycle = manager.lifecycle_manager.get(2)
+        self.assertIsNotNone(new_lifecycle)
+        self.assertIsNot(new_lifecycle, old_lifecycle)
+        self.assertEqual(manager.tracks[2]['events'], {1, 2})
+        self.assertEqual([payload['type'] for payload in uploader.payloads], [1, 2])
+
+    def test_lifecycle_plate_and_color_follow_confirmed_correction_after_type2(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        manager = EventManager(
+            {
+                'logic': {
+                    'plate_lock_frames': 3,
+                    'plate_correction_confirm_hits': 12,
+                    'event_trace_enabled': False,
+                },
+                'event_capture_dir': temp_dir.name,
+                'event_output_dir': temp_dir.name,
+                'lane_name': 'lane-a',
+            },
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_NoEventZoneManager(),
+        )
+
+        def update(frame_idx, text, color):
+            manager.record_frame_timing(frame_idx, 100.0 + frame_idx * 0.1, 100.1 + frame_idx * 0.1)
+            manager.update_track(
+                track_id=1,
+                plate_box=[10, 10, 30, 20],
+                vehicle_box=[0, 0, 60, 60],
+                plate_text=text,
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=True,
+                vehicle_label='car',
+                vehicle_conf=0.95,
+                plate_conf=0.95,
+                confirmed=True,
+                anchor_point=(10.0, 10.0),
+                plate_color=color,
+                plate_color_conf=0.95,
+                plate_type='single',
+            )
+
+        for frame_idx in range(1, 4):
+            update(frame_idx, '鲁A12345', '黄色')
+        track_state = manager.tracks[1]
+        manager._emit_event_core(
+            track_id=1,
+            event_type=2,
+            frame_idx=3,
+            frame=None,
+            payload={'captureTime': '2026-07-18 10:00:01'},
+            track_state=track_state,
+            vehicle_type='car',
+        )
+        lifecycle = manager.lifecycle_manager.get(1)
+        self.assertEqual(lifecycle.last_plate_text, '鲁A12345')
+        self.assertEqual(lifecycle.last_plate_color, '黄色')
+
+        for frame_idx in range(4, 16):
+            update(frame_idx, '鲁A54321', '蓝色')
+
+        self.assertEqual(track_state['plate_text_locked'], '鲁A54321')
+        self.assertEqual(track_state['plate_color_locked'], '蓝色')
+        self.assertEqual(lifecycle.last_plate_text, '鲁A54321')
+        self.assertEqual(lifecycle.last_plate_color, '蓝色')
 
     def test_event_trace_writes_files_and_sanitizes_source(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -233,6 +233,14 @@ class EventManager:
             0.0,
             float(self.logic.get('event_plate_fast_speed_threshold', 10.0)),
         )
+        self.plate_text_max_streak_gap_frames = max(
+            1,
+            int(self.logic.get('plate_text_max_streak_gap_frames', 2)),
+        )
+        self.plate_correction_confirm_hits = max(
+            self.event_plate_lock_frames,
+            int(self.logic.get('plate_correction_confirm_hits', 12)),
+        )
         self.plate_text_window_frames = max(
             self.event_plate_lock_frames,
             int(shadow_cfg.get('text_window_frames', min(self.shadow_max_age, 50))),
@@ -247,10 +255,16 @@ class EventManager:
             shadow_cfg.get('text_switch_margin_ratio', max(self.plate_text_margin_ratio + 0.05, 0.18))
         )
         self.plate_text_min_detection_confidence = float(
-            shadow_cfg.get('text_min_detection_confidence', 0.65)
+            self.logic.get(
+                'plate_text_min_detection_confidence',
+                shadow_cfg.get('text_min_detection_confidence', 0.65),
+            )
         )
         self.plate_text_min_recognition_confidence = float(
-            shadow_cfg.get('text_min_recognition_confidence', 0.75)
+            self.logic.get(
+                'plate_text_min_recognition_confidence',
+                shadow_cfg.get('text_min_recognition_confidence', 0.75),
+            )
         )
         self.plate_color_min_confidence = float(
             shadow_cfg.get('color_min_confidence', shadow_cfg.get('plate_color_min_confidence', 0.70))
@@ -278,6 +292,18 @@ class EventManager:
         self.plate_color_switch_margin = float(
             shadow_cfg.get('color_switch_margin', shadow_cfg.get('plate_color_switch_margin', 0.5))
         )
+        self.plate_color_correction_hits = max(
+            self.plate_color_lock_frames,
+            int(self.logic.get('plate_color_correction_hits', 5)),
+        )
+        configured_plate_colors = self.logic.get('allowed_plate_colors', ['蓝色', '黄色', '绿色'])
+        if not isinstance(configured_plate_colors, (list, tuple, set)):
+            configured_plate_colors = ['蓝色', '黄色', '绿色']
+        self.allowed_plate_colors = {
+            str(color).strip()
+            for color in configured_plate_colors
+            if str(color).strip()
+        }
         self.shadow_pool = {}
         self.event_log_path = Path(event_log_path) if event_log_path else None
         if self.event_log_path:
@@ -494,27 +520,38 @@ class EventManager:
         if capture_ts is None:
             return None
         vehicle_class = str(track_state.get('vehicle_cls_locked') or track_state.get('vehicle_cls') or vehicle_label or '')
-        locked_plate = str(track_state.get('plate_text_locked') or '')
+        locked_plate = normalize_plate_candidate_text(track_state.get('plate_text_locked') or '')
         has_valid_plate = bool(locked_plate and not track_state.get('plate_text_locked_is_guess') and not plate_is_guess)
+        locked_color = str(track_state.get('plate_color_locked') or '')
+        locked_color_conf = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
+        plate_type = str(track_state.get('plate_type') or '')
         motion_direction = str((anchor_direction or {}).get('motion_direction', 'unknown') or 'unknown')
-        plate_edge = self._lifecycle_zone_edge(anchor_point, plate_box)
+        handoff_plate_box = plate_box or track_state.get('last_plate_box')
+        plate_edge = self._lifecycle_zone_edge(anchor_point, handoff_plate_box)
         lifecycle = self.lifecycle_manager.get(track_id)
-        if lifecycle is None and has_valid_plate and vehicle_class and not track_state.get('handoff_attempted'):
-            track_state['handoff_attempted'] = True
+        waiting_lifecycles = []
+        if lifecycle is None and vehicle_class:
+            waiting_lifecycles = self.lifecycle_manager.find_waiting_lifecycles(vehicle_class, capture_ts)
+            track_state['lifecycle_handoff_pending'] = bool(
+                track_state.get('born_inside_a') and waiting_lifecycles and not has_valid_plate
+            )
+        if lifecycle is None and has_valid_plate and vehicle_class:
             candidates = self.lifecycle_manager.find_handoff_candidates(
                 vehicle_class,
                 capture_ts,
+                locked_plate,
                 plate_edge,
-                plate_box,
+                handoff_plate_box,
                 has_valid_plate=True,
                 motion_direction=motion_direction,
             )
             if len(candidates) == 1:
                 lifecycle = candidates[0]
-                from_track_id = next(iter(lifecycle.tracker_ids), 0)
+                from_track_id = int(lifecycle.last_tracker_id or 0)
                 previous_state = self.tracks.get(from_track_id) or {}
                 lifecycle = self.lifecycle_manager.handoff(lifecycle, track_id, capture_ts)
                 if lifecycle is not None:
+                    track_state['lifecycle_handoff_pending'] = False
                     track_state['session_id'] = lifecycle.event_id
                     track_state['_lifecycle_handoff_from'] = int(from_track_id)
                     track_state['events'] = set(lifecycle.stages)
@@ -522,6 +559,16 @@ class EventManager:
                     for field in ('record_start_frame', 'record_stop_frame', 'type1_capture_time'):
                         if field in previous_state:
                             track_state[field] = previous_state[field]
+                    track_state['plate_text_locked'] = lifecycle.last_plate_text
+                    track_state['plate_text_locked_is_guess'] = False
+                    track_state['plate_text'] = lifecycle.last_plate_text
+                    track_state['plate_is_guess'] = False
+                    track_state['plate_color_locked'] = lifecycle.last_plate_color
+                    track_state['plate_color_locked_conf'] = lifecycle.last_plate_color_conf
+                    track_state['plate_color_locked_text'] = lifecycle.last_plate_text if lifecycle.last_plate_color else ''
+                    track_state['plate_color'] = lifecycle.last_plate_color
+                    track_state['plate_color_conf'] = lifecycle.last_plate_color_conf
+                    track_state['plate_type'] = lifecycle.last_plate_type
                     track_state['type2_qualified'] = 2 in lifecycle.stages
                     previous_state['_lifecycle_superseded'] = True
                     self.trace_record('lifecycle_handoff', {
@@ -532,21 +579,36 @@ class EventManager:
                         'reason': 'unique_plate_verified_candidate',
                     })
             elif len(candidates) > 1:
+                track_state['lifecycle_handoff_pending'] = True
                 self.trace_record('lifecycle_handoff_rejected', {
                     'frameIdx': int(frame_idx),
                     'trackId': int(track_id),
                     'reason': 'ambiguous_candidates',
                     'candidateCount': len(candidates),
                 })
+            else:
+                track_state['lifecycle_handoff_pending'] = False
+                if waiting_lifecycles:
+                    self.trace_record('lifecycle_handoff_rejected', {
+                        'frameIdx': int(frame_idx),
+                        'trackId': int(track_id),
+                        'reason': 'stable_plate_mismatch_or_spatial_discontinuity',
+                        'plateText': locked_plate,
+                        'candidateCount': len(waiting_lifecycles),
+                    })
         if lifecycle is not None:
+            track_state['lifecycle_handoff_pending'] = False
             self.lifecycle_manager.touch(
                 track_id,
                 capture_ts=capture_ts,
                 vehicle_class=vehicle_class,
                 plate_text=locked_plate if has_valid_plate else '',
-                plate_box=plate_box if has_valid_plate else None,
+                plate_box=handoff_plate_box if has_valid_plate else None,
                 plate_edge=plate_edge,
                 motion_direction=motion_direction,
+                plate_color=locked_color if has_valid_plate else '',
+                plate_color_conf=locked_color_conf if has_valid_plate else 0.0,
+                plate_type=plate_type if has_valid_plate else '',
             )
         return lifecycle
 
@@ -568,6 +630,7 @@ class EventManager:
         plate_color_conf=None,
         plate_type='',
         update_frame_idx=None,
+        switch_trusted=None,
     ):
         normalized_plate = normalize_plate_candidate_text(text)
         has_valid_plate_candidate = bool(normalized_plate and is_valid_plate(normalized_plate))
@@ -577,12 +640,16 @@ class EventManager:
             candidate_frame = 0
         detection_confidence = float(conf) if conf is not None else None
         recognition_confidence = float(text_conf) if text_conf is not None else None
-        candidate_eligible = bool(motion_consistent)
+        candidate_eligible = True
         if detection_confidence is not None:
             candidate_eligible = candidate_eligible and detection_confidence >= self.plate_text_min_detection_confidence
         if recognition_confidence is not None:
             candidate_eligible = candidate_eligible and recognition_confidence >= self.plate_text_min_recognition_confidence
         candidate_trusted = bool(trusted and candidate_eligible)
+        candidate_switch_trusted = bool(
+            (trusted if switch_trusted is None else switch_trusted)
+            and candidate_eligible
+        )
         if has_valid_plate_candidate:
             last_candidate_frame = int(track_state.get('plate_candidate_last_frame', -1) or -1)
             track_state['plate_candidate_hits'] = int(track_state.get('plate_candidate_hits', 0) or 0) + 1
@@ -608,6 +675,9 @@ class EventManager:
                     track_id,
                     track_state,
                     candidate_frame if update_frame_idx is None else update_frame_idx,
+                    observed_text=normalized_plate,
+                    observed_trusted=True,
+                    observed_switch_trusted=candidate_switch_trusted,
                 )
             else:
                 self.trace_record('plate_text_evidence', {
@@ -635,6 +705,7 @@ class EventManager:
                 str(plate_color).strip(),
                 parsed_color_conf,
                 candidate_frame,
+                trusted=candidate_trusted,
             )
         if plate_type:
             track_state['plate_type'] = str(plate_type)
@@ -654,7 +725,8 @@ class EventManager:
                 entry.get('text', ''),
                 entry.get('frame', frame_idx),
                 conf=entry.get('conf'),
-                trusted=entry.get('trusted', True),
+                trusted=False,
+                switch_trusted=False,
                 text_conf=entry.get('text_conf'),
                 mutual_verified=entry.get('mutual_verified', False),
                 motion_consistent=entry.get('motion_consistent', False),
@@ -675,6 +747,11 @@ class EventManager:
         if track_id <= 0:
             return
         if self.disable_plate_only_events and is_plate and vehicle_box is None:
+            existing_state = self.tracks.get(track_id)
+            if existing_state:
+                existing_state['plate_initial_candidate'] = ''
+                existing_state['plate_initial_streak'] = 0
+                self._reset_plate_switch_streak(existing_state)
             return
         previous_state = self.tracks.get(track_id) or {}
         self.trace_record('track_input', {
@@ -722,8 +799,8 @@ class EventManager:
             'plate_text_latest': '',
             'plate_text_locked': '',
             'plate_text_locked_is_guess': False,
-            'plate_business_text': '',
-            'plate_business_text_stage': 0,
+            'plate_initial_candidate': '',
+            'plate_initial_streak': 0,
             'plate_text_switch_candidate': '',
             'plate_text_switch_streak': 0,
             'plate_text': '',
@@ -732,9 +809,7 @@ class EventManager:
             'plate_color_latest_conf': 0.0,
             'plate_color_locked': '',
             'plate_color_locked_conf': 0.0,
-            'plate_business_color': '',
-            'plate_business_color_conf': 0.0,
-            'plate_business_color_stage': 0,
+            'plate_color_locked_text': '',
             'plate_color_vote_history': deque(maxlen=160),
             'plate_color_votes': {},
             'plate_color_evidence_by_text': {},
@@ -798,7 +873,8 @@ class EventManager:
             'wheel_activity_start_ts': None,
             'wheel_activity_last_ts': None,
             'wheel_activity_end_ts': None,
-            'handoff_attempted': False,
+            'lifecycle_handoff_pending': False,
+            'deferred_type2': False,
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -872,10 +948,8 @@ class EventManager:
             plate_text,
             frame_idx,
             conf=plate_conf,
-            trusted=bool(
-                not plate_is_guess
-                or (plate_mutual_verified and plate_motion_consistent)
-            ),
+            trusted=True,
+            switch_trusted=True,
             text_conf=plate_text_conf,
             mutual_verified=plate_mutual_verified,
             motion_consistent=plate_motion_consistent,
@@ -884,16 +958,6 @@ class EventManager:
             plate_type=plate_type,
         )
         self._sync_plate_legacy_fields(st)
-        self._observe_lifecycle(
-            track_id,
-            st,
-            frame_idx,
-            vehicle_label,
-            plate_box,
-            anchor_point,
-            plate_is_guess,
-            anchor_direction,
-        )
         if confirmed:
             st['confirmed'] = True
             if self.vehicle_lock_on_confirm and st.get('vehicle_cls_locked'):
@@ -1003,6 +1067,16 @@ class EventManager:
             'bornInsideOutcome': born_inside_outcome,
             'transitionReason': getattr(zone_state, 'transition_reason', ''),
         })
+        self._observe_lifecycle(
+            track_id,
+            st,
+            frame_idx,
+            vehicle_label,
+            plate_box,
+            anchor_point,
+            plate_is_guess,
+            anchor_direction,
+        )
 
         timestamp = self.frame_timestamp(frame_idx)
         inside_a = bool(zone_state and zone_state.inside_a)
@@ -1063,6 +1137,12 @@ class EventManager:
         )
         st['washing_candidate'] = stable_inside_b
         type2_ready = bool(event_enabled and zone_flags.get('enter_b'))
+        if type2_ready and st.get('lifecycle_handoff_pending'):
+            st['deferred_type2'] = True
+            type2_ready = False
+        elif st.get('deferred_type2') and inside_b and not st.get('lifecycle_handoff_pending'):
+            type2_ready = True
+            st['deferred_type2'] = False
         if type2_ready:
             st['type2_qualified'] = True
             if st.get('type2_qualified_frame', -1) < 0:
@@ -1091,6 +1171,7 @@ class EventManager:
             bool(zone_state and zone_state.inside_a)
             and not st.get('born_inside_pending')
             and not born_inside_promoted_with_type2
+            and not st.get('lifecycle_handoff_pending')
             and 1 not in st['events']
             and 1 in self.allowed_events
             and can_type1
@@ -1390,7 +1471,7 @@ class EventManager:
                     self.lifecycle_manager.finalize(tid)
 
                 stop_f = st.get('record_stop_frame')
-                tail_pending = stop_f is not None and frame_idx <= stop_f
+                tail_pending = stop_f is not None and frame_idx < stop_f
 
                 if on_track_timeout is not None and not tail_pending:
                     try:
@@ -1493,7 +1574,23 @@ class EventManager:
         lifecycle = self.lifecycle_manager.get(track_id)
         if lifecycle is None:
             lifecycle = self.lifecycle_manager.create(track_id, vehicle_type, capture_ts=capture_ts)
-        self.lifecycle_manager.touch(track_id, capture_ts=capture_ts, vehicle_class=vehicle_type)
+        locked_plate = normalize_plate_candidate_text(track_state.get('plate_text_locked') or '')
+        locked_plate_valid = bool(locked_plate and is_valid_plate(locked_plate))
+        self.lifecycle_manager.touch(
+            track_id,
+            capture_ts=capture_ts,
+            vehicle_class=vehicle_type,
+            plate_text=locked_plate if locked_plate_valid else '',
+            plate_box=track_state.get('last_plate_box') if locked_plate_valid else None,
+            plate_edge=self._lifecycle_zone_edge(
+                track_state.get('last_anchor'),
+                track_state.get('last_plate_box'),
+            ),
+            motion_direction=str(track_state.get('anchor_motion_direction', 'unknown') or 'unknown'),
+            plate_color=track_state.get('plate_color_locked', '') if locked_plate_valid else '',
+            plate_color_conf=track_state.get('plate_color_locked_conf', 0.0) if locked_plate_valid else 0.0,
+            plate_type=track_state.get('plate_type', '') if locked_plate_valid else '',
+        )
         if event_type == 1:
             prev_type1_time = track_state.get('type1_capture_time')
             if not prev_type1_time:
@@ -1549,8 +1646,6 @@ class EventManager:
             if reasons_list:
                 event['isAbnormal'] = True
                 event['abnormalReason'] = '|'.join(reasons_list)
-        if event_type == 2:
-            self._freeze_business_plate_snapshot(track_id, track_state, event_type)
         plate_text, is_guess, plate_recognition_abnormal, plate_abnormal_reason = self._resolve_report_plate_fields(
             track_id,
             track_state,
@@ -1801,114 +1896,121 @@ class EventManager:
         ranked.sort(key=lambda item: (item[3], item[4], item[1], item[2], item[5], item[0]), reverse=True)
         return ranked
 
-    def _update_locked_plate_text(self, track_id, track_state, frame_idx):
-        ranked = self._rank_plate_shadow_candidates(track_id, frame_idx)
-        if not ranked:
-            return
-        best_text, best_hits, best_weight, best_trusted_hits, best_trusted_weight, _best_frame = ranked[0]
-        locked_text = (track_state.get('plate_text_locked') or '').strip()
-        if not locked_text:
-            second_trusted_weight = 0.0
-            for item in ranked[1:]:
-                second_trusted_weight = max(second_trusted_weight, float(item[4]))
-            margin_ok = self._plate_margin_ok(
-                best_trusted_weight if best_trusted_weight > 0 else best_weight,
-                second_trusted_weight,
-                self.plate_text_margin_ratio,
-            )
-            required_hits = self._event_plate_lock_required_hits(track_state)
-            if best_trusted_hits >= required_hits and margin_ok:
-                track_state['plate_text_locked'] = best_text
-                track_state['plate_text_locked_is_guess'] = False
-                track_state['plate_text_switch_candidate'] = ''
-                track_state['plate_text_switch_streak'] = 0
-            return
-        if best_text == locked_text:
-            track_state['plate_text_switch_candidate'] = ''
-            track_state['plate_text_switch_streak'] = 0
-            return
-        business_text = normalize_plate_candidate_text(track_state.get('plate_business_text', ''))
-        if locked_text and business_text == locked_text:
-            track_state['plate_text_switch_candidate'] = ''
-            track_state['plate_text_switch_streak'] = 0
-            self.trace_record('plate_text_switch', {
-                'frameIdx': int(frame_idx),
-                'trackId': int(track_id),
-                'lockedText': locked_text,
-                'candidateText': best_text,
-                'action': 'rejected',
-                'reason': 'business_text_frozen',
-            })
-            return
-        if business_text and business_text == locked_text:
-            track_state['plate_text_switch_candidate'] = ''
-            track_state['plate_text_switch_streak'] = 0
-            self.trace_record('plate_text_switch', {
-                'frameIdx': int(frame_idx),
-                'trackId': int(track_id),
-                'lockedText': locked_text,
-                'candidateText': best_text,
-                'action': 'rejected',
-                'reason': 'business_text_frozen',
-            })
-            return
-        if best_trusted_hits <= 0:
-            track_state['plate_text_switch_candidate'] = ''
-            track_state['plate_text_switch_streak'] = 0
-            return
-        locked_weight = 0.0
-        for cand_text, _cand_hits, _cand_weight, _cand_trusted_hits, cand_trusted_weight, _cand_frame in ranked:
-            if cand_text == locked_text:
-                locked_weight = cand_trusted_weight
-                break
-        stronger_than_locked = best_trusted_weight >= max(
-            locked_weight * self.plate_text_switch_gain_ratio,
-            locked_weight + 0.05,
-        )
-        second_trusted_weight = 0.0
-        for item in ranked[1:]:
-            second_trusted_weight = max(second_trusted_weight, float(item[4]))
-        margin_ok = self._plate_margin_ok(
-            best_trusted_weight if best_trusted_weight > 0 else best_weight,
-            second_trusted_weight,
-            self.plate_text_switch_margin_ratio,
-        )
-        if stronger_than_locked and margin_ok:
-            if track_state.get('plate_text_switch_candidate') == best_text:
-                track_state['plate_text_switch_streak'] = int(track_state.get('plate_text_switch_streak', 0)) + 1
-            else:
-                track_state['plate_text_switch_candidate'] = best_text
-                track_state['plate_text_switch_streak'] = 1
-            if int(track_state.get('plate_text_switch_streak', 0)) >= self.plate_text_switch_min_consecutive:
-                track_state['plate_text_locked'] = best_text
-                track_state['plate_text_locked_is_guess'] = False
-                track_state['plate_text_switch_candidate'] = ''
-                track_state['plate_text_switch_streak'] = 0
-            return
+    @staticmethod
+    def _reset_plate_switch_streak(track_state):
         track_state['plate_text_switch_candidate'] = ''
         track_state['plate_text_switch_streak'] = 0
 
+    def _update_locked_plate_text(
+        self,
+        track_id,
+        track_state,
+        frame_idx,
+        observed_text='',
+        observed_trusted=False,
+        observed_switch_trusted=False,
+    ):
+        frame_idx = int(frame_idx)
+        observed_text = normalize_plate_candidate_text(observed_text)
+        if not observed_trusted or not is_valid_plate(observed_text):
+            return
+
+        locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
+        if not locked_text:
+            previous_text = normalize_plate_candidate_text(track_state.get('plate_initial_candidate', ''))
+            if observed_text == previous_text:
+                track_state['plate_initial_streak'] = int(track_state.get('plate_initial_streak', 0) or 0) + 1
+            else:
+                track_state['plate_initial_candidate'] = observed_text
+                track_state['plate_initial_streak'] = 1
+            if int(track_state.get('plate_initial_streak', 0) or 0) >= self._event_plate_lock_required_hits(track_state):
+                track_state['plate_text_locked'] = observed_text
+                track_state['plate_text_locked_is_guess'] = False
+                track_state['plate_initial_candidate'] = ''
+                track_state['plate_initial_streak'] = 0
+                self._reset_plate_switch_streak(track_state)
+                self._activate_plate_color_for_text(track_state, observed_text)
+                self.trace_record('plate_text_lock', {
+                    'frameIdx': frame_idx,
+                    'trackId': int(track_id),
+                    'text': observed_text,
+                    'requiredHits': self._event_plate_lock_required_hits(track_state),
+                })
+            return
+
+        if observed_text == locked_text:
+            self._reset_plate_switch_streak(track_state)
+            return
+        if not observed_switch_trusted:
+            self._reset_plate_switch_streak(track_state)
+            return
+
+        previous_text = normalize_plate_candidate_text(track_state.get('plate_text_switch_candidate', ''))
+        if observed_text == previous_text:
+            track_state['plate_text_switch_streak'] = int(track_state.get('plate_text_switch_streak', 0) or 0) + 1
+        else:
+            track_state['plate_text_switch_candidate'] = observed_text
+            track_state['plate_text_switch_streak'] = 1
+        if int(track_state.get('plate_text_switch_streak', 0) or 0) < self.plate_correction_confirm_hits:
+            return
+
+        previous_locked_text = locked_text
+        track_state['plate_text_locked'] = observed_text
+        track_state['plate_text_locked_is_guess'] = False
+        self._reset_plate_switch_streak(track_state)
+        self._activate_plate_color_for_text(track_state, observed_text)
+        self.trace_record('plate_text_switch', {
+            'frameIdx': frame_idx,
+            'trackId': int(track_id),
+            'lockedText': previous_locked_text,
+            'candidateText': observed_text,
+            'action': 'switched',
+            'reason': 'continuous_trusted_evidence',
+            'requiredHits': self.plate_correction_confirm_hits,
+        })
+
     def _event_plate_lock_required_hits(self, track_state):
-        speed_history = track_state.get('speed_buf') or ()
-        average_speed = self._avg(speed_history)
-        if average_speed >= self.event_plate_fast_speed_threshold:
-            return self.event_plate_fast_lock_frames
+        del track_state
         return self.event_plate_lock_frames
 
     @staticmethod
-    def _recent_color_streak(history, color, min_frame):
-        streak = 0
-        for entry in reversed(history):
-            if int(entry.get('frame', -1)) < min_frame:
-                break
-            if entry.get('color') == color:
-                streak += 1
-                continue
-            break
-        return streak
+    def _normalize_plate_color(color):
+        value = str(color or '').strip()
+        aliases = {
+            'blue': '蓝色',
+            'yellow': '黄色',
+            'green': '绿色',
+            'white': '白色',
+            'black': '黑色',
+        }
+        return aliases.get(value.lower(), value)
 
-    def _update_locked_plate_color(self, track_id, track_state, plate_text, color, color_conf, frame_idx):
-        color = (color or '').strip()
+    def _activate_plate_color_for_text(self, track_state, plate_text):
+        plate_text = normalize_plate_candidate_text(plate_text)
+        buckets = track_state.get('plate_color_evidence_by_text') or {}
+        state = buckets.get(plate_text) if isinstance(buckets, dict) else None
+        stable_color = self._normalize_plate_color((state or {}).get('stable_color', ''))
+        if stable_color not in self.allowed_plate_colors:
+            stable_color = ''
+        track_state['plate_color_locked'] = stable_color
+        track_state['plate_color_locked_conf'] = float((state or {}).get('stable_conf', 0.0) or 0.0)
+        track_state['plate_color_locked_text'] = plate_text if stable_color else ''
+        track_state['plate_color_latest'] = stable_color
+        track_state['plate_color_latest_conf'] = track_state['plate_color_locked_conf'] if stable_color else 0.0
+        votes_by_text = track_state.get('plate_color_votes_by_text') or {}
+        track_state['plate_color_votes'] = dict(votes_by_text.get(plate_text) or {})
+
+    def _update_locked_plate_color(
+        self,
+        track_id,
+        track_state,
+        plate_text,
+        color,
+        color_conf,
+        frame_idx,
+        trusted=False,
+    ):
+        color = self._normalize_plate_color(color)
         plate_text = normalize_plate_candidate_text(plate_text)
         locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
         trace = {
@@ -1926,8 +2028,12 @@ class EventManager:
             trace.update(action='rejected', reason='low_color_confidence')
             self.trace_record('plate_color_evidence', trace)
             return
-        if locked_text and plate_text != locked_text:
-            trace.update(action='rejected', reason='locked_text_mismatch', lockedText=locked_text)
+        if not trusted:
+            trace.update(action='rejected', reason='untrusted_text_evidence')
+            self.trace_record('plate_color_evidence', trace)
+            return
+        if color not in self.allowed_plate_colors:
+            trace.update(action='rejected', reason='business_color_not_allowed')
             self.trace_record('plate_color_evidence', trace)
             return
 
@@ -1935,84 +2041,58 @@ class EventManager:
         if not isinstance(buckets, dict):
             buckets = {}
             track_state['plate_color_evidence_by_text'] = buckets
-        history = buckets.get(plate_text)
-        if not isinstance(history, deque):
-            history = deque(maxlen=max(self.plate_color_window_frames * 4, 60))
-            buckets[plate_text] = history
-        history.append({'color': color, 'conf': float(color_conf), 'frame': int(frame_idx)})
-        min_frame = frame_idx - self.plate_color_window_frames + 1
-        while history and int(history[0].get('frame', -1)) < min_frame:
-            history.popleft()
+        state = buckets.get(plate_text)
+        if not isinstance(state, dict):
+            state = {
+                'stable_color': '',
+                'stable_conf': 0.0,
+                'candidate_color': '',
+                'candidate_hits': 0,
+                'candidate_conf_sum': 0.0,
+            }
+            buckets[plate_text] = state
 
-        votes = {}
-        for entry in history:
-            entry_color = (entry.get('color') or '').strip()
-            if not entry_color:
-                continue
-            info = votes.setdefault(entry_color, {'hits': 0, 'sum_conf': 0.0})
-            info['hits'] += 1
-            info['sum_conf'] += float(entry.get('conf', 0.0) or 0.0)
+        frame_idx = int(frame_idx)
         votes_by_text = track_state.get('plate_color_votes_by_text')
         if not isinstance(votes_by_text, dict):
             votes_by_text = {}
             track_state['plate_color_votes_by_text'] = votes_by_text
-        votes_by_text[plate_text] = votes
+        votes = votes_by_text.setdefault(plate_text, {})
+        vote = votes.setdefault(color, {'hits': 0, 'sum_conf': 0.0})
+        vote['hits'] = int(vote.get('hits', 0) or 0) + 1
+        vote['sum_conf'] = float(vote.get('sum_conf', 0.0) or 0.0) + float(color_conf)
         trace['colorVotes'] = votes
-        if locked_text != plate_text:
-            trace.update(action='buffered', reason='awaiting_text_lock')
-            self.trace_record('plate_color_evidence', trace)
-            return
 
-        track_state['plate_color_vote_history'] = history
-        track_state['plate_color_votes'] = votes
-        track_state['plate_color_latest'] = color
-        track_state['plate_color_latest_conf'] = float(color_conf)
-        if not votes:
-            return
-        ranked = sorted(votes.items(), key=lambda kv: (kv[1]['sum_conf'], kv[1]['hits'], kv[0]), reverse=True)
-        best_color, best_stats = ranked[0]
-        best_hits = int(best_stats.get('hits', 0))
-        best_sum = float(best_stats.get('sum_conf', 0.0))
-        locked_color = (track_state.get('plate_color_locked') or '').strip()
-        action = 'buffered'
-        if not locked_color:
-            if best_hits >= self.plate_color_lock_frames:
-                track_state['plate_color_locked'] = best_color
-                track_state['plate_color_locked_conf'] = max(best_sum / max(best_hits, 1), 0.0)
-                track_state['plate_color_switch_candidate'] = ''
-                track_state['plate_color_switch_streak'] = 0
-                action = 'locked'
-            trace['action'] = action
-            self.trace_record('plate_color_evidence', trace)
-            return
-        if best_color == locked_color:
-            track_state['plate_color_switch_candidate'] = ''
-            track_state['plate_color_switch_streak'] = 0
-            trace['action'] = 'kept'
-            self.trace_record('plate_color_evidence', trace)
-            return
-
-        locked_sum = float(votes.get(locked_color, {}).get('sum_conf', 0.0) or 0.0)
-        stronger = best_sum >= max(
-            locked_sum * self.plate_color_switch_gain_ratio,
-            locked_sum + self.plate_color_switch_margin,
-        )
-        if stronger and best_hits >= (self.plate_color_lock_frames + 1):
-            streak = self._recent_color_streak(history, best_color, min_frame)
-            if track_state.get('plate_color_switch_candidate') == best_color:
-                track_state['plate_color_switch_streak'] = max(int(track_state.get('plate_color_switch_streak', 0)), streak)
-            else:
-                track_state['plate_color_switch_candidate'] = best_color
-                track_state['plate_color_switch_streak'] = streak
-            if int(track_state.get('plate_color_switch_streak', 0)) >= self.plate_color_switch_min_consecutive:
-                track_state['plate_color_locked'] = best_color
-                track_state['plate_color_locked_conf'] = max(best_sum / max(best_hits, 1), 0.0)
-                track_state['plate_color_switch_candidate'] = ''
-                track_state['plate_color_switch_streak'] = 0
-                action = 'switched'
+        stable_color = self._normalize_plate_color(state.get('stable_color', ''))
+        if color == stable_color:
+            state['stable_conf'] = max(float(state.get('stable_conf', 0.0) or 0.0), float(color_conf))
+            state['candidate_color'] = ''
+            state['candidate_hits'] = 0
+            state['candidate_conf_sum'] = 0.0
+            action = 'kept'
         else:
-            track_state['plate_color_switch_candidate'] = ''
-            track_state['plate_color_switch_streak'] = 0
+            if state.get('candidate_color') == color:
+                state['candidate_hits'] = int(state.get('candidate_hits', 0) or 0) + 1
+                state['candidate_conf_sum'] = float(state.get('candidate_conf_sum', 0.0) or 0.0) + float(color_conf)
+            else:
+                state['candidate_color'] = color
+                state['candidate_hits'] = 1
+                state['candidate_conf_sum'] = float(color_conf)
+            required_hits = self.plate_color_correction_hits if stable_color else self.plate_color_lock_frames
+            action = 'buffered'
+            if int(state.get('candidate_hits', 0) or 0) >= required_hits:
+                hits = max(1, int(state.get('candidate_hits', 0) or 0))
+                state['stable_color'] = color
+                state['stable_conf'] = float(state.get('candidate_conf_sum', 0.0) or 0.0) / hits
+                state['candidate_color'] = ''
+                state['candidate_hits'] = 0
+                state['candidate_conf_sum'] = 0.0
+                action = 'switched' if stable_color else 'locked'
+
+        if locked_text == plate_text:
+            self._activate_plate_color_for_text(track_state, plate_text)
+        else:
+            action = 'buffered_for_text'
         trace['action'] = action
         self.trace_record('plate_color_evidence', trace)
 
@@ -2029,8 +2109,13 @@ class EventManager:
             track_state['plate_text'] = ''
             track_state['plate_is_guess'] = False
 
-        locked_color = (track_state.get('plate_color_locked') or '').strip()
-        latest_color = (track_state.get('plate_color_latest') or '').strip()
+        locked_color = self._normalize_plate_color(track_state.get('plate_color_locked', ''))
+        locked_color_text = normalize_plate_candidate_text(track_state.get('plate_color_locked_text', ''))
+        if locked_color not in self.allowed_plate_colors or locked_color_text != normalize_plate_candidate_text(locked_text):
+            locked_color = ''
+        latest_color = self._normalize_plate_color(track_state.get('plate_color_latest', ''))
+        if latest_color not in self.allowed_plate_colors:
+            latest_color = ''
         if locked_color:
             track_state['plate_color'] = locked_color
             track_state['plate_color_conf'] = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
@@ -2049,40 +2134,9 @@ class EventManager:
         )
         return plate_text, plate_is_guess
 
-    def _freeze_business_plate_snapshot(self, track_id, track_state, event_type):
-        locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
-        if not is_valid_plate(locked_text):
-            return
-        snapshot_text = normalize_plate_candidate_text(track_state.get('plate_business_text', ''))
-        if not snapshot_text:
-            track_state['plate_business_text'] = locked_text
-            track_state['plate_business_text_stage'] = int(event_type)
-        if track_state.get('plate_business_text') != locked_text:
-            return
-        if not track_state.get('plate_business_color'):
-            locked_color = str(track_state.get('plate_color_locked') or '').strip()
-            if locked_color:
-                track_state['plate_business_color'] = locked_color
-                track_state['plate_business_color_conf'] = float(
-                    track_state.get('plate_color_locked_conf', 0.0) or 0.0
-                )
-                track_state['plate_business_color_stage'] = int(event_type)
-        self.trace_record('plate_business_snapshot', {
-            'trackId': int(track_id),
-            'eventType': int(event_type),
-            'text': track_state.get('plate_business_text', ''),
-            'color': track_state.get('plate_business_color', ''),
-            'colorConfidence': track_state.get('plate_business_color_conf', 0.0),
-            'textStage': track_state.get('plate_business_text_stage', 0),
-            'colorStage': track_state.get('plate_business_color_stage', 0),
-        })
-
     def _resolve_report_plate_fields(self, track_id, track_state, frame_idx):
         del frame_idx
         track_state = track_state or {}
-        business_text = normalize_plate_candidate_text((track_state.get('plate_business_text') or '').strip())
-        if business_text and is_valid_plate(business_text):
-            return business_text, False, False, ''
         locked_text = normalize_plate_candidate_text((track_state.get('plate_text_locked') or '').strip())
         if locked_text and is_valid_plate(locked_text):
             return locked_text, False, False, ''
@@ -2396,15 +2450,11 @@ class EventManager:
         return counts
 
     def _infer_plate_color(self, track_state):
-        business_color = (track_state.get('plate_business_color') or '').strip()
-        if business_color:
-            try:
-                business_conf = float(track_state.get('plate_business_color_conf', 0.0) or 0.0)
-            except (TypeError, ValueError):
-                business_conf = 0.0
-            track_state['plate_color_source'] = 'business_snapshot'
-            return business_color, business_conf
-        locked_color = (track_state.get('plate_color_locked') or '').strip()
+        locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
+        locked_color_text = normalize_plate_candidate_text(track_state.get('plate_color_locked_text', ''))
+        locked_color = self._normalize_plate_color(track_state.get('plate_color_locked', ''))
+        if locked_color not in self.allowed_plate_colors or locked_color_text != locked_text:
+            locked_color = ''
         if locked_color:
             try:
                 locked_conf = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
@@ -2412,7 +2462,9 @@ class EventManager:
                 locked_conf = 0.0
             track_state['plate_color_source'] = 'locked_text_evidence'
             return locked_color, locked_conf
-        latest_color = (track_state.get('plate_color_latest') or '').strip()
+        latest_color = self._normalize_plate_color(track_state.get('plate_color_latest', ''))
+        if latest_color not in self.allowed_plate_colors:
+            latest_color = ''
         if latest_color:
             try:
                 latest_conf = float(track_state.get('plate_color_latest_conf', 0.0) or 0.0)
@@ -2443,9 +2495,10 @@ class EventManager:
         if vehicle == 'wuxiao':
             track_state['plate_color_source'] = 'vehicle_type_fallback'
             return '蓝色', 0.0
-        if self.default_plate_color:
+        default_plate_color = self._normalize_plate_color(self.default_plate_color)
+        if default_plate_color in self.allowed_plate_colors:
             track_state['plate_color_source'] = 'configured_default'
-            return self.default_plate_color, self.default_plate_color_conf
+            return default_plate_color, self.default_plate_color_conf
         track_state['plate_color_source'] = 'unknown'
         return '', 0.0
 
@@ -2483,7 +2536,10 @@ class EventManager:
         text = normalize_plate_candidate_text(st.get('plate_text_locked', ''))
         if not is_valid_plate(text):
             text = ''
-        color = (st.get('plate_color_locked') or '').strip()
+        color = self._normalize_plate_color(st.get('plate_color_locked', ''))
+        color_text = normalize_plate_candidate_text(st.get('plate_color_locked_text', ''))
+        if color not in self.allowed_plate_colors or color_text != text:
+            color = ''
         try:
             color_conf = float(st.get('plate_color_locked_conf', 0.0) or 0.0)
         except (TypeError, ValueError):

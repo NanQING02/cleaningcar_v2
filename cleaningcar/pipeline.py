@@ -490,7 +490,9 @@ def process_video(path, args):
         fps = 25.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    config = getattr(args, '_config', load_config(None))
+    config = getattr(args, '_config', None)
+    if config is None:
+        config = load_config(None)
     base_dir = getattr(args, '_config_dir', Path.cwd())
     video_cfg = config.get('video', {})
     logic_cfg = config.get('logic', {})
@@ -2487,7 +2489,10 @@ def process_video(path, args):
             failure_summary, failure_extra = _capture_failure_summary(cap)
             consecutive_fails += 1
             if is_file_input:
-                print('[reader] local file reached EOF or failed, stopping.')
+                print(
+                    '[reader] local file reached EOF or failed, stopping.'
+                    + (f' {failure_summary}' if failure_summary else '')
+                )
                 break
             if consecutive_fails < reader_fail_threshold:
                 write_heartbeat(

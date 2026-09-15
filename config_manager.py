@@ -121,20 +121,25 @@ class ConfigManager:
         source_mode = str(video.get('source_mode', 'auto') or 'auto').strip().lower()
         source_value = str(video.get('source', '') or '').strip().lower()
         is_rtsp_source = source_value.startswith(('rtsp://', 'rtsps://'))
-        if source_mode == 'camera' or is_rtsp_source:
+        source_path = Path(str(video.get('source', '') or '')).expanduser()
+        if not source_path.is_absolute():
+            source_path = self.path.parent / source_path
+        is_local_file_source = bool(source_value and source_path.is_file())
+        is_camera_source = bool(is_rtsp_source or (source_mode == 'camera' and not is_local_file_source))
+        if is_camera_source:
             decode_backend = 'gstreamer'
             video['gstreamer_bgr_mode'] = 'direct'
         elif decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
             decode_backend = 'auto'
         video['decode_backend'] = decode_backend
         # RGA 管控（2026-08-26）：ffmpeg_rga/scale_rkrga 解码后端已按死机排查结论移除，
-        # 残留在配置里的 ffmpeg_rga 段直接丢弃；RTSP/camera 强制归一到
-        # GStreamer direct-BGR，离线文件的无效后端归一到 auto。
+        # 残留在配置里的 ffmpeg_rga 段直接丢弃；真实RTSP/camera强制归一到
+        # GStreamer direct-BGR，实际存在的离线文件保留明确指定的安全硬解后端。
         video.pop('ffmpeg_rga', None)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
         video['fp_output_mode'] = '6'
-        if source_mode == 'camera' or is_rtsp_source:
+        if is_camera_source:
             video['hw_decode'] = True
         video.setdefault('csv', '')
         video.setdefault('debug_frame_path', 'off')
@@ -379,6 +384,9 @@ class ConfigManager:
         logic.setdefault('plate_text_min_detection_confidence', 0.65)
         logic.setdefault('plate_text_min_recognition_confidence', 0.75)
         logic.setdefault('plate_text_max_streak_gap_frames', 2)
+        logic.setdefault('plate_correction_confirm_hits', 12)
+        logic.setdefault('plate_color_correction_hits', 5)
+        logic.setdefault('allowed_plate_colors', ['蓝色', '黄色', '绿色'])
         logic.setdefault('plate_output_shape_log_once', True)
         logic.setdefault('default_plate_color', '')
         logic.setdefault('default_plate_color_conf', 0.0)

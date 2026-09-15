@@ -64,6 +64,18 @@ def _gstreamer_bgr_mode(value=None):
     return 'direct'
 
 
+def _gstreamer_file_demuxer(src):
+    try:
+        suffix = Path(str(src)).suffix.lower()
+    except Exception:
+        suffix = ''
+    if suffix == '.avi':
+        return 'avidemux'
+    if suffix in {'.mkv', '.webm'}:
+        return 'matroskademux'
+    return 'qtdemux'
+
+
 def _parse_avg_frame_rate(text):
     raw = str(text or '').strip()
     if not raw or raw in ('0/0', 'N/A'):
@@ -1018,13 +1030,14 @@ def _open_gstreamer_hardware_capture(
         stream_info = _probe_ffmpeg_stream(src) or {}
         codec_name = str(stream_info.get('codec_name') or '').strip().lower()
         parser = 'h265parse' if codec_name in ('hevc', 'h265') else 'h264parse'
+        demuxer = _gstreamer_file_demuxer(src)
         direct_pipeline = (
-            f'filesrc location="{src}" ! qtdemux ! {parser} ! '
+            f'filesrc location="{src}" ! {demuxer} ! {parser} ! '
             'mppvideodec format=BGR ! video/x-raw,format=BGR ! appsink',
             '[reader] Using GStreamer+mpp direct-BGR file pipeline for {src}',
         )
         safe_pipeline = (
-            f'filesrc location="{src}" ! qtdemux ! {parser} ! '
+            f'filesrc location="{src}" ! {demuxer} ! {parser} ! '
             'mppvideodec ! videoconvert ! video/x-raw,format=BGR ! appsink',
             '[reader] Using GStreamer+mpp safe-BGR file pipeline for {src}',
         )
@@ -1186,7 +1199,9 @@ def create_video_reader(path, args):
             if decode_backend == 'gstreamer':
                 decode_meta['fallback_used'] = True
                 decode_meta['fallback_reason'] = 'gstreamer_hw_open_failed'
-        if decode_backend in {'auto', 'ffmpeg'}:
+        if decode_backend in {'auto', 'ffmpeg'} or (
+            source_kind == 'file' and decode_backend == 'gstreamer'
+        ):
             attempt_order.append('ffmpeg_hw')
             cap_hw = _open_ffmpeg_hardware_capture(
                 path,
@@ -1197,7 +1212,7 @@ def create_video_reader(path, args):
             if _is_capture_opened(cap_hw):
                 decode_meta['decode_mode'] = 'hw'
                 decode_meta['decode_backend'] = 'ffmpeg'
-                if decode_backend == 'auto':
+                if decode_backend in {'auto', 'gstreamer'}:
                     decode_meta['fallback_used'] = True
                     decode_meta['fallback_reason'] = 'gstreamer_hw_open_failed'
                 return cap_hw, decode_meta

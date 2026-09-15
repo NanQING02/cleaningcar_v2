@@ -93,14 +93,14 @@ class _CollectingUploader:
 
 
 class EventManagerPlateLockingTests(unittest.TestCase):
-    def test_fast_vehicle_uses_lower_event_plate_lock_threshold(self):
+    def test_initial_plate_lock_always_uses_six_hits(self):
         manager = self._manager(plate_lock_frames=6)
         manager.event_plate_lock_frames = 6
         manager.event_plate_fast_lock_frames = 3
         manager.event_plate_fast_speed_threshold = 10.0
 
         self.assertEqual(manager._event_plate_lock_required_hits({'speed_buf': [1.0, 3.0]}), 6)
-        self.assertEqual(manager._event_plate_lock_required_hits({'speed_buf': [36.0, 42.0]}), 3)
+        self.assertEqual(manager._event_plate_lock_required_hits({'speed_buf': [36.0, 42.0]}), 6)
 
     def test_plate_vehicle_motion_rejects_large_relative_position_jump(self):
         consistent = EventManager._plate_vehicle_motion_consistent(
@@ -220,6 +220,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         plate_color="",
         plate_color_conf=None,
         plate_conf=0.95,
+        plate_text_conf=None,
+        plate_mutual_verified=False,
     ):
         manager.update_track(
             1,
@@ -240,6 +242,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             plate_color=plate_color,
             plate_color_conf=plate_color_conf,
             plate_type="single",
+            plate_text_conf=plate_text_conf,
+            plate_mutual_verified=plate_mutual_verified,
         )
 
     def test_unlocked_does_not_report_shadow_guess(self):
@@ -314,7 +318,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             self.assertTrue(payload["plateRecognitionAbnormal"])
             self.assertIn("PLATE_NOT_DETECTED", str(payload.get("abnormalReason", "")))
 
-    def test_locked_text_never_switches_after_stronger_candidate(self):
+    def test_locked_text_does_not_switch_below_correction_threshold(self):
         manager = self._manager(plate_lock_frames=3)
 
         self._update(manager, 1, plate_text="鲁A12345", plate_is_guess=False, plate_conf=0.70)
@@ -357,7 +361,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(len(shadow_entries), 4)
         self.assertFalse(any(entry.get("trusted") for entry in shadow_entries))
 
-    def test_business_snapshot_rejects_late_wrong_text_and_color(self):
+    def test_late_wrong_text_below_correction_threshold_keeps_stable_result(self):
         manager = self._manager(plate_lock_frames=3)
         manager.enable_event_disk = True
 
@@ -418,6 +422,125 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(track_state.get("plate_text_locked"), "苏A3A329")
         self.assertEqual(event["plateNumber"], "苏A3A329")
         self.assertEqual(event["plateColor"], "黄色")
+        self.assertEqual(track_state.get("plate_color_locked_text"), "苏A3A329")
+
+    def test_twelve_continuous_confirmed_hits_can_correct_after_type2(self):
+        manager = self._manager(plate_lock_frames=3)
+        manager.enable_event_disk = True
+
+        for frame_idx in range(1, 4):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏A3A329",
+                plate_color="黄色",
+                plate_color_conf=0.95,
+            )
+        track_state = manager.tracks[1]
+        manager._emit_event_core(
+            track_id=1,
+            event_type=2,
+            frame_idx=3,
+            frame=None,
+            payload={"captureTime": "2026-07-18 10:00:01"},
+            track_state=track_state,
+            vehicle_type="yellow truck",
+        )
+
+        for frame_idx in range(4, 16):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="桂N0T7RUK",
+                plate_color="蓝色",
+                plate_color_conf=0.98,
+            )
+
+        self.assertEqual(track_state.get("plate_text_locked"), "桂N0T7RUK")
+        self.assertEqual(track_state.get("plate_color_locked"), "蓝色")
+        self.assertEqual(track_state.get("plate_color_locked_text"), "桂N0T7RUK")
+
+    def test_correction_hits_must_be_continuous(self):
+        manager = self._manager(plate_lock_frames=3)
+        for frame_idx in range(1, 4):
+            self._update(manager, frame_idx, plate_text="苏A3A329")
+
+        for frame_idx in range(4, 10):
+            self._update(manager, frame_idx, plate_text="桂N0T7RUK")
+        self._update(manager, 10, plate_text="苏A3A329")
+        for frame_idx in range(11, 22):
+            self._update(manager, frame_idx, plate_text="桂N0T7RUK")
+
+        self.assertEqual(manager.tracks[1].get("plate_text_locked"), "苏A3A329")
+        self._update(manager, 22, plate_text="桂N0T7RUK")
+        self.assertEqual(manager.tracks[1].get("plate_text_locked"), "桂N0T7RUK")
+
+    def test_white_and_black_colors_are_ignored_by_business_layer(self):
+        manager = self._manager(plate_lock_frames=3)
+        for frame_idx, color in enumerate(("白色", "黑色", "白色", "黑色"), start=1):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏A3A329",
+                plate_color=color,
+                plate_color_conf=0.99,
+            )
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state.get("plate_text_locked"), "苏A3A329")
+        self.assertEqual(track_state.get("plate_color_locked"), "")
+        self.assertEqual(track_state.get("plate_color_evidence_by_text"), {})
+
+    def test_color_requires_trusted_text_evidence(self):
+        manager = self._manager(plate_lock_frames=3)
+        for frame_idx in range(1, 5):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏A3A329",
+                plate_text_conf=0.40,
+                plate_color="黄色",
+                plate_color_conf=0.99,
+            )
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state.get("plate_text_locked"), "")
+        self.assertEqual(track_state.get("plate_color_evidence_by_text"), {})
+
+    def test_plate_only_empty_scene_cannot_replace_stable_text_or_color(self):
+        manager = self._manager(plate_lock_frames=3)
+        for frame_idx in range(1, 4):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏A3A329",
+                plate_color="黄色",
+                plate_color_conf=0.95,
+            )
+
+        for frame_idx in range(4, 20):
+            manager.update_track(
+                track_id=1,
+                plate_box=[0, 0, 10, 10],
+                vehicle_box=None,
+                plate_text="桂N0T7RUK",
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=True,
+                vehicle_label="",
+                vehicle_conf=None,
+                plate_conf=0.99,
+                confirmed=False,
+                plate_color="蓝色",
+                plate_color_conf=0.99,
+                plate_type="single",
+            )
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state.get("plate_text_locked"), "苏A3A329")
+        self.assertEqual(track_state.get("plate_color_locked"), "黄色")
         self.assertNotIn("桂N0T7RUK", track_state.get("plate_color_evidence_by_text", {}))
 
     def test_yellow_truck_fallback_is_used_without_bound_color_evidence(self):
@@ -563,10 +686,10 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self._update(manager, 3, plate_text="鲁A12345", plate_color="blue", plate_color_conf=0.91)
 
         track_state = manager.tracks[1]
-        self.assertEqual(track_state.get("plate_color_locked"), "blue")
-        self.assertIn("blue", track_state.get("plate_color_votes", {}))
+        self.assertEqual(track_state.get("plate_color_locked"), "蓝色")
+        self.assertIn("蓝色", track_state.get("plate_color_votes", {}))
         color, confidence = manager._infer_plate_color(track_state)
-        self.assertEqual(color, "blue")
+        self.assertEqual(color, "蓝色")
         self.assertGreater(confidence, 0.9)
 
     def test_locked_color_wins_over_low_confidence_new_color(self):
@@ -580,7 +703,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         color, confidence = manager._infer_plate_color(manager.tracks[1])
 
-        self.assertEqual(color, "blue")
+        self.assertEqual(color, "蓝色")
         self.assertGreater(confidence, 0.9)
 
     def test_color_falls_back_to_vehicle_heuristic_only_without_model_signal(self):
@@ -599,13 +722,14 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         track_state["plate_color_latest"] = "green"
         track_state["plate_color_latest_conf"] = 0.66
         color, confidence = manager._infer_plate_color(track_state)
-        self.assertEqual(color, "green")
+        self.assertEqual(color, "绿色")
         self.assertAlmostEqual(confidence, 0.66, places=6)
 
         track_state["plate_color_locked"] = "blue"
         track_state["plate_color_locked_conf"] = 0.88
+        track_state["plate_color_locked_text"] = track_state.get("plate_text_locked", "")
         color, confidence = manager._infer_plate_color(track_state)
-        self.assertEqual(color, "blue")
+        self.assertEqual(color, "蓝色")
         self.assertAlmostEqual(confidence, 0.88, places=6)
         self.assertTrue(color)
         self.assertGreater(confidence, 0.0)
