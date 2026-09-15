@@ -119,6 +119,13 @@ resolve_config_path() {
     printf '%s\n' "$legacy_config"
     return 0
   fi
+  local candidate
+  for candidate in "$SCRIPT_DIR"/configs/*.json; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
   echo "config file not found: $default_config" >&2
   return 1
 }
