@@ -6,7 +6,7 @@ import time
 import urllib.request
 from collections import deque
 from datetime import datetime
-from math import hypot
+from math import ceil, hypot
 from pathlib import Path
 
 import cv2
@@ -22,12 +22,19 @@ from .plate import is_valid_plate, normalize_plate_candidate_text, normalize_pla
 from .resize_accel import resize_bgr
 from .vision import box_iou, get_anchor_point
 
-YELLOW_TRUCK_LABEL = 'yellow truck'
-NON_YELLOW_OVERRIDE_LABELS = frozenset(label for label in VEHICLE_LABEL_CN.keys() if label != YELLOW_TRUCK_LABEL)
-NON_YELLOW_OVERRIDE_SECONDS = 2.0
-NON_YELLOW_HIGH_CONFIDENCE = 0.85
-NON_YELLOW_HIGH_CONF_STREAK = 3
 PLATE_RECOGNITION_ABNORMAL_REASONS = frozenset({"PLATE_MISSING", "PLATE_NOT_LOCKED", "PLATE_NOT_DETECTED"})
+
+
+def _format_track_debug_text(car_id, info):
+    info = info or {}
+    return (
+        f"ID:{car_id} {info.get('state', 'idle')} "
+        f"water:{'Y' if info.get('water', False) else 'N'} "
+        f"wf:{int(info.get('water_consecutive_frames', 0) or 0)} "
+        f"dur:{float(info.get('wash_duration', 0.0) or 0.0):.1f} "
+        f"zb:{int(info.get('zone_b_elapsed', 0) or 0)}"
+    )
+
 
 class EventUploader:
     def __init__(self, url=None, token=None, timeout=8.0, queue_path=None,
@@ -207,14 +214,7 @@ class EventManager:
         self.tracks = {}
         self.timeout_frames = int(config.get('track_timeout_frames', 60))
         self.base_time = datetime.now()
-        self.stationary_min_frames = int(config.get('stationary_min_frames', 0))
-        self.stationary_speed_thresh = float(config.get('stationary_speed_thresh', 8.0))
-        self.min_water_hit_frames_for_wash = int(self.logic.get('min_water_hit_frames_for_wash', 30))
-        self.water_window_size = int(self.logic.get('water_window_size', 20))
-        self.water_window_min_hits = int(self.logic.get('water_window_min_hits', 3))
-        self.vehicle_shrink_ratio = float(config.get('vehicle_shrink_ratio', 0.35))
-        self.vehicle_lock_min_votes = int(config.get('vehicle_lock_min_votes', 80))
-        self.vehicle_lock_on_confirm = bool(config.get('vehicle_lock_on_confirm', True))
+        self.water_confirm_frames = max(1, int(self.logic.get('water_confirm_frames', 3)))
         shadow_cfg = dict(self.logic.get('shadow_plate_pool') or {})
         legacy_shadow_cfg = config.get('shadow_pool', {}) or {}
         for key, value in legacy_shadow_cfg.items():
@@ -322,11 +322,11 @@ class EventManager:
         self.session_id = str(session_id or '').strip()
         self.lifecycle_manager = BusinessLifecycleManager(
             self.camera_id,
-            grace_seconds=float(self.logic.get('track_lost_grace_seconds', 8.0) or 8.0),
+            grace_seconds=float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0),
         )
         self.track_lost_grace_seconds = max(
             0.0,
-            float(self.logic.get('track_lost_grace_seconds', 8.0) or 8.0),
+            float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0),
         )
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
@@ -360,50 +360,24 @@ class EventManager:
         self.zone_b_anchor_min_frames = int(self.logic.get('zone_b_anchor_min_frames', 0))
         if self.zone_b_anchor_min_frames < 0:
             self.zone_b_anchor_min_frames = 0
-        quality_cfg = self.logic.get('event_track_quality')
-        if isinstance(quality_cfg, dict):
-            self.event_track_quality_cfg = quality_cfg
-            self.event_track_quality_enabled = bool(quality_cfg.get('enabled', True))
-        else:
-            self.event_track_quality_cfg = {}
-            self.event_track_quality_enabled = bool(quality_cfg) if quality_cfg is not None else False
-        quality_cfg = self.event_track_quality_cfg
-        self.quality_min_hits_type1 = max(1, int(quality_cfg.get('min_hits_type1', 12)))
-        self.quality_fast_min_hits_type1 = max(1, int(quality_cfg.get('fast_vehicle_min_hits_type1', 6)))
-        self.quality_min_avg_vehicle_conf = float(quality_cfg.get('min_avg_vehicle_conf', 0.62))
-        self.quality_fast_min_avg_vehicle_conf = float(quality_cfg.get('fast_vehicle_min_avg_conf', 0.72))
-        self.quality_plate_candidate_min_hits = max(1, int(quality_cfg.get('plate_candidate_min_hits', 2)))
-        self.quality_plate_candidate_can_confirm_type1 = bool(
-            quality_cfg.get('plate_candidate_can_confirm_type1', True)
-        )
-        self.quality_suppress_obvious_false_type5 = bool(quality_cfg.get('suppress_obvious_false_type5', True))
-        self.quality_suspicious_cooldown_seconds = max(
-            0.0,
-            float(quality_cfg.get('suspicious_cooldown_seconds', 6.0)),
-        )
-        self.min_type5_zone_a_dwell = int(
-            quality_cfg.get(
-                'min_zone_a_dwell_type5',
-                self.logic.get('min_zone_a_dwell_frames_for_type5', 0),
-            )
-        )
-        if self.min_type5_zone_a_dwell < 0:
-            self.min_type5_zone_a_dwell = 0
         self.min_type1_track_frames = int(self.logic.get('min_track_frames_for_type1', 5))
         if self.min_type1_track_frames < 0:
             self.min_type1_track_frames = 0
         self.wash_dwell_offset = 0.0
-        self.min_type4_zone_b_dwell = int(self.logic.get('min_zone_b_dwell_frames_for_type4', 60))
-        if self.min_type4_zone_b_dwell < 0:
-            self.min_type4_zone_b_dwell = 0
+        self.min_type4_zone_b_dwell_seconds = max(
+            0.0,
+            float(self.logic.get('min_zone_b_dwell_seconds_for_type4', 0.5)),
+        )
+        self.min_type4_zone_b_dwell = max(
+            1,
+            int(ceil(max(self.fps, 1.0) * self.min_type4_zone_b_dwell_seconds)),
+        )
         self.allowed_events = {1, 2, 3, 4, 5, 6}
         self.disable_plate_only_events = True
         self.single_lifecycle_events = True
-        self.require_vehicle_type_for_events = bool(self.logic.get('require_vehicle_type_for_events', False))
         self.max_per_id_video_seconds = 1500.0
         self.per_id_video_tail_seconds = 8.0
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
-        self.pending_events = {}
         self.upload_buffer = {}
         self.upload_qualified = set()
         self.upload_log_full = None
@@ -419,7 +393,6 @@ class EventManager:
                     f.write('capture_time,id,type,payload\n')
         self.frame_timing = {}
         self.log_throttler = WindowedLogThrottler()
-        self.suspicious_type5_cooldown = deque(maxlen=64)
         self.latency_log_window_seconds = float(self.logic.get('latency_log_window_seconds', 10.0))
         self._capture_base64_cache = {}
         self._capture_metrics = {
@@ -557,6 +530,18 @@ class EventManager:
                     track_state['events'] = set(lifecycle.stages)
                     track_state['event_stage_max'] = max(lifecycle.stages) if lifecycle.stages else 0
                     for field in ('record_start_frame', 'record_stop_frame', 'type1_capture_time'):
+                        if field in previous_state:
+                            track_state[field] = previous_state[field]
+                    for field in ('class_counts', 'wash_stage_class_counts'):
+                        if isinstance(previous_state.get(field), dict):
+                            track_state[field] = dict(previous_state[field])
+                    for field in (
+                        'vehicle_cls',
+                        'vehicle_cls_locked',
+                        'vehicle_cls_frozen',
+                        'vehicle_cls_at_type2',
+                        'vehicle_cls_lock_reason',
+                    ):
                         if field in previous_state:
                             track_state[field] = previous_state[field]
                     track_state['plate_text_locked'] = lifecycle.last_plate_text
@@ -784,15 +769,13 @@ class EventManager:
             'events': set(),
             'event_stage_max': 0,
             'event_sequence_issues': [],
-            'stationary_frames': 0,
-            'speed_buf': deque(maxlen=6),
             'wash_duration': 0.0,
             'washing': False,
             'washing_candidate': False,
             'washing_confirmed': False,
             'water_detected': False,
-            'water_hit_frames': 0,
-            'water_window': deque(maxlen=20),
+            'water_consecutive_frames': 0,
+            'last_water_observation_frame': -1,
             'effective_wash_frames': 0,
             'last_frame_idx': frame_idx,
             'last_frame': None,
@@ -831,17 +814,16 @@ class EventManager:
             'vehicle_conf_history': [],
             'vehicle_hit_frames': 0,
             'anchor_history': deque(maxlen=10),
-            'center_jump_history': deque(maxlen=12),
             'wash_start_time': None,
             'wash_end_time': None,
             'lane': self.lane_name,
             'last_cleaning': '',
             'vehicle_cls_frozen': False,
             'class_counts': {},
+            'wash_stage_class_counts': {},
             'vehicle_cls_locked': '',
-            'vehicle_non_yellow_recent': deque(),
-            'vehicle_high_conf_label': '',
-            'vehicle_high_conf_count': 0,
+            'vehicle_cls_at_type2': '',
+            'vehicle_cls_lock_reason': '',
             'last_vehicle_label': '',
             'zone_state': None,
             'last_anchor': None,
@@ -857,9 +839,6 @@ class EventManager:
             'abnormal_reasons': set(),
             'type2_qualified': False,
             'type2_qualified_frame': -1,
-            'type5_suppressed_quality': False,
-            'type5_pending_exit_a': False,
-            'type5_pending_reason': '',
             'born_inside_a': False,
             'born_inside_pending': False,
             'born_inside_outcome': '',
@@ -896,37 +875,19 @@ class EventManager:
                 st['anchor_direction_locked'] = True
         if frame is not None:
             st['last_frame'] = frame.copy() if self.copy_track_last_frame else frame
-        freeze_label = st.get('vehicle_cls_frozen', False)
-        if vehicle_box is not None and st.get('last_vehicle_box') is not None:
-            prev = st['last_vehicle_box']
-            prev_area = max(1.0, (prev[2] - prev[0]) * (prev[3] - prev[1]))
-            new_area = max(1.0, (vehicle_box[2] - vehicle_box[0]) * (vehicle_box[3] - vehicle_box[1]))
-            if new_area < prev_area * self.vehicle_shrink_ratio:
-                freeze_label = True
         counts = st.get('class_counts') or {}
-        override_label = self._get_non_yellow_vehicle_override(st, vehicle_label, vehicle_conf, frame_idx)
-        if override_label:
-            counts = self._apply_non_yellow_vehicle_override(st, counts, override_label)
-            freeze_label = True
-        elif vehicle_label and not freeze_label:
+        if vehicle_label and not st.get('vehicle_cls_frozen'):
             counts[vehicle_label] = counts.get(vehicle_label, 0) + 1
             st['class_counts'] = counts
-            locked, locked_count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
-            st['vehicle_cls_locked'] = locked
-            st['vehicle_cls'] = locked
-            if locked_count >= self.vehicle_lock_min_votes:
-                st['vehicle_cls_frozen'] = True
-        elif vehicle_label and st.get('vehicle_cls_locked') and vehicle_label == st['vehicle_cls_locked']:
-            counts[vehicle_label] = counts.get(vehicle_label, 0) + 1
-            st['class_counts'] = counts
-        elif not st.get('vehicle_cls') and st.get('vehicle_cls_locked'):
-            st['vehicle_cls'] = st['vehicle_cls_locked']
+            if st.get('type2_qualified'):
+                stage_counts = st.get('wash_stage_class_counts') or {}
+                stage_counts[vehicle_label] = stage_counts.get(vehicle_label, 0) + 1
+                st['wash_stage_class_counts'] = stage_counts
+            st['vehicle_cls'] = self._select_vehicle_class(st)
         if vehicle_label:
             st['last_vehicle_label'] = vehicle_label
             if not st.get('vehicle_cls'):
                 st['vehicle_cls'] = vehicle_label
-        if freeze_label and st.get('vehicle_cls_locked'):
-            st['vehicle_cls_frozen'] = True
         prev_vehicle_box_for_motion = st.get('last_vehicle_box')
         prev_plate_box_for_motion = st.get('last_plate_box')
         if vehicle_box is not None:
@@ -960,8 +921,6 @@ class EventManager:
         self._sync_plate_legacy_fields(st)
         if confirmed:
             st['confirmed'] = True
-            if self.vehicle_lock_on_confirm and st.get('vehicle_cls_locked'):
-                st['vehicle_cls_frozen'] = True
         if vehicle_box is not None or vehicle_conf is not None:
             st['vehicle_hit_frames'] = int(st.get('vehicle_hit_frames', 0) or 0) + 1
         if vehicle_conf is not None:
@@ -978,31 +937,6 @@ class EventManager:
             st['plate_conf_history'] = history
         if cleaning_label:
             st['last_cleaning'] = cleaning_label
-        ref_box = vehicle_box or plate_box or st.get('last_vehicle_box') or st.get('last_plate_box')
-        prev_box = prev_vehicle_box_for_motion
-        dist = 0.0
-        if ref_box is not None and prev_box is not None:
-            cx = 0.5 * (ref_box[0] + ref_box[2])
-            cy = 0.5 * (ref_box[1] + ref_box[3])
-            px = 0.5 * (prev_box[0] + prev_box[2])
-            py = 0.5 * (prev_box[1] + prev_box[3])
-            dist = hypot(cx - px, cy - py)
-            jump_history = st.get('center_jump_history')
-            if not isinstance(jump_history, deque):
-                jump_history = deque(maxlen=12)
-                st['center_jump_history'] = jump_history
-            frame_diag = max(1.0, hypot(self.frame_w, self.frame_h))
-            jump_history.append(dist / frame_diag)
-        st['speed_buf'].append(dist)
-        avg_speed = sum(st['speed_buf']) / max(len(st['speed_buf']), 1)
-        speed_thresh = self.stationary_speed_thresh
-        if vehicle_box is None and plate_box is not None:
-            speed_thresh *= 1.5
-        if avg_speed <= speed_thresh:
-            st['stationary_frames'] = min(st['stationary_frames'] + 1, 100000)
-        else:
-            st['stationary_frames'] = max(st['stationary_frames'] - 1, 0)
-
         if anchor_point is None:
             anchor_point = get_anchor_point(vehicle_box or plate_box or st.get('last_vehicle_box') or st.get('last_plate_box'),
                                             self.anchor_offset_ratio)
@@ -1052,6 +986,9 @@ class EventManager:
             'trackId': int(track_id),
             'insideA': bool(zone_state and zone_state.inside_a),
             'insideB': bool(zone_state and zone_state.inside_b),
+            'zoneBRegion': getattr(zone_state, 'zone_b_region', 'INVALID'),
+            'zoneBSignedDistance': getattr(zone_state, 'zone_b_signed_distance', None),
+            'zoneBDynamicMargin': getattr(zone_state, 'zone_b_dynamic_margin', 0.0),
             'flags': zone_flags,
             'anchorPoint': anchor_point,
             'zoneAState': getattr(zone_state, 'zone_a_state', 'UNSEEN'),
@@ -1107,13 +1044,7 @@ class EventManager:
             st['zone_b_dwell_frames'] = 0
             st['water_detected'] = False
             st['wash_duration'] = 0.0
-            st['water_hit_frames'] = 0
-            win = st.get('water_window')
-            if isinstance(win, deque):
-                win.clear()
-            else:
-                win = deque(maxlen=self.water_window_size)
-            st['water_window'] = win
+            st['water_consecutive_frames'] = 0
             st['effective_wash_frames'] = 0
         enter_frame = st.get('zone_b_enter_frame', -1)
         anchor_elapsed = 0
@@ -1144,10 +1075,13 @@ class EventManager:
         elif st.get('deferred_type2') and inside_b and not st.get('lifecycle_handoff_pending'):
             type2_ready = True
             st['deferred_type2'] = False
+        type2_newly_qualified = bool(type2_ready and not st.get('type2_qualified'))
         if type2_ready:
             st['type2_qualified'] = True
             if st.get('type2_qualified_frame', -1) < 0:
                 st['type2_qualified_frame'] = frame_idx
+            if type2_newly_qualified:
+                self._start_wash_stage_vehicle_class(st, vehicle_label)
 
         wheel_ref_ts = time.time()
         wheel_active_now = self._is_wheel_track_active(st)
@@ -1155,11 +1089,15 @@ class EventManager:
         if wheel_active_now or not self.wheel_bind_require_active:
             self._update_track_wheel_results(track_id, st, frame_ts=wheel_ref_ts)
 
-        water_in_b = bool(st.get('type2_qualified') and water_boxes)
-        if water_in_b:
-            st['water_detected'] = True
-            st['water_hit_frames'] = st.get('water_hit_frames', 0) + 1
-            st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
+        water_in_b = bool(st.get('type2_qualified') and inside_b and water_boxes)
+        last_water_frame = st.get('last_water_observation_frame', -1)
+        if int(last_water_frame if last_water_frame is not None else -1) != int(frame_idx):
+            st['last_water_observation_frame'] = int(frame_idx)
+            if water_in_b:
+                st['water_consecutive_frames'] = int(st.get('water_consecutive_frames', 0) or 0) + 1
+                st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
+            else:
+                st['water_consecutive_frames'] = 0
         washing_now = bool(water_in_b)
 
         if self.disable_plate_only_events and is_plate and (vehicle_box is None and st.get('last_vehicle_box') is None):
@@ -1188,7 +1126,12 @@ class EventManager:
                 st['events'].add(1)
             self.emit_event(track_id, 2, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(2)
-        if water_in_b and 3 not in st['events'] and 3 in self.allowed_events:
+        if (
+            st.get('water_consecutive_frames', 0) >= self.water_confirm_frames
+            and 3 not in st['events']
+            and 3 in self.allowed_events
+        ):
+            st['water_detected'] = True
             st['washing_confirmed'] = True
             st['wash_start_time'] = timestamp
             self.emit_event(track_id, 3, frame_idx, frame, {
@@ -1205,79 +1148,21 @@ class EventManager:
             st['wash_end_time'] = st.get('wash_end_time') or timestamp
             duration_val = self._compute_effective_wash_duration(st, frame_idx)
             st['wash_duration'] = duration_val
+            self._finalize_vehicle_class(st, 'type4')
             self.emit_event(track_id, 4, frame_idx, frame, {
                 'captureTime': timestamp,
                 'washDuration': round(duration_val, 2),
             }, st)
             st['events'].add(4)
-        if inside_a and st.get('type5_pending_exit_a'):
-            st['type5_pending_exit_a'] = False
-            st['type5_pending_reason'] = 'zone_a_reentered'
-            self.trace_record('type5_gate', {
-                'frameIdx': int(frame_idx),
-                'trackId': int(track_id),
-                'action': 'cancel',
-                'reason': 'zone_a_reentered',
-            })
-        if zone_flags.get('exit_a') and 5 not in st['events']:
-            st['type5_pending_exit_a'] = True
-            st['type5_pending_reason'] = (
-                'waiting_zone_b_exit' if inside_b else 'zone_a_exit_confirmed'
-            )
-            self.trace_record('type5_gate', {
-                'frameIdx': int(frame_idx),
-                'trackId': int(track_id),
-                'action': 'pending',
-                'reason': st['type5_pending_reason'],
-                'insideB': bool(inside_b),
-            })
-        can_type5 = self._can_emit_type5(st)
-        release_type5 = bool(st.get('type5_pending_exit_a') and not inside_b)
-        if release_type5 and 5 in self.allowed_events and 5 not in st['events'] and can_type5:
-            if self._should_suppress_type5_quality(track_id, st, frame_idx):
-                st['type5_suppressed_quality'] = True
-                st['type5_pending_exit_a'] = False
-                st['type5_pending_reason'] = 'quality_suppressed'
-                self.trace_record('type5_gate', {
-                    'frameIdx': int(frame_idx),
-                    'trackId': int(track_id),
-                    'action': 'cancel',
-                    'reason': 'quality_suppressed',
-                })
-                if self.single_lifecycle_events:
-                    st['closed'] = True
-            else:
-                st['wash_end_time'] = st.get('wash_end_time') or timestamp
-                duration_val = self._compute_effective_wash_duration(st, frame_idx)
-                st['wash_duration'] = duration_val
-                self._mark_type5_abnormal_reasons(st)
-                self.emit_event(track_id, 5, frame_idx, frame, {
-                    'captureTime': timestamp,
-                    'washDuration': round(duration_val, 2),
-                }, st)
-                st['events'].add(5)
-                st['type5_pending_exit_a'] = False
-                st['type5_pending_reason'] = 'released_after_zone_b_exit'
-                self.trace_record('type5_gate', {
-                    'frameIdx': int(frame_idx),
-                    'trackId': int(track_id),
-                    'action': 'release',
-                    'reason': 'zone_b_ended',
-                    'type4Emitted': 4 in st['events'],
-                })
-                if self.single_lifecycle_events:
-                    st['closed'] = True
-
         st['washing'] = washing_now
         self._update_wheel_track_activity(track_id, st, frame_ts=time.time())
         if not st['washing']:
             st['washing_confirmed'] = False
         st['debug'] = {
             'state': 'washing' if st.get('washing') else 'idle',
-            'stationary': st['stationary_frames'],
-            'speed': round(avg_speed, 1),
             'wash_duration': round(st.get('wash_duration', 0.0), 1),
             'water': bool(washing_now),
+            'water_consecutive_frames': int(st.get('water_consecutive_frames', 0) or 0),
             'plate': st.get('plate_text', ''),
             'zone_a': bool(zone_state and zone_state.inside_a),
             'zone_b': bool(zone_state and zone_state.inside_b),
@@ -1288,8 +1173,6 @@ class EventManager:
             'zone_a_region': getattr(zone_state, 'zone_a_region', 'INVALID'),
             'zone_a_signed_distance': getattr(zone_state, 'signed_distance', None),
             'zone_a_dynamic_margin': getattr(zone_state, 'dynamic_margin', 0.0),
-            'type5_pending_exit_a': bool(st.get('type5_pending_exit_a')),
-            'type5_pending_reason': st.get('type5_pending_reason', ''),
         }
 
         elapsed_seconds = st.get('track_frame_count', 0) / max(self.fps, 1e-6)
@@ -1379,7 +1262,6 @@ class EventManager:
                 else True
             )
             if timed_out:
-                event_enabled = bool(st.get('zone_a_dwell_frames', 0) > 0)
                 born_inside_rejected = bool(
                     st.get('born_inside_pending')
                     and str(st.get('born_inside_outcome', '') or '') == 'CANDIDATE'
@@ -1415,53 +1297,33 @@ class EventManager:
                     })
                     if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
                         st['record_stop_frame'] = frame_idx
-                suppress_plate_only_events = bool(
-                    self.disable_plate_only_events
-                    and st.get('last_vehicle_box') is None
-                    and int(st.get('vehicle_hit_frames', 0) or 0) <= 0
-                )
-                if (
-                    not born_inside_rejected
-                    and 4 not in st['events']
-                    and 4 in self.allowed_events
-                    and event_enabled
-                    and not suppress_plate_only_events
-                    and st.get('type2_qualified')
-                    and st.get('zone_b_dwell_frames', 0) > 0
-                ):
-                    last_frame = st.get('last_frame_idx', frame_idx)
-                    st['wash_end_time'] = st.get('wash_end_time') or self.frame_timestamp(last_frame)
-                    duration_val = self._compute_effective_wash_duration(st, last_frame)
-                    st['wash_duration'] = duration_val
-                    self.emit_event(tid, 4, last_frame, st.get('last_frame'), {
-                        'captureTime': self.frame_timestamp(last_frame),
-                        'washDuration': round(duration_val, 2),
-                    }, st)
-                    st['events'].add(4)
                 can_type5 = self._can_emit_type5(st)
                 if (
-                    not born_inside_rejected
-                    and 5 not in st['events']
+                    5 not in st['events']
                     and 5 in self.allowed_events
                     and can_type5
-                    and event_enabled
-                    and not suppress_plate_only_events
                 ):
                     last_frame_idx = st.get('last_frame_idx', frame_idx)
-                    if self._should_suppress_type5_quality(tid, st, last_frame_idx):
-                        st['type5_suppressed_quality'] = True
-                    else:
-                        timestamp = self.frame_timestamp(last_frame_idx)
-                        st['wash_end_time'] = st.get('wash_end_time') or timestamp
-                        duration_val = self._compute_effective_wash_duration(st, last_frame_idx)
-                        st['wash_duration'] = duration_val
-                        extras = {
-                            'captureTime': timestamp,
-                            'washDuration': round(duration_val, 2),
-                        }
-                        self._mark_type5_abnormal_reasons(st)
-                        self.emit_event(tid, 5, last_frame_idx, st.get('last_frame'), extras, st)
-                        st['events'].add(5)
+                    timestamp = self.frame_timestamp(last_frame_idx)
+                    st['wash_end_time'] = st.get('wash_end_time') or timestamp
+                    duration_val = self._compute_effective_wash_duration(st, last_frame_idx)
+                    st['wash_duration'] = duration_val
+                    extras = {
+                        'captureTime': timestamp,
+                        'washDuration': round(duration_val, 2),
+                    }
+                    self._finalize_vehicle_class(st, 'type5')
+                    self._mark_type5_abnormal_reasons(st)
+                    self.emit_event(tid, 5, last_frame_idx, st.get('last_frame'), extras, st)
+                    st['events'].add(5)
+                    self.trace_record('type5_gate', {
+                        'frameIdx': int(frame_idx),
+                        'trackId': int(tid),
+                        'action': 'release',
+                        'reason': 'anchor_missing_timeout',
+                        'zoneAExited': bool(st.get('zone_a_exited')),
+                        'abnormal': bool(st.get('abnormal_reasons')),
+                    })
                 if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
                     extra_frames = self._record_tail_frames_for_event(5, st)
                     last_idx = st.get('last_frame_idx', frame_idx)
@@ -1487,7 +1349,6 @@ class EventManager:
         for tid in to_remove:
             self.shadow_pool.pop(tid, None)
             self.zone_mgr.drop_track(tid)
-            self.pending_events.pop(tid, None)
             lifecycle = self.lifecycle_manager.get(tid)
             key = lifecycle.event_id if lifecycle is not None else f'{self.camera_id}_{tid}'
             self.upload_buffer.pop(key, None)
@@ -1497,18 +1358,6 @@ class EventManager:
         if event_type not in self.allowed_events:
             return
         vehicle_type = payload.get('vehicleType') or self._resolve_vehicle_type(track_state)
-        if self.require_vehicle_type_for_events and event_type in (3, 4):
-            if not (vehicle_type and str(vehicle_type).strip()):
-                pending = self.pending_events.setdefault(track_id, [])
-                pending.append({
-                    'event_type': event_type,
-                    'frame_idx': frame_idx,
-                    'frame': frame.copy() if frame is not None else None,
-                    'payload': dict(payload),
-                })
-                return
-        if self.require_vehicle_type_for_events and vehicle_type and str(vehicle_type).strip():
-            self._flush_pending_events(track_id, vehicle_type, track_state)
         self._emit_event_core(track_id, event_type, frame_idx, frame, payload, track_state, vehicle_type)
 
     def _record_event_sequence_issue(self, track_id, event_type, frame_idx, track_state, previous_stage):
@@ -1738,7 +1587,7 @@ class EventManager:
             try:
                 with self.event_log_path.open('a', encoding='utf-8') as f:
                     f.write(f"{self.camera_id},{track_id},{event_type},{event['captureTime']},{frame_idx},"
-                            f"{track_state.get('stationary_frames',0)},{round(track_state.get('wash_duration',0.0),2)},"
+                            f"0,{round(track_state.get('wash_duration',0.0),2)},"
                             f"{event['plateNumber']},{event['vehicleType']},{dir_code},{dir_label},"
                             f"{int(event['plateIsGuess'])},{anchor_dwell}\n")
             except Exception:
@@ -1808,19 +1657,6 @@ class EventManager:
             f'上传={ (t_upload-t_csv)*1000:.1f}ms'
         )
         return True
-
-    def _flush_pending_events(self, track_id, vehicle_type, track_state):
-        entries = self.pending_events.pop(track_id, None)
-        if not entries:
-            return
-        for entry in sorted(entries, key=lambda item: int(item.get('event_type', 0) or 0)):
-            et = entry.get('event_type')
-            fi = entry.get('frame_idx')
-            fr = entry.get('frame')
-            payload = dict(entry.get('payload') or {})
-            if not payload.get('vehicleType'):
-                payload['vehicleType'] = vehicle_type
-            self._emit_event_core(track_id, et, fi, fr, payload, track_state, vehicle_type)
 
     def _add_shadow_candidate(self, track_id, text, conf, frame_idx, trusted=False):
         text = normalize_plate_candidate_text(text)
@@ -2207,156 +2043,14 @@ class EventManager:
             return int(round(max(self.fps, 1.0) * self.track_lost_grace_seconds))
         return self._record_tail_frames()
 
-    def _track_avg_vehicle_conf(self, track_state):
-        return self._avg(track_state.get('vehicle_conf_history') or [])
-
-    def _track_quality_hits(self, track_state):
-        return max(
-            int(track_state.get('vehicle_hit_frames', 0) or 0),
-            int(track_state.get('track_frame_count', 0) or 0),
-            int(track_state.get('zone_a_dwell_frames', 0) or 0),
-        )
-
-    def _has_valid_plate_candidate(self, track_state):
-        if not track_state:
-            return False
-        locked_text = normalize_plate_text(track_state.get('plate_text_locked', ''))
-        if locked_text and is_valid_plate(locked_text):
-            return True
-        latest_text = normalize_plate_candidate_text(track_state.get('plate_candidate_latest', ''))
-        if latest_text and is_valid_plate(latest_text):
-            if int(track_state.get('plate_candidate_hits', 0) or 0) >= self.quality_plate_candidate_min_hits:
-                return True
-            if int(track_state.get('plate_candidate_consecutive', 0) or 0) >= self.quality_plate_candidate_min_hits:
-                return True
-        return False
-
-    def _direction_is_stable(self, track_state):
-        history = track_state.get('anchor_history')
-        if not isinstance(history, deque) or len(history) < 2:
-            return False
-        first = history[0]
-        last = history[-1]
-        dx = float(last[0]) - float(first[0])
-        dy = float(last[1]) - float(first[1])
-        net_dist = hypot(dx, dy)
-        if net_dist < max(2.0, min(self.frame_w, self.frame_h) * 0.01):
-            return False
-        positive = 0
-        negative = 0
-        prev = history[0]
-        for item in list(history)[1:]:
-            sx = float(item[0]) - float(prev[0])
-            sy = float(item[1]) - float(prev[1])
-            step = sx * dx + sy * dy
-            if step > 0:
-                positive += 1
-            elif step < 0:
-                negative += 1
-            prev = item
-        total = positive + negative
-        if total <= 0:
-            return True
-        return positive / max(total, 1) >= 0.7
-
     def _can_emit_type1(self, track_state):
-        if not self.event_track_quality_enabled:
-            if self.min_type1_track_frames <= 0:
-                return True
-            return int(track_state.get('zone_a_dwell_frames', 0) or 0) >= self.min_type1_track_frames
-
-        hits = self._track_quality_hits(track_state)
-        avg_conf = self._track_avg_vehicle_conf(track_state)
-        if hits >= self.quality_min_hits_type1 and avg_conf >= self.quality_min_avg_vehicle_conf:
+        if self.min_type1_track_frames <= 1:
             return True
-        if (
-            hits >= self.quality_fast_min_hits_type1
-            and avg_conf >= self.quality_fast_min_avg_vehicle_conf
-            and self._direction_is_stable(track_state)
-        ):
-            return True
-        if self.quality_plate_candidate_can_confirm_type1 and self._has_valid_plate_candidate(track_state):
-            return True
-        return False
-
-    def _has_valid_zone_a_lifecycle_for_type5(self, track_state):
-        if not self.event_track_quality_enabled:
-            if self.min_type5_zone_a_dwell > 0:
-                return track_state.get('zone_a_dwell_frames', 0) >= self.min_type5_zone_a_dwell
-            return True
-        if not track_state.get('zone_a_seen') and track_state.get('zone_a_dwell_frames', 0) <= 0:
-            return False
-        if track_state.get('zone_a_dwell_frames', 0) >= self.min_type5_zone_a_dwell:
-            return True
-        if 1 in track_state.get('events', set()):
-            return True
-        return self._can_emit_type1(track_state)
-
-    def _max_center_jump_ratio(self, track_state):
-        history = track_state.get('center_jump_history')
-        if not isinstance(history, deque) or not history:
-            return 0.0
-        return max(float(v or 0.0) for v in history)
-
-    def _is_obvious_false_type5(self, track_state):
-        if self._has_valid_plate_candidate(track_state):
-            return False
-        hits = self._track_quality_hits(track_state)
-        avg_conf = self._track_avg_vehicle_conf(track_state)
-        dwell = int(track_state.get('zone_a_dwell_frames', 0) or 0)
-        low_conf = avg_conf > 0.0 and avg_conf < self.quality_min_avg_vehicle_conf
-        short_track = hits < self.quality_fast_min_hits_type1 or dwell < max(1, self.min_type5_zone_a_dwell)
-        jumpy = self._max_center_jump_ratio(track_state) >= 0.18
-        return bool(short_track and (low_conf or jumpy))
-
-    def _suspicious_type5_area_key(self, track_state):
-        box = track_state.get('last_vehicle_box') or track_state.get('last_plate_box')
-        if not box or len(box) != 4:
-            return ('unknown', 0, 0)
-        cx = 0.5 * (float(box[0]) + float(box[2]))
-        cy = 0.5 * (float(box[1]) + float(box[3]))
-        cell_w = max(1.0, self.frame_w / 4.0)
-        cell_h = max(1.0, self.frame_h / 4.0)
-        return (
-            str(self.lane_name or ''),
-            int(cx // cell_w),
-            int(cy // cell_h),
-        )
-
-    def _should_suppress_type5_quality(self, track_id, track_state, frame_idx):
-        del frame_idx
-        if not self.event_track_quality_enabled or not self.quality_suppress_obvious_false_type5:
-            return False
-        if not self._is_obvious_false_type5(track_state):
-            return False
-        now = time.time()
-        cutoff = now - self.quality_suspicious_cooldown_seconds
-        while self.suspicious_type5_cooldown and self.suspicious_type5_cooldown[0].get('ts', 0.0) < cutoff:
-            self.suspicious_type5_cooldown.popleft()
-        area_key = self._suspicious_type5_area_key(track_state)
-        duplicate = any(entry.get('area') == area_key for entry in self.suspicious_type5_cooldown)
-        self.suspicious_type5_cooldown.append({'ts': now, 'area': area_key})
-        suffix = ' duplicate' if duplicate else ''
-        for line in self.log_throttler.record(
-            key=f'event.type5.quality_suppressed.{area_key}',
-            message=(
-                f'[event-quality] suppress suspicious type5{suffix}: '
-                f'track={track_id} hits={self._track_quality_hits(track_state)} '
-                f'avg_conf={self._track_avg_vehicle_conf(track_state):.3f} '
-                f'zone_a_dwell={track_state.get("zone_a_dwell_frames", 0)} '
-                f'jump={self._max_center_jump_ratio(track_state):.3f}'
-            ),
-            window_seconds=max(self.quality_suspicious_cooldown_seconds, 1.0),
-        ):
-            print(line)
-        return True
+        stable_zone_a_frames = int(track_state.get('zone_a_dwell_frames', 0) or 0) + 1
+        return stable_zone_a_frames >= self.min_type1_track_frames
 
     def _can_emit_type5(self, track_state):
-        if track_state.get('type5_suppressed_quality'):
-            return False
-        if not track_state.get('type2_qualified'):
-            return False
-        return self._has_valid_zone_a_lifecycle_for_type5(track_state)
+        return bool(track_state.get('type2_qualified'))
 
     def _mark_type5_abnormal_reasons(self, track_state):
         reasons = track_state.get('abnormal_reasons')
@@ -2365,8 +2059,6 @@ class EventManager:
             track_state['abnormal_reasons'] = reasons
         if 2 not in track_state.get('events', set()):
             reasons.add('MISSING_TYPE2')
-        if track_state.get('water_detected') and 3 not in track_state.get('events', set()):
-            reasons.add('MISSING_TYPE3')
         if track_state.get('type2_qualified') and 4 not in track_state.get('events', set()):
             reasons.add('MISSING_TYPE4')
         return reasons
@@ -2376,79 +2068,48 @@ class EventManager:
             return 0.0
         return float(sum(values) / len(values))
 
-    def _non_yellow_override_window_frames(self):
-        return max(1, int(round(max(self.fps, 1.0) * NON_YELLOW_OVERRIDE_SECONDS)))
-
-    def _get_non_yellow_vehicle_override(self, track_state, vehicle_label, vehicle_conf, frame_idx):
-        recent = track_state.get('vehicle_non_yellow_recent')
-        if not isinstance(recent, deque):
-            recent = deque()
-            track_state['vehicle_non_yellow_recent'] = recent
-
-        current_locked = track_state.get('vehicle_cls_locked') or track_state.get('vehicle_cls') or ''
-        if current_locked != YELLOW_TRUCK_LABEL:
-            recent.clear()
-            track_state['vehicle_high_conf_label'] = ''
-            track_state['vehicle_high_conf_count'] = 0
+    @staticmethod
+    def _select_vehicle_class(track_state):
+        counts = dict(track_state.get('class_counts') or {})
+        stage_counts = dict(track_state.get('wash_stage_class_counts') or {})
+        if not counts and not stage_counts:
+            return str(track_state.get('last_vehicle_label') or '')
+        scores = {label: int(count or 0) for label, count in counts.items() if label}
+        for label, count in stage_counts.items():
+            if label:
+                scores[label] = scores.get(label, 0) + 2 * int(count or 0)
+        if not scores:
             return ''
+        return max(scores.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
-        window_frames = self._non_yellow_override_window_frames()
-        min_frame = frame_idx - window_frames + 1
-        while recent and recent[0].get('frame', -1) < min_frame:
-            recent.popleft()
+    def _start_wash_stage_vehicle_class(self, track_state, vehicle_label=''):
+        if not track_state.get('vehicle_cls_at_type2'):
+            track_state['vehicle_cls_at_type2'] = (
+                self._select_vehicle_class(track_state)
+                or str(vehicle_label or '')
+            )
+        label = str(vehicle_label or '').strip()
+        if label:
+            stage_counts = track_state.get('wash_stage_class_counts') or {}
+            stage_counts[label] = stage_counts.get(label, 0) + 1
+            track_state['wash_stage_class_counts'] = stage_counts
+        track_state['vehicle_cls'] = self._select_vehicle_class(track_state)
 
-        label = (vehicle_label or '').strip()
-        try:
-            conf_val = float(vehicle_conf if vehicle_conf is not None else 0.0)
-        except (TypeError, ValueError):
-            conf_val = 0.0
-
-        if label in NON_YELLOW_OVERRIDE_LABELS:
-            recent.append({'frame': frame_idx, 'label': label})
-            if conf_val >= NON_YELLOW_HIGH_CONFIDENCE:
-                if track_state.get('vehicle_high_conf_label') == label:
-                    track_state['vehicle_high_conf_count'] = int(track_state.get('vehicle_high_conf_count', 0)) + 1
-                else:
-                    track_state['vehicle_high_conf_label'] = label
-                    track_state['vehicle_high_conf_count'] = 1
-            else:
-                track_state['vehicle_high_conf_label'] = ''
-                track_state['vehicle_high_conf_count'] = 0
-        else:
-            track_state['vehicle_high_conf_label'] = ''
-            track_state['vehicle_high_conf_count'] = 0
-
-        streak_label = track_state.get('vehicle_high_conf_label', '')
-        streak_count = int(track_state.get('vehicle_high_conf_count', 0) or 0)
-        if streak_label in NON_YELLOW_OVERRIDE_LABELS and streak_count >= NON_YELLOW_HIGH_CONF_STREAK:
-            return streak_label
-
-        label_counts = {}
-        for entry in recent:
-            entry_label = entry.get('label', '')
-            if entry_label in NON_YELLOW_OVERRIDE_LABELS:
-                label_counts[entry_label] = label_counts.get(entry_label, 0) + 1
-        if not label_counts:
-            return ''
-        best_label, best_count = max(label_counts.items(), key=lambda kv: (kv[1], kv[0]))
-        if best_count >= window_frames:
-            return best_label
-        return ''
-
-    def _apply_non_yellow_vehicle_override(self, track_state, counts, override_label):
-        counts = dict(counts or {})
-        yellow_count = int(counts.get(YELLOW_TRUCK_LABEL, 0) or 0)
-        counts[override_label] = max(int(counts.get(override_label, 0) or 0), yellow_count + 1, self.vehicle_lock_min_votes)
-        track_state['class_counts'] = counts
-        track_state['vehicle_cls_locked'] = override_label
-        track_state['vehicle_cls'] = override_label
-        track_state['vehicle_cls_frozen'] = True
-        track_state['vehicle_high_conf_label'] = ''
-        track_state['vehicle_high_conf_count'] = 0
-        recent = track_state.get('vehicle_non_yellow_recent')
-        if isinstance(recent, deque):
-            recent.clear()
-        return counts
+    def _finalize_vehicle_class(self, track_state, reason):
+        if track_state.get('vehicle_cls_frozen') and track_state.get('vehicle_cls_locked'):
+            return track_state['vehicle_cls_locked']
+        selected = (
+            self._select_vehicle_class(track_state)
+            or str(track_state.get('vehicle_cls_at_type2') or '')
+            or str(track_state.get('vehicle_cls') or '')
+            or str(track_state.get('last_vehicle_label') or '')
+        )
+        if selected:
+            track_state['vehicle_cls'] = selected
+            track_state['vehicle_cls_locked'] = selected
+            track_state['vehicle_cls_frozen'] = True
+            track_state['vehicle_cls_lock_reason'] = str(reason or 'lifecycle_finalized')
+        return selected
 
     def _infer_plate_color(self, track_state):
         locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
@@ -2559,13 +2220,13 @@ class EventManager:
         dbg = st.get('debug', {})
         return {
             'state': dbg.get('state', 'idle'),
-            'stationary': dbg.get('stationary', 0),
-            'speed': dbg.get('speed', 0.0),
             'water': dbg.get('water', False),
+            'water_consecutive_frames': dbg.get('water_consecutive_frames', 0),
             'wash_duration': dbg.get('wash_duration', 0.0),
             'plate': dbg.get('plate', ''),
             'zone_a': dbg.get('zone_a', False),
             'zone_b': dbg.get('zone_b', False),
+            'zone_b_elapsed': dbg.get('zone_b_elapsed', 0),
         }
 
     def _prepare_capture_image(self, capture_path):
@@ -2699,7 +2360,6 @@ class EventManager:
     def snapshot_metrics(self):
         metrics = dict(self._capture_metrics)
         metrics['active_tracks'] = len(self.tracks)
-        metrics['pending_events'] = sum(len(v) for v in self.pending_events.values())
         metrics['upload_buffered'] = sum(len(v) for v in self.upload_buffer.values())
         metrics['capture_base64_cached'] = len(self._capture_base64_cache)
         return metrics

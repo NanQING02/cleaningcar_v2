@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from cleaningcar.event_trace import EventTraceRecorder
-from cleaningcar.events import EventManager
+from cleaningcar.events import EventManager, _format_track_debug_text
 from cleaningcar.tracking import VehicleTracker, resolve_track_retention_frames
 from cleaningcar.video_io import emit_per_id_video_type6
 
@@ -98,6 +98,19 @@ class _CollectingUploader:
 
 
 class M1EventHardeningTests(unittest.TestCase):
+    def test_debug_track_text_does_not_require_removed_stationary_fields(self):
+        text = _format_track_debug_text(7, {
+            'state': 'washing',
+            'water': True,
+            'water_consecutive_frames': 3,
+            'wash_duration': 1.25,
+            'zone_b_elapsed': 14,
+        })
+        sparse_text = _format_track_debug_text(8, {'state': 'idle'})
+
+        self.assertEqual(text, 'ID:7 washing water:Y wf:3 dur:1.2 zb:14')
+        self.assertEqual(sparse_text, 'ID:8 idle water:N wf:0 dur:0.0 zb:0')
+
     def test_track_retention_uses_source_fps(self):
         policy = resolve_track_retention_frames(
             25.0,
@@ -211,12 +224,14 @@ class M1EventHardeningTests(unittest.TestCase):
         self.assertIn(1, manager.tracks)
         self.assertFalse(lifecycle.closed)
 
-        manager.flush_inactive(set(), frame_idx=4, capture_ts=109.9)
+        manager.flush_inactive(set(), frame_idx=4, capture_ts=105.9)
         self.assertIn(1, manager.tracks)
         self.assertFalse(lifecycle.closed)
 
-        manager.flush_inactive(set(), frame_idx=5, capture_ts=110.1)
+        manager.flush_inactive(set(), frame_idx=5, capture_ts=106.1)
         self.assertTrue(lifecycle.closed)
+        self.assertIn(5, manager.tracks[1]['events'])
+        self.assertIn('TRACK_LOST_IN_ZONE_A_TIMEOUT', manager.tracks[1]['abnormal_reasons'])
 
     def test_verified_plate_handoff_reuses_lost_lifecycle_event_id(self):
         temp_dir = tempfile.TemporaryDirectory()

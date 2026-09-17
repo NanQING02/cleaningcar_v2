@@ -86,7 +86,12 @@
 - 单车视频仅使用 `FFmpeg` 硬编写出；FFmpeg 硬编不可用时不保存该段单车视频
 - 单车录像画面只由 `logic.per_id_video_source` 控制：`annotated` 写完整调试帧，`raw` 写干净原始帧，`auto` 为兼容值并按 `raw` 处理
 - `annotated` 模式会统一启用车辆框、车牌框/关键点、Zone、轨迹状态、方向、H/D/L 锚点、水流框和双模型车牌结果绘制，不再由多个 `debug_*` 参数分别拼装 per-id 画面
-- `logic.track_lost_grace_seconds=8.0` 按视频源FPS换算tracker丢失保留帧数；25 FPS时为200帧，事件状态额外保留1秒
+- `logic.track_lost_grace_seconds=4.0` 按视频源 FPS 换算锚点消失确认与 tracker 丢失保留帧数；25 FPS 时为100帧。连续4秒没有可用锚点后触发 `type=5`，Zone A 内消失会标记异常
+- `logic.min_track_frames_for_type1=5`：车辆在 Zone A 内连续稳定5帧后触发 `type=1`；若先确认进入 Zone B，会严格按 `type1 -> type2` 顺序补齐
+- `logic.water_confirm_frames=3`：`type=2` 成立后，只有在 Zone B 内连续3帧识别到水目标才触发 `type=3`
+- `logic.min_zone_b_dwell_seconds_for_type4=0.5`：确认离开 Zone B 且区内停留至少0.5秒才触发 `type=4`；Zone B 离开同时使用动态边界缓冲和连续帧防抖，避免检测框变化导致锚点瞬时跳出
+- `type=5` 只要求车辆已经满足 `type=2` 且锚点连续消失4秒；低置信度、缺少中间事件等问题只写入异常原因，不再阻止最终记录发送
+- 车型在 `type=2` 前持续累计基础票，`type=2` 到 `type=4` 阶段的车型票额外加权；在 `type=4` 正式冻结，没有 `type=4` 时在 `type=5` 前冻结。冻结后不允许短串识别覆盖，多 tracker 生命周期交接会继承车型票和锁定状态
 - `logic.event_trace_enabled=false` 默认关闭事件输入追踪；本地视频手测时可临时开启
 - `logic.event_trace_dir=event_traces` 控制追踪输出根目录，相对路径按项目根目录解析
 - `logic.event_trace_queue_size=4096` 控制异步JSONL队列；队列溢出数量会写入 `summary.json`

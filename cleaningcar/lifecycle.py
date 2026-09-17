@@ -31,7 +31,7 @@ class BusinessLifecycleManager:
     EVENT_ID_MAX_LENGTH = 36
     EVENT_ID_CAMERA_PREFIX_LENGTH = 11
 
-    def __init__(self, camera_id, grace_seconds=8.0):
+    def __init__(self, camera_id, grace_seconds=4.0):
         self.camera_id = str(camera_id)
         self.grace_seconds = max(0.1, float(grace_seconds))
         self.by_event_id = {}

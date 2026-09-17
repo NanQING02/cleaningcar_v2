@@ -329,16 +329,16 @@
           <label>待绑定车牌缓存容量
             <input type="number" min="1" v-model.number="form.logic.pending_plate_cache_max_entries" />
           </label>
-          <label>进入/退出 Zone B 防抖帧数
+          <label>进入 Zone B 防抖帧数
             <input type="number" min="1" v-model.number="form.logic.zone_b_entry_hysteresis" />
           </label>
-          <label>静止判断最小帧 (Type3)
-            <input type="number" min="0" v-model.number="form.logic.stationary_min_frames" />
+          <label>离开 Zone B 防抖帧数
+            <input type="number" min="1" v-model.number="form.logic.zone_b_exit_hysteresis" />
           </label>
-          <label>Type3/4 重复触发最小间隔帧
-            <input type="number" min="1" v-model.number="form.logic.type34_min_interval_frames" />
+          <label>Type3 连续水目标确认帧数
+            <input type="number" min="1" max="30" v-model.number="form.logic.water_confirm_frames" />
           </label>
-          <label>Track 丢失宽限 (秒，按源FPS换算)
+          <label>锚点消失确认 (秒，按源FPS换算)
             <input type="number" min="0" max="60" step="0.5" v-model.number="form.logic.track_lost_grace_seconds" />
           </label>
           <label>
@@ -351,22 +351,18 @@
           <label>事件追踪异步队列
             <input type="number" min="128" v-model.number="form.logic.event_trace_queue_size" />
           </label>
-          <p class="hint">丢失宽限大于0时，运行时按视频源FPS换算tracker保留帧数，事件状态再额外保留1秒。</p>
+          <p class="hint">连续无可用锚点达到该时长后结束车辆生命周期并触发 Type5；Zone A 内消失会标记为异常。</p>
           <label>车辆跟踪 IoU 阈值 (0-1)
             <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_iou_threshold" />
           </label>
           <label>车辆中心门控比例 (0-1, 0关闭)
             <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_center_gate_ratio" />
           </label>
-          <label>Type1 最小 Zone A 停留帧数 (0关闭)
+          <label>Type1 Zone A 连续稳定帧数
             <input type="number" min="0" v-model.number="form.logic.min_track_frames_for_type1" />
           </label>
-          <label>Type5 旧版最小 Zone A 停留帧数 (质量门槛关闭时)
-            <input type="number" min="0" v-model.number="form.logic.min_zone_a_dwell_frames_for_type5" />
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.require_vehicle_type_for_events" />
-            仅在已锁定车型时允许触发 Type3/4
+          <label>Type4 Zone B 最小停留秒数
+            <input type="number" min="0" max="60" step="0.1" v-model.number="form.logic.min_zone_b_dwell_seconds_for_type4" />
           </label>
           <label>锚点上移比例 (0-0.9)
             <input type="number" min="0" max="0.9" step="0.01" v-model.number="form.logic.anchor_offset_ratio" />
@@ -399,39 +395,6 @@
           <p class="hint">H为车框底部上移后的中性点，并固定参与Zone判断。D和L仅保留为方向诊断对照，不会移动业务锚点。G已停用。</p>
           <label>Zone B 锚点延迟帧
             <input type="number" min="0" v-model.number="form.logic.zone_b_anchor_min_frames" />
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.event_track_quality.enabled" />
-            事件轨迹质量门槛
-          </label>
-          <label>Type1 基础命中帧
-            <input type="number" min="1" v-model.number="form.logic.event_track_quality.min_hits_type1" />
-          </label>
-          <label>Type1 快车命中帧
-            <input type="number" min="1" v-model.number="form.logic.event_track_quality.fast_vehicle_min_hits_type1" />
-          </label>
-          <label>Type1 基础车辆平均置信度
-            <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.event_track_quality.min_avg_vehicle_conf" />
-          </label>
-          <label>Type1 快车平均置信度
-            <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.event_track_quality.fast_vehicle_min_avg_conf" />
-          </label>
-          <label>车牌候选确认命中
-            <input type="number" min="1" v-model.number="form.logic.event_track_quality.plate_candidate_min_hits" />
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.event_track_quality.plate_candidate_can_confirm_type1" />
-            车牌候选可确认 Type1
-          </label>
-          <label>Type5 质量门槛 Zone A 最小停留帧
-            <input type="number" min="0" v-model.number="form.logic.event_track_quality.min_zone_a_dwell_type5" />
-          </label>
-          <label>
-            <input type="checkbox" v-model="form.logic.event_track_quality.suppress_obvious_false_type5" />
-            抑制可疑 Type5
-          </label>
-          <label>可疑 Type5 冷却秒数
-            <input type="number" min="0" step="0.1" v-model.number="form.logic.event_track_quality.suspicious_cooldown_seconds" />
           </label>
           <label>影子车牌池大小
             <input type="number" min="10" v-model.number="form.logic.shadow_plate_pool.max_candidates" />
@@ -567,11 +530,9 @@
               pending_plate_cache_ttl_frames: 40,
               pending_plate_cache_max_entries: 30,
               zone_b_entry_hysteresis: 3,
-              zone_b_exit_hysteresis: 3,
-              stationary_min_frames: 0,
-              stationary_speed_thresh: 8.0,
-              type34_min_interval_frames: 5,
-              track_lost_grace_seconds: 8.0,
+              zone_b_exit_hysteresis: 5,
+              water_confirm_frames: 3,
+              track_lost_grace_seconds: 4.0,
               event_trace_enabled: false,
               event_trace_dir: 'event_traces',
               event_trace_queue_size: 4096,
@@ -580,9 +541,6 @@
               enable_per_id_video: false,
               per_id_video_source: 'auto',
               lane_name: '冲洗',
-              vehicle_shrink_ratio: 0.35,
-              vehicle_lock_min_votes: 40,
-              vehicle_lock_on_confirm: true,
               plate_track_lock_frames: 6,
               event_plate_lock_frames: 6,
               event_plate_fast_lock_frames: 3,
@@ -592,12 +550,9 @@
               default_plate_color_conf: 0.0,
               default_cleanliness: 0,
               car_plate_cache_ttl: 60,
-              allowed_event_types: [1, 2, 3, 4, 5, 6],
               min_track_frames_for_type1: 5,
-              min_zone_a_dwell_frames_for_type5: 25,
               disable_plate_only_events: true,
               single_lifecycle_events: true,
-              require_vehicle_type_for_events: false,
               anchor_offset_ratio: 0.0,
               anchor_mode: 'directional',
               anchor_shadow_compare: false,
@@ -624,20 +579,8 @@
                 color_switch_gain_ratio: 1.2,
                 color_switch_margin: 0.5
               },
-              event_track_quality: {
-                enabled: true,
-                min_hits_type1: 12,
-                fast_vehicle_min_hits_type1: 6,
-                min_avg_vehicle_conf: 0.62,
-                fast_vehicle_min_avg_conf: 0.72,
-                plate_candidate_min_hits: 2,
-                plate_candidate_can_confirm_type1: true,
-                min_zone_a_dwell_type5: 15,
-                suppress_obvious_false_type5: true,
-                suspicious_cooldown_seconds: 6
-              },
               wash_duration_offset_seconds: 0.0,
-              min_zone_b_dwell_frames_for_type4: 60,
+              min_zone_b_dwell_seconds_for_type4: 0.5,
               per_id_video_dir: './video_result/per_id',
               enable_event_disk: false
             },
@@ -928,20 +871,6 @@
           }
           this.form.logic.pending_plate_cache_ttl_frames = Number(this.form.logic.pending_plate_cache_ttl_frames || 40);
           this.form.logic.pending_plate_cache_max_entries = Number(this.form.logic.pending_plate_cache_max_entries || 30);
-          this.form.logic.event_track_quality = this.form.logic.event_track_quality || {};
-          const eventQualityValueOr = (value, fallback) => (
-            (typeof value === 'undefined' || value === null || value === '') ? fallback : value
-          );
-          this.form.logic.event_track_quality.enabled = (typeof this.form.logic.event_track_quality.enabled === 'undefined') ? true : !!this.form.logic.event_track_quality.enabled;
-          this.form.logic.event_track_quality.min_hits_type1 = Number(eventQualityValueOr(this.form.logic.event_track_quality.min_hits_type1, 12));
-          this.form.logic.event_track_quality.fast_vehicle_min_hits_type1 = Number(eventQualityValueOr(this.form.logic.event_track_quality.fast_vehicle_min_hits_type1, 6));
-          this.form.logic.event_track_quality.min_avg_vehicle_conf = Number(eventQualityValueOr(this.form.logic.event_track_quality.min_avg_vehicle_conf, 0.62));
-          this.form.logic.event_track_quality.fast_vehicle_min_avg_conf = Number(eventQualityValueOr(this.form.logic.event_track_quality.fast_vehicle_min_avg_conf, 0.72));
-          this.form.logic.event_track_quality.plate_candidate_min_hits = Number(eventQualityValueOr(this.form.logic.event_track_quality.plate_candidate_min_hits, 2));
-          this.form.logic.event_track_quality.plate_candidate_can_confirm_type1 = (typeof this.form.logic.event_track_quality.plate_candidate_can_confirm_type1 === 'undefined') ? true : !!this.form.logic.event_track_quality.plate_candidate_can_confirm_type1;
-          this.form.logic.event_track_quality.min_zone_a_dwell_type5 = Number(eventQualityValueOr(this.form.logic.event_track_quality.min_zone_a_dwell_type5, 15));
-          this.form.logic.event_track_quality.suppress_obvious_false_type5 = (typeof this.form.logic.event_track_quality.suppress_obvious_false_type5 === 'undefined') ? true : !!this.form.logic.event_track_quality.suppress_obvious_false_type5;
-          this.form.logic.event_track_quality.suspicious_cooldown_seconds = Number(eventQualityValueOr(this.form.logic.event_track_quality.suspicious_cooldown_seconds, 6));
           this.form.video.debug_frame_path = this.form.video.debug_frame_path || '';
           this.form.video.debug_frame_interval = this.form.video.debug_frame_interval || 30;
           this.form.video.debug_frame_max_width = this.form.video.debug_frame_max_width || 960;
@@ -982,9 +911,6 @@
           this.form.wheel.bind_wait_poll_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_poll_seconds, 0.08));
           this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 0.5);
           this.form.wheel.photo_min_score = Number(wheelValueOr(this.form.wheel.photo_min_score, 0.3));
-          if (typeof this.form.logic.require_vehicle_type_for_events === 'undefined') {
-            this.form.logic.require_vehicle_type_for_events = false;
-          }
           if (typeof this.form.logic.enable_per_id_video === 'undefined') {
             this.form.logic.enable_per_id_video = false;
           }
@@ -1012,18 +938,15 @@
           if (typeof this.form.logic.zone_b_anchor_min_frames !== 'number') {
             this.form.logic.zone_b_anchor_min_frames = 0;
           }
-          this.form.logic.stationary_speed_thresh = Number(this.form.logic.stationary_speed_thresh || 8.0);
+          this.form.logic.water_confirm_frames = Number(this.form.logic.water_confirm_frames || 3);
           this.form.logic.track_lost_grace_seconds = Number(
             (typeof this.form.logic.track_lost_grace_seconds === 'undefined')
-              ? 8.0
+              ? 4.0
               : this.form.logic.track_lost_grace_seconds
           );
           this.form.logic.event_trace_enabled = !!this.form.logic.event_trace_enabled;
           this.form.logic.event_trace_dir = this.form.logic.event_trace_dir || 'event_traces';
           this.form.logic.event_trace_queue_size = Number(this.form.logic.event_trace_queue_size || 4096);
-          this.form.logic.vehicle_shrink_ratio = Number(this.form.logic.vehicle_shrink_ratio || 0.35);
-          this.form.logic.vehicle_lock_min_votes = Number(this.form.logic.vehicle_lock_min_votes || 40);
-          this.form.logic.vehicle_lock_on_confirm = !!this.form.logic.vehicle_lock_on_confirm;
           this.form.logic.plate_track_lock_frames = Number(this.form.logic.plate_track_lock_frames || 6);
           this.form.logic.event_plate_lock_frames = Number(this.form.logic.event_plate_lock_frames || 6);
           this.form.logic.event_plate_fast_lock_frames = Number(this.form.logic.event_plate_fast_lock_frames || 3);
@@ -1035,9 +958,8 @@
           this.form.logic.default_plate_color_conf = Number(this.form.logic.default_plate_color_conf || 0);
           this.form.logic.default_cleanliness = Number(this.form.logic.default_cleanliness || 0);
           this.form.logic.car_plate_cache_ttl = Number(this.form.logic.car_plate_cache_ttl || 60);
-          this.form.logic.allowed_event_types = Array.isArray(this.form.logic.allowed_event_types) ? this.form.logic.allowed_event_types : [1, 2, 3, 4, 5, 6];
           this.form.logic.wash_duration_offset_seconds = Number(this.form.logic.wash_duration_offset_seconds || 0);
-          this.form.logic.min_zone_b_dwell_frames_for_type4 = Number(this.form.logic.min_zone_b_dwell_frames_for_type4 || 60);
+          this.form.logic.min_zone_b_dwell_seconds_for_type4 = Number(this.form.logic.min_zone_b_dwell_seconds_for_type4 ?? 0.5);
           this.form.logic.enable_event_disk = !!this.form.logic.enable_event_disk;
           this.form.event_output_dir = this.form.event_output_dir || 'events/config';
           this.form.event_capture_dir = this.form.event_capture_dir || '/data/ftp/event_captures/config';
@@ -1160,9 +1082,7 @@
               pending_plate_cache_max_entries: this.form.logic.pending_plate_cache_max_entries,
               zone_b_entry_hysteresis: this.form.logic.zone_b_entry_hysteresis,
               zone_b_exit_hysteresis: this.form.logic.zone_b_exit_hysteresis,
-              stationary_min_frames: this.form.logic.stationary_min_frames,
-              stationary_speed_thresh: this.form.logic.stationary_speed_thresh,
-              type34_min_interval_frames: this.form.logic.type34_min_interval_frames,
+              water_confirm_frames: this.form.logic.water_confirm_frames,
               track_lost_grace_seconds: this.form.logic.track_lost_grace_seconds,
               event_trace_enabled: this.form.logic.event_trace_enabled,
               event_trace_dir: this.form.logic.event_trace_dir,
@@ -1170,9 +1090,6 @@
               vehicle_iou_threshold: this.form.logic.vehicle_iou_threshold,
               vehicle_center_gate_ratio: this.form.logic.vehicle_center_gate_ratio,
               per_id_video_source: this.form.logic.per_id_video_source,
-              vehicle_shrink_ratio: this.form.logic.vehicle_shrink_ratio,
-              vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
-              vehicle_lock_on_confirm: this.form.logic.vehicle_lock_on_confirm,
               plate_track_lock_frames: this.form.logic.plate_track_lock_frames,
               event_plate_lock_frames: this.form.logic.event_plate_lock_frames,
               event_plate_fast_lock_frames: this.form.logic.event_plate_fast_lock_frames,
@@ -1184,12 +1101,9 @@
               default_plate_color_conf: this.form.logic.default_plate_color_conf,
               default_cleanliness: this.form.logic.default_cleanliness,
               car_plate_cache_ttl: this.form.logic.car_plate_cache_ttl,
-              allowed_event_types: this.form.logic.allowed_event_types,
               min_track_frames_for_type1: this.form.logic.min_track_frames_for_type1,
-              min_zone_a_dwell_frames_for_type5: this.form.logic.min_zone_a_dwell_frames_for_type5,
               disable_plate_only_events: this.form.logic.disable_plate_only_events,
               single_lifecycle_events: this.form.logic.single_lifecycle_events,
-              require_vehicle_type_for_events: this.form.logic.require_vehicle_type_for_events,
               anchor_offset_ratio: this.form.logic.anchor_offset_ratio,
               anchor_shadow_compare: this.form.logic.anchor_shadow_compare,
               anchor_legacy_flow_shift_ratio: this.form.logic.anchor_legacy_flow_shift_ratio,
@@ -1203,9 +1117,8 @@
               shadow_plate_pool: {
                 max_candidates: this.form.logic.shadow_plate_pool.max_candidates
               },
-              event_track_quality: this.form.logic.event_track_quality,
               wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
-              min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4
+              min_zone_b_dwell_seconds_for_type4: this.form.logic.min_zone_b_dwell_seconds_for_type4
             },
             event_output_dir: this.form.event_output_dir,
             event_capture_quality: this.form.event_capture_quality

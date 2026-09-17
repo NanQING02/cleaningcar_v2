@@ -51,17 +51,10 @@ def load_config(path):
         'logic': logic,
         'zones': zones,
         'shadow_pool': shadow_cfg,
-        'allowed_event_types': logic.get('allowed_event_types', [1, 2, 3, 4, 5]),
         'lane_name': logic.get('lane_name', '冲洗'),
-        'stationary_speed_thresh': float(logic.get('stationary_speed_thresh', 8.0)),
-        'vehicle_shrink_ratio': float(logic.get('vehicle_shrink_ratio', 0.35)),
-        'vehicle_lock_min_votes': int(logic.get('vehicle_lock_min_votes', 80)),
-        'vehicle_lock_on_confirm': bool(logic.get('vehicle_lock_on_confirm', True)),
         'default_plate_color': logic.get('default_plate_color', ''),
         'default_plate_color_conf': float(logic.get('default_plate_color_conf', 0.0)),
         'default_cleanliness': int(logic.get('default_cleanliness', 0)),
-        'stationary_min_frames': int(logic.get('stationary_min_frames', 0)),
-        'type34_min_interval_frames': int(logic.get('type34_min_interval_frames', 5)),
         'car_plate_cache_ttl': int(logic.get('car_plate_cache_ttl', 60)),
     }
     return merged

@@ -176,6 +176,36 @@ class ZoneManagerDebounceTests(unittest.TestCase):
         self.assertEqual(state.born_inside_outcome, 'PROMOTED')
         self.assertEqual(state.transition_reason, 'born_inside_promoted_by_zone_b')
 
+    def test_zone_b_exit_ignores_anchor_jitter_inside_dynamic_margin(self):
+        manager = ZoneManager(
+            zone_a=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            zone_b=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            flow_vector=((0, 50), (100, 50)),
+            entry_hysteresis=1,
+            exit_hysteresis=3,
+            zone_a_margin_ratio=0.10,
+            zone_a_margin_min_px=4,
+            zone_a_margin_max_px=24,
+        )
+
+        state, flags = manager.update_track(1, (50, 50), 1, vehicle_height=40)
+        self.assertTrue(flags['enter_b'])
+        self.assertTrue(state.inside_b)
+
+        for frame_idx in (2, 3, 4, 5):
+            state, flags = manager.update_track(1, (-2, 50), frame_idx, vehicle_height=40)
+            self.assertEqual(state.zone_b_region, 'BUFFER')
+            self.assertFalse(flags['exit_b'])
+            self.assertTrue(state.inside_b)
+
+        for frame_idx in (6, 7):
+            state, flags = manager.update_track(1, (-10, 50), frame_idx, vehicle_height=40)
+            self.assertFalse(flags['exit_b'])
+        state, flags = manager.update_track(1, (-10, 50), 8, vehicle_height=40)
+
+        self.assertTrue(flags['exit_b'])
+        self.assertFalse(state.inside_b)
+
     def test_born_inside_exits_without_zone_b_as_pass_by(self):
         manager = self._manager()
 

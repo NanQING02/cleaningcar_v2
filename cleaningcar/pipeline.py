@@ -28,7 +28,7 @@ from .constants import (
     localize_vehicle,
     select_box_color,
 )
-from .events import EventManager, EventUploader, WheelPhotoUploader
+from .events import EventManager, EventUploader, WheelPhotoUploader, _format_track_debug_text
 from .log_throttle import WindowedLogThrottle
 from .monitoring import monitor_loop
 from .npu_monitor import format_npu_status, npu_status_flags, snapshot_npu_status
@@ -592,7 +592,7 @@ def process_video(path, args):
         (flow_start, flow_end),
         direction_reference_edge=zones_cfg.get('direction_reference_edge', 'auto'),
         entry_hysteresis=int(logic_cfg.get('zone_b_entry_hysteresis', 3)),
-        exit_hysteresis=int(logic_cfg.get('zone_b_exit_hysteresis', 3)),
+        exit_hysteresis=int(logic_cfg.get('zone_b_exit_hysteresis', 5)),
         zone_a_margin_ratio=float(logic_cfg.get('zone_a_margin_ratio', 0.10)),
         zone_a_margin_min_px=float(logic_cfg.get('zone_a_margin_min_px', 4.0)),
         zone_a_margin_max_px=float(logic_cfg.get('zone_a_margin_max_px', 24.0)),
@@ -1774,9 +1774,7 @@ def process_video(path, args):
             if not info:
                 continue
             x1, y1, _, _ = det_ref['box']
-            text = (f"ID:{car_id} {info['state']} sf:{info['stationary']} "
-                    f"spd:{info['speed']:.1f} water:{'Y' if info['water'] else 'N'} "
-                    f"dur:{info['wash_duration']:.1f} zb:{info.get('zone_b_elapsed',0)}")
+            text = _format_track_debug_text(car_id, info)
             cv2.putText(frame_img, text, (x1, max(0, y1 - 25)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1, cv2.LINE_AA)
 
@@ -2301,9 +2299,7 @@ def process_video(path, args):
                         if not info:
                             continue
                         x1, y1, _, _ = det_ref['box']
-                        text = (f"ID:{car_id} {info['state']} sf:{info['stationary']} "
-                                f"spd:{info['speed']:.1f} water:{'Y' if info['water'] else 'N'} "
-                                f"dur:{info['wash_duration']:.1f} zb:{info.get('zone_b_elapsed',0)}")
+                        text = _format_track_debug_text(car_id, info)
                         cv2.putText(frame_out, text, (x1, max(0, y1 - 25)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1, cv2.LINE_AA)
                 if debug_rois:

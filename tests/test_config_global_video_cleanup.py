@@ -134,7 +134,17 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.data["event_capture_quality"], 70)
 
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
-            self.assertEqual(manager.logic["track_lost_grace_seconds"], 8.0)
+            self.assertEqual(manager.logic["track_lost_grace_seconds"], 4.0)
+            self.assertNotIn("type34_min_interval_frames", manager.logic)
+            self.assertNotIn("water_window_min_hits", manager.logic)
+            self.assertNotIn("allowed_event_types", manager.logic)
+            self.assertNotIn("stationary_min_frames", manager.logic)
+            self.assertNotIn("stationary_speed_thresh", manager.logic)
+            self.assertNotIn("water_window_size", manager.logic)
+            self.assertNotIn("require_vehicle_type_for_events", manager.logic)
+            self.assertNotIn("vehicle_shrink_ratio", manager.logic)
+            self.assertNotIn("vehicle_lock_min_votes", manager.logic)
+            self.assertNotIn("vehicle_lock_on_confirm", manager.logic)
             self.assertFalse(manager.logic["event_trace_enabled"])
             self.assertEqual(manager.logic["event_trace_dir"], "event_traces")
             self.assertEqual(manager.logic["event_trace_queue_size"], 4096)
@@ -169,6 +179,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
         self.assertIn("video.reader_frame_timeout_seconds", field_paths)
         self.assertIn("logic.track_lost_grace_seconds", field_paths)
+        self.assertNotIn("logic.type34_min_interval_frames", field_paths)
+        self.assertNotIn("logic.allowed_event_types", field_paths)
         self.assertIn("logic.event_trace_enabled", field_paths)
         self.assertIn("logic.event_trace_dir", field_paths)
         self.assertIn("logic.event_trace_queue_size", field_paths)
@@ -191,7 +203,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         ):
             self.assertNotIn(path, field_paths)
 
-    def test_config_manager_defaults_plate_and_event_quality_controls(self):
+    def test_config_manager_defaults_simplified_event_controls(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
             payload = {
@@ -213,20 +225,25 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertTrue(manager.logic["plate_output_shape_log_once"])
             self.assertEqual(manager.logic["shadow_plate_pool"]["text_window_frames"], 50)
             self.assertEqual(manager.logic["shadow_plate_pool"]["color_min_confidence"], 0.70)
-            self.assertTrue(manager.logic["event_track_quality"]["enabled"])
-            self.assertEqual(manager.logic["event_track_quality"]["min_hits_type1"], 12)
-            self.assertEqual(manager.logic["event_track_quality"]["min_zone_a_dwell_type5"], 15)
+            self.assertEqual(manager.logic["min_track_frames_for_type1"], 5)
+            self.assertEqual(manager.logic["water_confirm_frames"], 3)
+            self.assertEqual(manager.logic["min_zone_b_dwell_seconds_for_type4"], 0.5)
+            self.assertNotIn("event_track_quality", manager.logic)
+            self.assertNotIn("min_zone_b_dwell_frames_for_type4", manager.logic)
 
-    def test_web_config_registry_exposes_plate_and_event_quality_controls(self):
+    def test_web_config_registry_exposes_simplified_event_controls(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
         self.assertIn("logic.plate_output_shape_log_once", field_paths)
         self.assertIn("logic.shadow_plate_pool.text_window_frames", field_paths)
         self.assertIn("logic.shadow_plate_pool.color_min_confidence", field_paths)
-        self.assertIn("logic.event_track_quality.min_hits_type1", field_paths)
-        self.assertIn("logic.event_track_quality.suppress_obvious_false_type5", field_paths)
+        self.assertIn("logic.min_track_frames_for_type1", field_paths)
+        self.assertIn("logic.water_confirm_frames", field_paths)
+        self.assertIn("logic.min_zone_b_dwell_seconds_for_type4", field_paths)
+        self.assertNotIn("logic.event_track_quality.min_hits_type1", field_paths)
+        self.assertNotIn("logic.event_track_quality.suppress_obvious_false_type5", field_paths)
 
-    def test_config_manager_accepts_boolean_event_quality_legacy_value(self):
+    def test_config_manager_removes_legacy_event_quality_value(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
             payload = {
@@ -243,9 +260,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             manager = ConfigManager(path)
 
-            self.assertIsInstance(manager.logic["event_track_quality"], dict)
-            self.assertFalse(manager.logic["event_track_quality"]["enabled"])
-            self.assertEqual(manager.logic["event_track_quality"]["min_hits_type1"], 12)
+            self.assertNotIn("event_track_quality", manager.logic)
 
     def test_config_manager_normalizes_disabled_software_decode_backend(self):
         with tempfile.TemporaryDirectory() as tmpdir:

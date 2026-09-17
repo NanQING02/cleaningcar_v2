@@ -1,23 +1,17 @@
 from dataclasses import dataclass, field
 from math import isfinite
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
-
-
-def point_in_polygon(point: Tuple[float, float], polygon: Sequence[Tuple[float, float]]) -> bool:
-    if len(polygon) < 3:
-        return False
-    x, y = point
-    contour = np.array(polygon, dtype=np.float32)
-    return cv2.pointPolygonTest(contour, (float(x), float(y)), False) >= 0
-
 
 @dataclass
 class ZoneState:
     inside_a: bool = False
     inside_b: bool = False
+    zone_b_region: str = 'INVALID'
+    zone_b_signed_distance: Optional[float] = None
+    zone_b_dynamic_margin: float = 0.0
     zone_a_state: str = 'UNSEEN'
     zone_a_region: str = 'INVALID'
     signed_distance: Optional[float] = None
@@ -46,7 +40,7 @@ class ZoneManager:
     direction_reference_edge: object = 'auto'
     direction_split_ratio: float = 0.5
     entry_hysteresis: int = 3
-    exit_hysteresis: int = 3
+    exit_hysteresis: int = 5
     zone_a_margin_ratio: float = 0.10
     zone_a_margin_min_px: float = 4.0
     zone_a_margin_max_px: float = 24.0
@@ -66,6 +60,7 @@ class ZoneManager:
         self.zone_a_exit_outside_hits = max(1, int(self.zone_a_exit_outside_hits))
         self.direction_split_ratio = max(0.0, min(1.0, float(self.direction_split_ratio)))
         self._zone_a_contour = np.array(self.zone_a, dtype=np.float32) if len(self.zone_a) >= 3 else None
+        self._zone_b_contour = np.array(self.zone_b, dtype=np.float32) if len(self.zone_b) >= 3 else None
         self._direction_edge_index = self._resolve_direction_reference_edge()
         self._direction_axis = None
         self._direction_min = 0.0
@@ -171,7 +166,34 @@ class ZoneManager:
         st['last_anchor'] = normalized_anchor
         state.last_anchor = normalized_anchor
 
-        inside_b = point_in_polygon(normalized_anchor, self.zone_b)
+        if self._zone_b_contour is not None:
+            zone_b_margin = self.zone_a_margin_min_px
+            if self._valid_vehicle_height(vehicle_height):
+                zone_b_margin = min(
+                    self.zone_a_margin_max_px,
+                    max(self.zone_a_margin_min_px, float(vehicle_height) * self.zone_a_margin_ratio),
+                )
+            zone_b_distance = float(cv2.pointPolygonTest(
+                self._zone_b_contour,
+                normalized_anchor,
+                True,
+            ))
+            inside_b = zone_b_distance >= 0.0
+            clearly_outside_b = zone_b_distance < -zone_b_margin
+            state.zone_b_signed_distance = zone_b_distance
+            state.zone_b_dynamic_margin = zone_b_margin
+            if zone_b_distance > zone_b_margin:
+                state.zone_b_region = 'CORE'
+            elif clearly_outside_b:
+                state.zone_b_region = 'OUTSIDE'
+            else:
+                state.zone_b_region = 'BUFFER'
+        else:
+            inside_b = False
+            clearly_outside_b = True
+            state.zone_b_region = 'INVALID'
+            state.zone_b_signed_distance = None
+            state.zone_b_dynamic_margin = 0.0
         if st['last_zone_b_frame'] != frame_idx:
             st['last_zone_b_frame'] = frame_idx
             st['b_entry_counter'] = min(
@@ -181,7 +203,7 @@ class ZoneManager:
             st['b_exit_counter'] = min(
                 self.exit_hysteresis,
                 st['b_exit_counter'] + 1,
-            ) if not inside_b else 0
+            ) if clearly_outside_b else 0
 
             if st['b_entry_counter'] >= self.entry_hysteresis and not state.inside_b:
                 state.inside_b = True

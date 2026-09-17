@@ -61,7 +61,6 @@ class DetectWorker(threading.Thread):
         explicit_plate_requires_vehicle = logic_cfg.get("plate_requires_vehicle")
         default_plate_requires_vehicle = bool(
             logic_cfg.get("disable_plate_only_events", False)
-            or logic_cfg.get("require_vehicle_type_for_events", False)
         )
         self.plate_requires_vehicle = bool(
             getattr(

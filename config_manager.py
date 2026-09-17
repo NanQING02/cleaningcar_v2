@@ -316,6 +316,20 @@ class ConfigManager:
             'per_id_type6_require_plate_candidate',
             'track_timeout_frames',
             'track_max_age',
+            'type34_min_interval_frames',
+            'water_window_min_hits',
+            'allowed_event_types',
+            'stationary_min_frames',
+            'stationary_speed_thresh',
+            'min_water_hit_frames_for_wash',
+            'water_window_size',
+            'min_zone_a_dwell_frames_for_type5',
+            'event_track_quality',
+            'min_zone_b_dwell_frames_for_type4',
+            'require_vehicle_type_for_events',
+            'vehicle_shrink_ratio',
+            'vehicle_lock_min_votes',
+            'vehicle_lock_on_confirm',
         ):
             logic.pop(removed_key, None)
         for obsolete_key in (
@@ -331,14 +345,16 @@ class ConfigManager:
             logic.pop(obsolete_key, None)
         logic.setdefault('detection_anchor', 'bottom_center')
         logic.setdefault('zone_b_entry_hysteresis', 3)
-        logic.setdefault('zone_b_exit_hysteresis', 3)
-        logic.setdefault('stationary_min_frames', 0)
-        logic.setdefault('stationary_speed_thresh', 8.0)
-        logic.setdefault('type34_min_interval_frames', 5)
+        logic.setdefault('zone_b_exit_hysteresis', 5)
         try:
-            track_lost_grace_seconds = float(logic.get('track_lost_grace_seconds', 8.0) or 0.0)
+            water_confirm_frames = int(logic.get('water_confirm_frames', 3) or 3)
         except (TypeError, ValueError):
-            track_lost_grace_seconds = 8.0
+            water_confirm_frames = 3
+        logic['water_confirm_frames'] = max(1, min(water_confirm_frames, 30))
+        try:
+            track_lost_grace_seconds = float(logic.get('track_lost_grace_seconds', 4.0) or 0.0)
+        except (TypeError, ValueError):
+            track_lost_grace_seconds = 4.0
         logic['track_lost_grace_seconds'] = max(0.0, min(track_lost_grace_seconds, 60.0))
         logic['event_trace_enabled'] = bool(logic.get('event_trace_enabled', False))
         logic['event_trace_dir'] = str(logic.get('event_trace_dir', 'event_traces') or 'event_traces').strip()
@@ -379,13 +395,8 @@ class ConfigManager:
         logic.setdefault('pending_plate_cache_max_entries', 30)
         logic['disable_plate_only_events'] = True
         logic['single_lifecycle_events'] = True
-        logic.setdefault('min_zone_a_dwell_frames_for_type5', 25)
         logic.setdefault('min_track_frames_for_type1', 5)
-        logic.setdefault('require_vehicle_type_for_events', False)
         logic.setdefault('lane_name', '冲洗')
-        logic.setdefault('vehicle_shrink_ratio', 0.35)
-        logic.setdefault('vehicle_lock_min_votes', 40)
-        logic.setdefault('vehicle_lock_on_confirm', True)
         legacy_plate_lock_frames = logic.pop('plate_lock_frames', None)
         if legacy_plate_lock_frames is not None:
             logic.setdefault('plate_track_lock_frames', legacy_plate_lock_frames)
@@ -404,7 +415,6 @@ class ConfigManager:
         logic.setdefault('default_plate_color_conf', 0.0)
         logic.setdefault('default_cleanliness', 0)
         logic.setdefault('car_plate_cache_ttl', 60)
-        logic.setdefault('allowed_event_types', [1, 2, 3, 4, 5, 6])
         logic.setdefault('anchor_offset_ratio', 0.0)
         logic['anchor_mode'] = 'neutral'
         logic['anchor_shadow_compare'] = bool(logic.get('anchor_shadow_compare', False))
@@ -439,7 +449,11 @@ class ConfigManager:
         )
         logic.setdefault('zone_b_anchor_min_frames', 0)
         logic.setdefault('wash_duration_offset_seconds', 0.0)
-        logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
+        try:
+            type4_dwell_seconds = float(logic.get('min_zone_b_dwell_seconds_for_type4', 0.5) or 0.0)
+        except (TypeError, ValueError):
+            type4_dwell_seconds = 0.5
+        logic['min_zone_b_dwell_seconds_for_type4'] = max(0.0, min(type4_dwell_seconds, 60.0))
         logic.setdefault('enable_per_id_video', True)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         logic.setdefault('per_id_video_queue_size', 8)
@@ -470,21 +484,6 @@ class ConfigManager:
         shadow.setdefault('color_switch_min_consecutive', 3)
         shadow.setdefault('color_switch_gain_ratio', 1.2)
         shadow.setdefault('color_switch_margin', 0.5)
-        event_quality = logic.get('event_track_quality')
-        if not isinstance(event_quality, dict):
-            event_quality = {'enabled': bool(event_quality)} if event_quality is not None else {}
-            logic['event_track_quality'] = event_quality
-        event_quality.setdefault('enabled', True)
-        event_quality.setdefault('min_hits_type1', 12)
-        event_quality.setdefault('fast_vehicle_min_hits_type1', 6)
-        event_quality.setdefault('min_avg_vehicle_conf', 0.62)
-        event_quality.setdefault('fast_vehicle_min_avg_conf', 0.72)
-        event_quality.setdefault('plate_candidate_min_hits', 2)
-        event_quality.setdefault('plate_candidate_can_confirm_type1', True)
-        event_quality.setdefault('min_zone_a_dwell_type5', 15)
-        event_quality.setdefault('suppress_obvious_false_type5', True)
-        event_quality.setdefault('suspicious_cooldown_seconds', 6)
-
         self.data.pop('storage', None)
 
         self.data.setdefault('event_capture_quality', 70)

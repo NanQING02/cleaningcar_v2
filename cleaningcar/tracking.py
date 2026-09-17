@@ -22,9 +22,9 @@ def resolve_track_retention_frames(fps, logic_cfg=None, config=None):
     if source_fps <= 0.0:
         source_fps = 25.0
     try:
-        grace_seconds = float(logic_cfg.get('track_lost_grace_seconds', 8.0) or 0.0)
+        grace_seconds = float(logic_cfg.get('track_lost_grace_seconds', 4.0) or 0.0)
     except (TypeError, ValueError):
-        grace_seconds = 8.0
+        grace_seconds = 4.0
     if grace_seconds > 0.0:
         tracker_max_age = max(1, int(math.ceil(source_fps * grace_seconds)))
         event_timeout = tracker_max_age + max(1, int(math.ceil(source_fps)))
