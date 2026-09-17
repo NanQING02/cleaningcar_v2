@@ -1308,6 +1308,21 @@ class EventManager:
                     st['wash_end_time'] = st.get('wash_end_time') or timestamp
                     duration_val = self._compute_effective_wash_duration(st, last_frame_idx)
                     st['wash_duration'] = duration_val
+                    if 4 not in st['events'] and 4 in self.allowed_events:
+                        self._finalize_vehicle_class(st, 'type4_backfill')
+                        self.emit_event(tid, 4, last_frame_idx, st.get('last_frame'), {
+                            'captureTime': timestamp,
+                            'washDuration': round(duration_val, 2),
+                            'sequenceBackfill': True,
+                            'backfillReason': 'type5_anchor_missing_timeout',
+                        }, st)
+                        st['events'].add(4)
+                        self.trace_record('type4_gate', {
+                            'frameIdx': int(frame_idx),
+                            'trackId': int(tid),
+                            'action': 'backfill',
+                            'reason': 'type5_anchor_missing_timeout',
+                        })
                     extras = {
                         'captureTime': timestamp,
                         'washDuration': round(duration_val, 2),
@@ -1487,6 +1502,9 @@ class EventManager:
             'anchorDwellFrames': anchor_dwell,
             'plateRecognitionAbnormal': False,
         }
+        if payload.get('sequenceBackfill'):
+            event['sequenceBackfill'] = True
+            event['backfillReason'] = str(payload.get('backfillReason') or '')
         reasons = track_state.get('abnormal_reasons') if track_state else None
         if reasons:
             if isinstance(reasons, set):

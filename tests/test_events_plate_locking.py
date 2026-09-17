@@ -1039,8 +1039,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         emitted = []
 
         def fake_emit(track_id, event_type, frame_idx, frame, payload, track_state):
-            del track_id, frame_idx, frame, payload
-            emitted.append((event_type, set(track_state["abnormal_reasons"])))
+            del track_id, frame_idx, frame
+            emitted.append((event_type, set(track_state["abnormal_reasons"]), dict(payload)))
 
         manager.emit_event = fake_emit
         manager.tracks[1] = {
@@ -1059,10 +1059,12 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
 
-        self.assertEqual([event_type for event_type, _ in emitted], [5])
-        for _, reasons in emitted:
+        self.assertEqual([event_type for event_type, _, _ in emitted], [4, 5])
+        self.assertTrue(emitted[0][2]["sequenceBackfill"])
+        self.assertEqual(emitted[0][2]["backfillReason"], "type5_anchor_missing_timeout")
+        for _, reasons, _ in emitted:
             self.assertIn("TRACK_LOST_IN_ZONE_A_TIMEOUT", reasons)
-            self.assertIn("MISSING_TYPE4", reasons)
+            self.assertNotIn("MISSING_TYPE4", reasons)
 
     def test_file_eof_does_not_mark_formal_lifecycle_as_track_loss(self):
         manager = self._manager()
@@ -1093,10 +1095,10 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             timeout_reason="file_eof",
         )
 
-        self.assertEqual([event_type for event_type, _ in emitted], [5])
+        self.assertEqual([event_type for event_type, _ in emitted], [4, 5])
         for _, reasons in emitted:
             self.assertNotIn("TRACK_LOST_IN_ZONE_A_TIMEOUT", reasons)
-            self.assertIn("MISSING_TYPE4", reasons)
+            self.assertNotIn("MISSING_TYPE4", reasons)
 
     def test_lost_lifecycle_uses_locked_anchor_direction_when_zone_exit_unknown(self):
         manager = self._manager()
@@ -1226,8 +1228,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
 
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0][0][1], 5)
+        self.assertEqual([entry[0][1] for entry in emitted], [4, 5])
+        self.assertIn(4, track_state["events"])
         self.assertIn(5, track_state["events"])
 
     def test_flush_inactive_always_closes_type2_qualified_lifecycle(self):
@@ -1250,8 +1252,8 @@ class EventManagerPlateLockingTests(unittest.TestCase):
 
         manager.flush_inactive(active_ids=set(), frame_idx=manager.timeout_frames + 1)
 
-        self.assertEqual(emitted, [5])
-        self.assertEqual(track_state["events"], {1, 2, 5})
+        self.assertEqual(emitted, [4, 5])
+        self.assertEqual(track_state["events"], {1, 2, 4, 5})
 
     def test_flush_inactive_does_not_wait_tail_when_per_id_video_disabled(self):
         manager = self._manager()
