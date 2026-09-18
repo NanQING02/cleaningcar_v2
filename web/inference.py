@@ -17,6 +17,53 @@ from config_manager import ConfigError, ConfigManager
 
 from . import state
 
+
+ROUTINE_LOG_INTERVAL_SECONDS = {
+    'perf': 60.0,
+    'diag': 60.0,
+    'monitor': 60.0,
+    'npu_status': 60.0,
+    'per_id_video': 60.0,
+    'rknn_static': 3600.0,
+}
+
+
+def _safe_log_component(value, fallback):
+    text = str(value or '').strip()
+    cleaned = ''.join(char if (char.isalnum() or char in {'-', '_'}) else '-' for char in text)
+    cleaned = cleaned.strip('-_')
+    return (cleaned or fallback)[:48]
+
+
+def _inference_routine_category(line):
+    text = str(line or '').strip()
+    if text.startswith('[perf]'):
+        return 'perf'
+    if text.startswith('[diag]'):
+        return 'diag'
+    if text.startswith('[monitor]'):
+        return 'monitor'
+    if text.startswith('[npu-status]'):
+        return 'npu_status'
+    if text.startswith('[per-id-video] async') or text.startswith('[per-id-video] encoder='):
+        return 'per_id_video'
+    if (
+        'RKNN_QUERY_INPUT_DYNAMIC_RANGE' in text
+        or 'Query dynamic range failed' in text
+        or text.startswith('W rknn-toolkit-lite2 version:')
+    ):
+        return 'rknn_static'
+    return ''
+
+
+def _build_inference_log_name(config_path, device_id, launch_id, started_at):
+    config_key = _safe_log_component(Path(config_path).stem, 'config')
+    device_key = _safe_log_component(device_id, 'device')
+    launch_key = _safe_log_component(launch_id, 'launch')
+    stamp = datetime.fromtimestamp(float(started_at)).strftime('%Y%m%d_%H%M%S')
+    return f'infer_{config_key}_{device_key}_{stamp}_{launch_key}.log'
+
+
 class InferenceManager:
     def __init__(self, script_path: Path, config_path: Path):
         self.script_path = Path(script_path)
@@ -52,6 +99,8 @@ class InferenceManager:
         self._wash_priority_last_missing_log = ''
         self.log_buffer = deque(maxlen=800)
         self.log_lock = threading.Lock()
+        self._routine_last_emit: Dict[str, float] = {}
+        self._routine_suppressed: Dict[str, int] = {}
         self.shutdown = threading.Event()
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
@@ -64,7 +113,39 @@ class InferenceManager:
         with self.log_lock:
             self.log_buffer.append((ts, message))
 
-    def _capture_output(self, proc: subprocess.Popen, log_path: Optional[Path] = None):
+    def _write_captured_line(self, line, log_file, log_label, now=None):
+        now = time.time() if now is None else float(now)
+        category = _inference_routine_category(line)
+        suppressed = 0
+        if category:
+            interval = ROUTINE_LOG_INTERVAL_SECONDS.get(category, 60.0)
+            last_emit = self._routine_last_emit.get(category)
+            if last_emit is not None and now - last_emit < interval:
+                self._routine_suppressed[category] = self._routine_suppressed.get(category, 0) + 1
+                return False
+            self._routine_last_emit[category] = now
+            suppressed = self._routine_suppressed.pop(category, 0)
+        if suppressed:
+            summary = f'[log-throttle] {category} 已省略 {suppressed} 条重复例行日志'
+            if log_file is not None:
+                log_file.write(summary + '\n')
+            self._append_log(f'[infer:{log_label}] {summary}')
+        if log_file is not None:
+            log_file.write(line + '\n')
+        self._append_log(f'[infer:{log_label}] {line}')
+        return True
+
+    def _flush_suppressed_log_summaries(self, log_file, log_label):
+        for category, count in sorted(self._routine_suppressed.items()):
+            if count <= 0:
+                continue
+            summary = f'[log-throttle] {category} 进程结束前共省略 {count} 条重复例行日志'
+            if log_file is not None:
+                log_file.write(summary + '\n')
+            self._append_log(f'[infer:{log_label}] {summary}')
+        self._routine_suppressed.clear()
+
+    def _capture_output(self, proc: subprocess.Popen, log_path: Optional[Path] = None, log_label='inference'):
         if not proc.stdout:
             return
         f = None
@@ -79,13 +160,15 @@ class InferenceManager:
                 if not raw:
                     break
                 line = raw.rstrip()
-                self._append_log(f'[infer] {line}')
-                if f is not None:
-                    try:
-                        f.write(line + "\n")
-                    except Exception:
-                        pass
+                try:
+                    self._write_captured_line(line, f, log_label)
+                except Exception:
+                    self._append_log(f'[infer:{log_label}] {line}')
         finally:
+            try:
+                self._flush_suppressed_log_summaries(f, log_label)
+            except Exception:
+                pass
             try:
                 if proc.stdout:
                     proc.stdout.close()
@@ -156,6 +239,8 @@ class InferenceManager:
         self.process = proc
         self.restart_count += 1
         self.last_start = time.time()
+        self._routine_last_emit.clear()
+        self._routine_suppressed.clear()
         self.last_heartbeat_status = {
             'available': False,
             'healthy': True,
@@ -165,9 +250,19 @@ class InferenceManager:
             'launch_id': self.launch_id,
         }
         log_dir = state.ROOT / "logs" / "inference"
-        log_name = datetime.fromtimestamp(self.last_start).strftime("infer_%Y%m%d_%H%M%S.log")
+        log_name = _build_inference_log_name(
+            self.config_path,
+            self.device_id,
+            self.launch_id,
+            self.last_start,
+        )
         log_path = log_dir / log_name
-        threading.Thread(target=self._capture_output, args=(proc, log_path), daemon=True).start()
+        log_label = _safe_log_component(self.config_path.stem, 'inference')
+        threading.Thread(
+            target=self._capture_output,
+            args=(proc, log_path, log_label),
+            daemon=True,
+        ).start()
         self._append_log(
             f'[guardian] started inference pid={proc.pid} '
             f'ns={self.runtime_namespace_key} launch={self.launch_id} log={log_path}'
