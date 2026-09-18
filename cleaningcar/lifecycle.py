@@ -3,6 +3,8 @@ from math import hypot
 from time import time
 from uuid import uuid4
 
+from utils.upload_queue import PLATFORM_EVENT_ID_MAX_LENGTH, normalize_event_id
+
 
 @dataclass
 class BusinessLifecycle:
@@ -28,7 +30,7 @@ class BusinessLifecycle:
 class BusinessLifecycleManager:
     """Keeps business identity separate from short-lived tracker state."""
 
-    EVENT_ID_MAX_LENGTH = 36
+    EVENT_ID_MAX_LENGTH = PLATFORM_EVENT_ID_MAX_LENGTH
     EVENT_ID_CAMERA_PREFIX_LENGTH = 11
 
     def __init__(self, camera_id, grace_seconds=4.0):
@@ -43,7 +45,7 @@ class BusinessLifecycleManager:
             if char.isalnum() or char in {'-', '_'}
         )[:self.EVENT_ID_CAMERA_PREFIX_LENGTH].strip('-_') or 'CAM'
         event_id = f'{camera_key}-{int(float(capture_ts) * 1000)}-{uuid4().hex[:10]}'
-        return event_id[:self.EVENT_ID_MAX_LENGTH]
+        return normalize_event_id(event_id, self.EVENT_ID_MAX_LENGTH)
 
     def create(self, tracker_id, vehicle_class, capture_ts=None):
         now = time() if capture_ts is None else float(capture_ts)
