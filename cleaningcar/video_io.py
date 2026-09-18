@@ -1260,6 +1260,23 @@ def emit_per_id_video_type6(track_id, track_state, event_manager, per_id_video_e
     return True
 
 
+def reset_pre_type2_recording_state(track_state, frame_idx):
+    state = track_state or {}
+    if not state.get('pre_type2_rotate_requested') or state.get('type2_qualified'):
+        return False
+    state['record_start_frame'] = int(frame_idx)
+    state['record_segment_start_frame'] = int(frame_idx)
+    state['record_stop_frame'] = None
+    state['pre_type2_rotate_requested'] = False
+    state['pre_type2_rotation_count'] = int(
+        state.get('pre_type2_rotation_count', 0) or 0
+    ) + 1
+    state['per_id_recording_ready'] = False
+    state['per_id_video_path'] = ''
+    state['per_id_video_finalized'] = False
+    return True
+
+
 def finalize_per_id_recording(writer, track_id, track_state, event_manager, per_id_video_enabled=True):
     if writer is None:
         return False

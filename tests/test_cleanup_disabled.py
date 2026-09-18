@@ -84,6 +84,44 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertEqual(writer.release_calls, 1)
             self.assertEqual(event_manager.calls, [])
 
+    def test_reset_pre_type2_recording_state_starts_fresh_temporary_segment(self):
+        track_state = {
+            "type2_qualified": False,
+            "pre_type2_rotate_requested": True,
+            "pre_type2_rotation_count": 2,
+            "record_start_frame": 10,
+            "record_segment_start_frame": 10,
+            "record_stop_frame": 99,
+            "per_id_recording_ready": True,
+            "per_id_video_path": "/tmp/old.mp4",
+            "per_id_video_finalized": True,
+        }
+
+        result = video_io.reset_pre_type2_recording_state(track_state, frame_idx=600)
+
+        self.assertTrue(result)
+        self.assertEqual(track_state["record_start_frame"], 600)
+        self.assertEqual(track_state["record_segment_start_frame"], 600)
+        self.assertIsNone(track_state["record_stop_frame"])
+        self.assertFalse(track_state["pre_type2_rotate_requested"])
+        self.assertEqual(track_state["pre_type2_rotation_count"], 3)
+        self.assertFalse(track_state["per_id_recording_ready"])
+        self.assertEqual(track_state["per_id_video_path"], "")
+        self.assertFalse(track_state["per_id_video_finalized"])
+
+    def test_reset_pre_type2_recording_state_never_rotates_committed_video(self):
+        track_state = {
+            "type2_qualified": True,
+            "pre_type2_rotate_requested": True,
+            "record_start_frame": 10,
+        }
+
+        result = video_io.reset_pre_type2_recording_state(track_state, frame_idx=600)
+
+        self.assertFalse(result)
+        self.assertEqual(track_state["record_start_frame"], 10)
+        self.assertTrue(track_state["pre_type2_rotate_requested"])
+
     def test_finalize_per_id_recording_emits_type6(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "session.mp4"

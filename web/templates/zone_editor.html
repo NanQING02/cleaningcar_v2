@@ -364,6 +364,12 @@
           <label>Type4 Zone B 最小停留秒数
             <input type="number" min="0" max="60" step="0.1" v-model.number="form.logic.min_zone_b_dwell_seconds_for_type4" />
           </label>
+          <label>Type2 前临时录像分段秒数
+            <input type="number" min="0" max="86400" step="60" v-model.number="form.logic.pre_type2_video_segment_seconds" />
+          </label>
+          <label>Type2 后强制闭环秒数
+            <input type="number" min="0" max="86400" step="60" v-model.number="form.logic.post_type2_force_finalize_seconds" />
+          </label>
           <label>锚点上移比例 (0-0.9)
             <input type="number" min="0" max="0.9" step="0.01" v-model.number="form.logic.anchor_offset_ratio" />
           </label>
@@ -581,6 +587,8 @@
               },
               wash_duration_offset_seconds: 0.0,
               min_zone_b_dwell_seconds_for_type4: 0.5,
+              pre_type2_video_segment_seconds: 600.0,
+              post_type2_force_finalize_seconds: 900.0,
               per_id_video_dir: './video_result/per_id',
               enable_event_disk: false
             },
@@ -960,6 +968,8 @@
           this.form.logic.car_plate_cache_ttl = Number(this.form.logic.car_plate_cache_ttl || 60);
           this.form.logic.wash_duration_offset_seconds = Number(this.form.logic.wash_duration_offset_seconds || 0);
           this.form.logic.min_zone_b_dwell_seconds_for_type4 = Number(this.form.logic.min_zone_b_dwell_seconds_for_type4 ?? 0.5);
+          this.form.logic.pre_type2_video_segment_seconds = Number(this.form.logic.pre_type2_video_segment_seconds ?? 600.0);
+          this.form.logic.post_type2_force_finalize_seconds = Number(this.form.logic.post_type2_force_finalize_seconds ?? 900.0);
           this.form.logic.enable_event_disk = !!this.form.logic.enable_event_disk;
           this.form.event_output_dir = this.form.event_output_dir || 'events/config';
           this.form.event_capture_dir = this.form.event_capture_dir || '/data/ftp/event_captures/config';
@@ -1118,7 +1128,9 @@
                 max_candidates: this.form.logic.shadow_plate_pool.max_candidates
               },
               wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
-              min_zone_b_dwell_seconds_for_type4: this.form.logic.min_zone_b_dwell_seconds_for_type4
+              min_zone_b_dwell_seconds_for_type4: this.form.logic.min_zone_b_dwell_seconds_for_type4,
+              pre_type2_video_segment_seconds: this.form.logic.pre_type2_video_segment_seconds,
+              post_type2_force_finalize_seconds: this.form.logic.post_type2_force_finalize_seconds
             },
             event_output_dir: this.form.event_output_dir,
             event_capture_quality: this.form.event_capture_quality

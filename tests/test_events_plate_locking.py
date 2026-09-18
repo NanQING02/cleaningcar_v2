@@ -831,6 +831,71 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(manager.min_type4_zone_b_dwell_seconds, 0.5)
         self.assertEqual(manager.min_type4_zone_b_dwell, 13)
 
+    def test_type1_requests_temporary_video_rotation_without_closing_lifecycle(self):
+        zone = _ScriptedZoneManager({
+            idx: {"inside_a": True, "enter_a": idx == 1}
+            for idx in range(1, 5)
+        })
+        manager = self._manager_with_zone(zone)
+        manager.min_type1_track_frames = 1
+        manager.per_id_video_enabled = True
+        manager.pre_type2_video_segment_seconds = 0.08
+
+        self._update(manager, 1)
+        self._update(manager, 2)
+        self.assertFalse(manager.tracks[1]["pre_type2_rotate_requested"])
+        self._update(manager, 3)
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state["events"], {1})
+        self.assertTrue(track_state["pre_type2_rotate_requested"])
+        self.assertFalse(track_state["type2_qualified"])
+        self.assertFalse(track_state.get("closed", False))
+        self.assertEqual(track_state["record_first_start_frame"], 1)
+        self.assertEqual(track_state["record_segment_start_frame"], 1)
+
+    def test_type2_commits_video_and_cancels_pending_temporary_rotation(self):
+        zone = _ScriptedZoneManager({
+            1: {"inside_a": True, "enter_a": True},
+            2: {"inside_a": True, "inside_b": True, "enter_b": True},
+        })
+        manager = self._manager_with_zone(zone)
+        manager.min_type1_track_frames = 1
+
+        self._update(manager, 1)
+        manager.tracks[1]["pre_type2_rotate_requested"] = True
+        self._update(manager, 2)
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state["events"], {1, 2})
+        self.assertTrue(track_state["recording_committed"])
+        self.assertFalse(track_state["pre_type2_rotate_requested"])
+
+    def test_type2_dwell_timeout_forces_type4_type5_and_immediate_video_stop(self):
+        zone = _ScriptedZoneManager({
+            1: {"inside_a": True, "enter_a": True},
+            2: {"inside_a": True, "inside_b": True, "enter_b": True},
+            3: {"inside_a": True, "inside_b": True},
+            4: {"inside_a": True, "inside_b": True},
+        })
+        manager = self._manager_with_zone(zone)
+        manager.min_type1_track_frames = 1
+        manager.post_type2_force_finalize_seconds = 0.08
+        manager.enable_event_disk = True
+
+        for frame_idx in range(1, 5):
+            self._update(manager, frame_idx)
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state["events"], {1, 2, 4, 5})
+        self.assertTrue(track_state["closed"])
+        self.assertEqual(track_state["record_stop_frame"], 4)
+        self.assertIn("OVER_15_MINUTES_AFTER_TYPE2", track_state["abnormal_reasons"])
+        type5_path = manager.events_dir / f"{manager.camera_id}_1_t5_4.json"
+        payload = json.loads(type5_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["forcedCompletionReason"], "type2_dwell_timeout_15m")
+        self.assertIn("OVER_15_MINUTES_AFTER_TYPE2", payload["abnormalReason"])
+
     def test_vehicle_class_lock_weights_type2_to_type4_votes_without_short_override(self):
         manager = self._manager()
         track_state = {

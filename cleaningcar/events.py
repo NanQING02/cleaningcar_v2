@@ -375,7 +375,14 @@ class EventManager:
         self.allowed_events = {1, 2, 3, 4, 5, 6}
         self.disable_plate_only_events = True
         self.single_lifecycle_events = True
-        self.max_per_id_video_seconds = 1500.0
+        self.pre_type2_video_segment_seconds = max(
+            0.0,
+            float(self.logic.get('pre_type2_video_segment_seconds', 600.0) or 0.0),
+        )
+        self.post_type2_force_finalize_seconds = max(
+            0.0,
+            float(self.logic.get('post_type2_force_finalize_seconds', 900.0) or 0.0),
+        )
         self.per_id_video_tail_seconds = 8.0
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
         self.upload_buffer = {}
@@ -530,6 +537,17 @@ class EventManager:
                     track_state['events'] = set(lifecycle.stages)
                     track_state['event_stage_max'] = max(lifecycle.stages) if lifecycle.stages else 0
                     for field in ('record_start_frame', 'record_stop_frame', 'type1_capture_time'):
+                        if field in previous_state:
+                            track_state[field] = previous_state[field]
+                    for field in (
+                        'record_first_start_frame',
+                        'record_segment_start_frame',
+                        'pre_type2_rotate_requested',
+                        'pre_type2_rotation_count',
+                        'recording_committed',
+                        'per_id_recording_ready',
+                        'per_id_video_path',
+                    ):
                         if field in previous_state:
                             track_state[field] = previous_state[field]
                     for field in ('class_counts', 'wash_stage_class_counts'):
@@ -854,6 +872,13 @@ class EventManager:
             'wheel_activity_end_ts': None,
             'lifecycle_handoff_pending': False,
             'deferred_type2': False,
+            'record_first_start_frame': None,
+            'record_segment_start_frame': None,
+            'pre_type2_rotate_requested': False,
+            'pre_type2_rotation_count': 0,
+            'recording_committed': False,
+            'per_id_recording_ready': False,
+            'per_id_video_path': '',
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -1081,6 +1106,8 @@ class EventManager:
             if st.get('type2_qualified_frame', -1) < 0:
                 st['type2_qualified_frame'] = frame_idx
             if type2_newly_qualified:
+                st['recording_committed'] = True
+                st['pre_type2_rotate_requested'] = False
                 self._start_wash_stage_vehicle_class(st, vehicle_label)
 
         wheel_ref_ts = time.time()
@@ -1175,63 +1202,50 @@ class EventManager:
             'zone_a_dynamic_margin': getattr(zone_state, 'dynamic_margin', 0.0),
         }
 
-        elapsed_seconds = st.get('track_frame_count', 0) / max(self.fps, 1e-6)
-        if elapsed_seconds >= self.max_per_id_video_seconds and not st.get('closed'):
-            reasons = st.get('abnormal_reasons')
-            if reasons is None:
-                reasons = set()
-                st['abnormal_reasons'] = reasons
-            if 'OVER_10_MINUTES' not in reasons:
-                reasons.add('OVER_10_MINUTES')
-            if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
-                extra_frames = self._record_tail_frames()
-                last_idx = st.get('last_frame_idx', frame_idx)
-                stop_frame = last_idx + extra_frames
-                prev_stop = st.get('record_stop_frame')
-                if prev_stop is None or stop_frame > prev_stop:
-                    st['record_stop_frame'] = stop_frame
-            if self.uploader:
-                lifecycle = self.lifecycle_manager.get(track_id)
-                track_key = lifecycle.event_id if lifecycle is not None else f'{self.camera_id}_{track_id}'
-                buffer = self.upload_buffer.pop(track_key, [])
-                if buffer:
-                    updated = []
-                    for p in buffer:
-                        payload = dict(p)
-                        payload['isAbnormal'] = True
-                        old_reason = str(payload.get('abnormalReason') or '').strip()
-                        if old_reason:
-                            parts = set(r for r in old_reason.split('|') if r)
-                        else:
-                            parts = set()
-                        parts.add('OVER_10_MINUTES')
-                        payload['abnormalReason'] = '|'.join(sorted(parts))
-                        updated.append(payload)
-                    self.upload_qualified.add(track_key)
-                    for payload in updated:
-                        sent_now = False
-                        try:
-                            self.uploader.enqueue(payload)
-                            sent_now = True
-                        except Exception:
-                            sent_now = False
-                        if self.upload_log_sent and sent_now:
-                            try:
-                                text = json.dumps(payload, ensure_ascii=False)
-                                with self.upload_log_sent.open('a', encoding='utf-8') as f:
-                                    f.write(f"{self.frame_timestamp(st.get('last_frame_idx', frame_idx))},{track_key},0,{text}\n")
-                            except Exception:
-                                pass
-                        if self.upload_log_full:
-                            try:
-                                text = json.dumps(payload, ensure_ascii=False)
-                                with self.upload_log_full.open('a', encoding='utf-8') as f:
-                                    f.write(f"{self.frame_timestamp(st.get('last_frame_idx', frame_idx))},{track_key},0,1,{text}\n")
-                            except Exception:
-                                pass
-                else:
-                    self.upload_qualified.add(track_key)
-            st['closed'] = True
+        if (
+            self.per_id_video_enabled
+            and not st.get('type2_qualified')
+            and st.get('record_start_frame') is not None
+            and self.pre_type2_video_segment_seconds > 0.0
+        ):
+            segment_start = st.get('record_segment_start_frame')
+            if segment_start is None:
+                segment_start = st.get('record_start_frame', frame_idx)
+                st['record_segment_start_frame'] = segment_start
+            segment_elapsed = (frame_idx - int(segment_start)) / max(self.fps, 1e-6)
+            if segment_elapsed >= self.pre_type2_video_segment_seconds:
+                st['pre_type2_rotate_requested'] = True
+
+        if (
+            st.get('type2_qualified')
+            and not st.get('closed')
+            and 5 not in st.get('events', set())
+            and self.post_type2_force_finalize_seconds > 0.0
+        ):
+            raw_type2_frame = st.get('type2_qualified_frame', frame_idx)
+            try:
+                type2_frame = int(raw_type2_frame)
+            except (TypeError, ValueError):
+                type2_frame = frame_idx
+            if type2_frame < 0:
+                type2_frame = frame_idx
+            qualified_elapsed = (frame_idx - type2_frame) / max(self.fps, 1e-6)
+            if qualified_elapsed >= self.post_type2_force_finalize_seconds:
+                reasons = st.setdefault('abnormal_reasons', set())
+                if not isinstance(reasons, set):
+                    reasons = set(reasons)
+                    st['abnormal_reasons'] = reasons
+                reasons.add('OVER_15_MINUTES_AFTER_TYPE2')
+                self._complete_type2_lifecycle(
+                    track_id,
+                    st,
+                    frame_idx,
+                    frame,
+                    type4_backfill_reason='type2_dwell_timeout_15m',
+                    completion_reason='type2_dwell_timeout_15m',
+                    force_video_stop=True,
+                    trace_frame_idx=frame_idx,
+                )
 
     def flush_inactive(self, active_ids, frame_idx, on_track_timeout=None, timeout_reason='track_lost',
                        capture_ts=None):
@@ -1298,47 +1312,17 @@ class EventManager:
                     if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
                         st['record_stop_frame'] = frame_idx
                 can_type5 = self._can_emit_type5(st)
-                if (
-                    5 not in st['events']
-                    and 5 in self.allowed_events
-                    and can_type5
-                ):
-                    last_frame_idx = st.get('last_frame_idx', frame_idx)
-                    timestamp = self.frame_timestamp(last_frame_idx)
-                    st['wash_end_time'] = st.get('wash_end_time') or timestamp
-                    duration_val = self._compute_effective_wash_duration(st, last_frame_idx)
-                    st['wash_duration'] = duration_val
-                    if 4 not in st['events'] and 4 in self.allowed_events:
-                        self._finalize_vehicle_class(st, 'type4_backfill')
-                        self.emit_event(tid, 4, last_frame_idx, st.get('last_frame'), {
-                            'captureTime': timestamp,
-                            'washDuration': round(duration_val, 2),
-                            'sequenceBackfill': True,
-                            'backfillReason': 'type5_anchor_missing_timeout',
-                        }, st)
-                        st['events'].add(4)
-                        self.trace_record('type4_gate', {
-                            'frameIdx': int(frame_idx),
-                            'trackId': int(tid),
-                            'action': 'backfill',
-                            'reason': 'type5_anchor_missing_timeout',
-                        })
-                    extras = {
-                        'captureTime': timestamp,
-                        'washDuration': round(duration_val, 2),
-                    }
-                    self._finalize_vehicle_class(st, 'type5')
-                    self._mark_type5_abnormal_reasons(st)
-                    self.emit_event(tid, 5, last_frame_idx, st.get('last_frame'), extras, st)
-                    st['events'].add(5)
-                    self.trace_record('type5_gate', {
-                        'frameIdx': int(frame_idx),
-                        'trackId': int(tid),
-                        'action': 'release',
-                        'reason': 'anchor_missing_timeout',
-                        'zoneAExited': bool(st.get('zone_a_exited')),
-                        'abnormal': bool(st.get('abnormal_reasons')),
-                    })
+                if can_type5:
+                    self._complete_type2_lifecycle(
+                        tid,
+                        st,
+                        st.get('last_frame_idx', frame_idx),
+                        st.get('last_frame'),
+                        type4_backfill_reason='type5_anchor_missing_timeout',
+                        completion_reason='anchor_missing_timeout',
+                        force_video_stop=False,
+                        trace_frame_idx=frame_idx,
+                    )
                 if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
                     extra_frames = self._record_tail_frames_for_event(5, st)
                     last_idx = st.get('last_frame_idx', frame_idx)
@@ -1472,11 +1456,19 @@ class EventManager:
             prev_start = track_state.get('record_start_frame')
             if prev_start is None or frame_idx < prev_start:
                 track_state['record_start_frame'] = frame_idx
+            if track_state.get('record_first_start_frame') is None:
+                track_state['record_first_start_frame'] = frame_idx
+            if track_state.get('record_segment_start_frame') is None:
+                track_state['record_segment_start_frame'] = frame_idx
         if track_state.get('record_start_frame') is None:
             track_state['record_start_frame'] = frame_idx
         if event_type == 5:
             self._wait_for_wheel_results_for_type5(track_id, track_state)
-            extra_frames = self._record_tail_frames_for_event(event_type, track_state)
+            extra_frames = (
+                0
+                if payload.get('forceVideoStop')
+                else self._record_tail_frames_for_event(event_type, track_state)
+            )
             stop_frame = frame_idx + extra_frames
             prev_stop = track_state.get('record_stop_frame')
             if prev_stop is None or stop_frame > prev_stop:
@@ -1505,6 +1497,8 @@ class EventManager:
         if payload.get('sequenceBackfill'):
             event['sequenceBackfill'] = True
             event['backfillReason'] = str(payload.get('backfillReason') or '')
+        if payload.get('forcedCompletionReason'):
+            event['forcedCompletionReason'] = str(payload.get('forcedCompletionReason') or '')
         reasons = track_state.get('abnormal_reasons') if track_state else None
         if reasons:
             if isinstance(reasons, set):
@@ -2069,6 +2063,67 @@ class EventManager:
 
     def _can_emit_type5(self, track_state):
         return bool(track_state.get('type2_qualified'))
+
+    def _complete_type2_lifecycle(
+        self,
+        track_id,
+        track_state,
+        frame_idx,
+        frame,
+        type4_backfill_reason,
+        completion_reason,
+        force_video_stop=False,
+        trace_frame_idx=None,
+    ):
+        if (
+            not self._can_emit_type5(track_state)
+            or 5 in track_state.get('events', set())
+            or 5 not in self.allowed_events
+        ):
+            return False
+        timestamp = self.frame_timestamp(frame_idx)
+        track_state['wash_end_time'] = track_state.get('wash_end_time') or timestamp
+        duration_val = self._compute_effective_wash_duration(track_state, frame_idx)
+        track_state['wash_duration'] = duration_val
+        if 4 not in track_state['events'] and 4 in self.allowed_events:
+            self._finalize_vehicle_class(track_state, 'type4_backfill')
+            self.emit_event(track_id, 4, frame_idx, frame, {
+                'captureTime': timestamp,
+                'washDuration': round(duration_val, 2),
+                'sequenceBackfill': True,
+                'backfillReason': str(type4_backfill_reason or ''),
+            }, track_state)
+            track_state['events'].add(4)
+            self.trace_record('type4_gate', {
+                'frameIdx': int(trace_frame_idx if trace_frame_idx is not None else frame_idx),
+                'trackId': int(track_id),
+                'action': 'backfill',
+                'reason': str(type4_backfill_reason or ''),
+            })
+        self._finalize_vehicle_class(track_state, 'type5')
+        self._mark_type5_abnormal_reasons(track_state)
+        payload = {
+            'captureTime': timestamp,
+            'washDuration': round(duration_val, 2),
+        }
+        if force_video_stop:
+            payload['forceVideoStop'] = True
+        if completion_reason:
+            payload['forcedCompletionReason'] = str(completion_reason)
+        self.emit_event(track_id, 5, frame_idx, frame, payload, track_state)
+        track_state['events'].add(5)
+        if self.single_lifecycle_events:
+            track_state['closed'] = True
+        self.trace_record('type5_gate', {
+            'frameIdx': int(trace_frame_idx if trace_frame_idx is not None else frame_idx),
+            'trackId': int(track_id),
+            'action': 'release',
+            'reason': str(completion_reason or ''),
+            'zoneAExited': bool(track_state.get('zone_a_exited')),
+            'abnormal': bool(track_state.get('abnormal_reasons')),
+            'forceVideoStop': bool(force_video_stop),
+        })
+        return True
 
     def _mark_type5_abnormal_reasons(self, track_state):
         reasons = track_state.get('abnormal_reasons')

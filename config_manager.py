@@ -454,6 +454,15 @@ class ConfigManager:
         except (TypeError, ValueError):
             type4_dwell_seconds = 0.5
         logic['min_zone_b_dwell_seconds_for_type4'] = max(0.0, min(type4_dwell_seconds, 60.0))
+        for key, default in (
+            ('pre_type2_video_segment_seconds', 600.0),
+            ('post_type2_force_finalize_seconds', 900.0),
+        ):
+            try:
+                value = float(logic.get(key, default) or 0.0)
+            except (TypeError, ValueError):
+                value = default
+            logic[key] = max(0.0, min(value, 86400.0))
         logic.setdefault('enable_per_id_video', True)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         logic.setdefault('per_id_video_queue_size', 8)

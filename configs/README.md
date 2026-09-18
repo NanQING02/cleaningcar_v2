@@ -92,6 +92,9 @@
 - `logic.min_zone_b_dwell_seconds_for_type4=0.5`：确认离开 Zone B 且区内停留至少0.5秒才触发 `type=4`；Zone B 离开同时使用动态边界缓冲和连续帧防抖，避免检测框变化导致锚点瞬时跳出
 - `type=5` 只要求车辆已经满足 `type=2` 且锚点连续消失4秒；低置信度、缺少中间事件等问题只写入异常原因，不再阻止最终记录发送
 - 车型在 `type=2` 前持续累计基础票，`type=2` 到 `type=4` 阶段的车型票额外加权；在 `type=4` 正式冻结，没有 `type=4` 时在 `type=5` 前冻结。冻结后不允许短串识别覆盖，多 tracker 生命周期交接会继承车型票和锁定状态
+- `logic.pre_type2_video_segment_seconds=600`：`type=1` 后、`type=2` 前的录像属于临时段；每10分钟关闭并删除旧段，立即从当前帧开启新段，type1时间和事件ID保持不变
+- `logic.post_type2_force_finalize_seconds=900`：从 `type=2` 开始计时，车辆连续保留超过15分钟时标记 `OVER_15_MINUTES_AFTER_TYPE2`，补齐缺失type4并强制发送type5、立即停录，录像落盘后发送type6
+- `type=2` 表示当前临时录像转为必须保留；文件是否真实完成落盘以 `type=6` 为准，录像I/O失败不阻塞type1/type2业务事件上传
 - `logic.event_trace_enabled=false` 默认关闭事件输入追踪；本地视频手测时可临时开启
 - `logic.event_trace_dir=event_traces` 控制追踪输出根目录，相对路径按项目根目录解析
 - `logic.event_trace_queue_size=4096` 控制异步JSONL队列；队列溢出数量会写入 `summary.json`

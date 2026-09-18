@@ -195,6 +195,8 @@
     "single_lifecycle_events": true,
     "min_track_frames_for_type1": 5,
     "min_zone_b_dwell_seconds_for_type4": 0.5,
+    "pre_type2_video_segment_seconds": 600.0,
+    "post_type2_force_finalize_seconds": 900.0,
     "enable_per_id_video": true,
     "per_id_video_dir": "/data/ftp/per_id",
     "per_id_video_queue_size": 8,

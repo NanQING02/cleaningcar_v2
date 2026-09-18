@@ -228,6 +228,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.logic["min_track_frames_for_type1"], 5)
             self.assertEqual(manager.logic["water_confirm_frames"], 3)
             self.assertEqual(manager.logic["min_zone_b_dwell_seconds_for_type4"], 0.5)
+            self.assertEqual(manager.logic["pre_type2_video_segment_seconds"], 600.0)
+            self.assertEqual(manager.logic["post_type2_force_finalize_seconds"], 900.0)
             self.assertNotIn("event_track_quality", manager.logic)
             self.assertNotIn("min_zone_b_dwell_frames_for_type4", manager.logic)
 
@@ -240,6 +242,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("logic.min_track_frames_for_type1", field_paths)
         self.assertIn("logic.water_confirm_frames", field_paths)
         self.assertIn("logic.min_zone_b_dwell_seconds_for_type4", field_paths)
+        self.assertIn("logic.pre_type2_video_segment_seconds", field_paths)
+        self.assertIn("logic.post_type2_force_finalize_seconds", field_paths)
         self.assertNotIn("logic.event_track_quality.min_hits_type1", field_paths)
         self.assertNotIn("logic.event_track_quality.suppress_obvious_false_type5", field_paths)
 

@@ -53,6 +53,7 @@ from .video_io import (
     emit_per_id_video_type6,
     finalize_per_id_recording,
     parse_core_mask,
+    reset_pre_type2_recording_state,
     resolve_auto_plate_core_mask,
     resolve_worker_core_masks,
 )
@@ -1433,14 +1434,33 @@ def process_video(path, args):
         writer_key = lifecycle.event_id if lifecycle is not None else track_state.get('session_id', track_id)
         writer = per_id_writers.pop(writer_key, None)
         if writer is None:
+            track_state['per_id_recording_ready'] = False
             return False
-        return finalize_per_id_recording(
+        finalized = finalize_per_id_recording(
             writer,
             track_id,
             track_state,
             event_manager,
             per_id_video_enabled=True,
         )
+        track_state['per_id_recording_ready'] = False
+        track_state['per_id_video_finalized'] = bool(finalized)
+        return finalized
+
+    def rotate_pre_type2_recording(track_id, track_state, frame_idx):
+        if (
+            not track_state.get('pre_type2_rotate_requested')
+            or track_state.get('type2_qualified')
+        ):
+            return False
+        close_per_id_writer(track_id, track_state)
+        if not reset_pre_type2_recording_state(track_state, frame_idx):
+            return False
+        print(
+            f'[per-id-video] rotated unqualified segment track={track_id} '
+            f'frame={frame_idx} count={track_state["pre_type2_rotation_count"]}'
+        )
+        return True
 
     def finalize_per_id_for_track(track_id, track_state):
         emitted = close_per_id_writer(track_id, track_state)
@@ -2337,6 +2357,7 @@ def process_video(path, args):
                         if writer_key in written_lifecycle_ids:
                             continue
                         written_lifecycle_ids.add(writer_key)
+                        rotate_pre_type2_recording(tid, st, next_frame_to_write)
                         start_f = st.get('record_start_frame')
                         stop_f = st.get('record_stop_frame')
                         if start_f is None:
@@ -2371,8 +2392,14 @@ def process_video(path, args):
                             if writer_obj is not None:
                                 per_id_writers[writer_key] = writer_obj
                                 writer = writer_obj
+                                st['per_id_recording_ready'] = True
+                                st['per_id_video_path'] = str(getattr(writer_obj, 'path', '') or '')
+                                if st.get('record_segment_start_frame') is None:
+                                    st['record_segment_start_frame'] = int(start_f)
                             else:
                                 writer = None
+                                st['per_id_recording_ready'] = False
+                                st['per_id_video_path'] = ''
                                 break
                         if writer is not None:
                             if per_id_video_source == 'raw' and raw_frame_for_idx is not None:
@@ -2381,6 +2408,20 @@ def process_video(path, args):
                                 frame_to_write = frame_out
                             if frame_to_write is not None:
                                 writer.write(frame_to_write)
+                else:
+                    for tid, st in list(event_manager.tracks.items()):
+                        stop_f = st.get('record_stop_frame')
+                        if (
+                            st.get('type2_qualified')
+                            and stop_f is not None
+                            and next_frame_to_write >= int(stop_f)
+                        ):
+                            emit_per_id_video_type6(
+                                tid,
+                                st,
+                                event_manager,
+                                per_id_video_enabled=False,
+                            )
                 t_after_perid = time.perf_counter()
                 if raw_frame_for_idx is not None:
                     latest_raw_frame = raw_frame_for_idx

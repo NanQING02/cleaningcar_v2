@@ -120,6 +120,8 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.zone_b_anchor_min_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 锚点延迟"},
     {"path": "logic.wash_duration_offset_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "洗车时长偏移"},
     {"path": "logic.min_zone_b_dwell_seconds_for_type4", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type4 Zone B 最小停留秒数"},
+    {"path": "logic.pre_type2_video_segment_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type2 前临时录像分段秒数"},
+    {"path": "logic.post_type2_force_finalize_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type2 后强制闭环秒数"},
     {"path": "logic.shadow_plate_pool.max_candidates", "tier": TIER_DEVELOPER, "group": "logic", "label": "影子车牌池容量"},
     {"path": "logic.shadow_plate_pool.max_age_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "影子车牌池年龄"},
     {"path": "logic.shadow_plate_pool.text_window_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌文本投票窗口"},
