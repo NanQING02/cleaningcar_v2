@@ -5,6 +5,7 @@ import threading
 import time
 import urllib.request
 from collections import OrderedDict, deque
+from copy import deepcopy
 from datetime import datetime
 from math import ceil, hypot
 from pathlib import Path
@@ -269,33 +270,35 @@ class EventManager:
             self.plate_color_lock_frames,
             int(shadow_cfg.get('color_window_frames', shadow_cfg.get('plate_color_window_frames', min(self.shadow_max_age, 50)))),
         )
-        self.plate_color_switch_min_consecutive = max(
-            self.plate_color_lock_frames,
-            int(
-                shadow_cfg.get(
-                    'color_switch_min_consecutive',
-                    shadow_cfg.get('plate_color_switch_min_consecutive', self.plate_color_lock_frames + 1),
-                )
-            ),
-        )
-        self.plate_color_switch_gain_ratio = float(
-            shadow_cfg.get('color_switch_gain_ratio', shadow_cfg.get('plate_color_switch_gain_ratio', 1.2))
-        )
-        self.plate_color_switch_margin = float(
-            shadow_cfg.get('color_switch_margin', shadow_cfg.get('plate_color_switch_margin', 0.5))
-        )
         self.plate_color_correction_hits = max(
             self.plate_color_lock_frames,
             int(self.logic.get('plate_color_correction_hits', 5)),
         )
-        configured_plate_colors = self.logic.get('allowed_plate_colors', ['蓝色', '黄色', '绿色'])
+        self.plate_yellow_green_fusion_enabled = bool(
+            self.logic.get('plate_yellow_green_fusion_enabled', True)
+        )
+        self.plate_yellow_green_min_confidence = max(
+            0.0,
+            min(1.0, float(self.logic.get('plate_yellow_green_min_confidence', 0.55))),
+        )
+        self.plate_yellow_green_window_frames = max(
+            1,
+            int(self.logic.get('plate_yellow_green_window_frames', self.plate_color_window_frames)),
+        )
+        self.plate_yellow_green_min_hits_per_color = max(
+            1,
+            int(self.logic.get('plate_yellow_green_min_hits_per_color', 2)),
+        )
+        configured_plate_colors = self.logic.get('allowed_plate_colors', ['蓝色', '黄色', '绿色', '黄绿色'])
         if not isinstance(configured_plate_colors, (list, tuple, set)):
-            configured_plate_colors = ['蓝色', '黄色', '绿色']
+            configured_plate_colors = ['蓝色', '黄色', '绿色', '黄绿色']
         self.allowed_plate_colors = {
             str(color).strip()
             for color in configured_plate_colors
             if str(color).strip()
         }
+        if self.plate_yellow_green_fusion_enabled:
+            self.allowed_plate_colors.add('黄绿色')
         self.shadow_pool = {}
         self.event_log_path = Path(event_log_path) if event_log_path else None
         if self.event_log_path:
@@ -571,6 +574,13 @@ class EventManager:
                     track_state['plate_color_locked_text'] = lifecycle.last_plate_text if lifecycle.last_plate_color else ''
                     track_state['plate_color'] = lifecycle.last_plate_color
                     track_state['plate_color_conf'] = lifecycle.last_plate_color_conf
+                    for field in (
+                        'plate_color_evidence_by_text',
+                        'plate_color_fusion_evidence_by_text',
+                        'plate_color_votes_by_text',
+                    ):
+                        if isinstance(previous_state.get(field), dict):
+                            track_state[field] = deepcopy(previous_state[field])
                     track_state['plate_type'] = lifecycle.last_plate_type
                     track_state['type2_qualified'] = 2 in lifecycle.stages
                     previous_state['_lifecycle_superseded'] = True
@@ -811,9 +821,9 @@ class EventManager:
             'plate_color_locked': '',
             'plate_color_locked_conf': 0.0,
             'plate_color_locked_text': '',
-            'plate_color_vote_history': deque(maxlen=160),
             'plate_color_votes': {},
             'plate_color_evidence_by_text': {},
+            'plate_color_fusion_evidence_by_text': {},
             'plate_color_votes_by_text': {},
             'plate_color_switch_candidate': '',
             'plate_color_switch_streak': 0,
@@ -1528,6 +1538,15 @@ class EventManager:
         event['plateColor'] = plate_color
         event['plateColorConfidence'] = plate_color_conf
         event['plateColorSource'] = track_state.get('plate_color_source', 'unknown')
+        if plate_color == '黄绿色':
+            locked_plate_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
+            color_state = (
+                (track_state.get('plate_color_evidence_by_text') or {}).get(locked_plate_text)
+                if locked_plate_text else None
+            )
+            fusion_summary = (color_state or {}).get('fusion_summary')
+            if isinstance(fusion_summary, dict):
+                event['plateColorEvidence'] = dict(fusion_summary)
         if event_type == 5:
             event['washEndTime'] = track_state.get('wash_end_time') or event['captureTime']
             event['videoEndTime'] = self.frame_timestamp(track_state.get('last_frame_idx', frame_idx))
@@ -1829,10 +1848,87 @@ class EventManager:
             'blue': '蓝色',
             'yellow': '黄色',
             'green': '绿色',
+            'yellow_green': '黄绿色',
+            'yellow-green': '黄绿色',
+            '黄绿': '黄绿色',
+            '黄绿牌': '黄绿色',
             'white': '白色',
             'black': '黑色',
         }
         return aliases.get(value.lower(), value)
+
+    def _record_yellow_green_fusion_evidence(
+        self,
+        track_state,
+        plate_text,
+        color,
+        color_conf,
+        frame_idx,
+    ):
+        if not self.plate_yellow_green_fusion_enabled:
+            return None
+        if color not in {'黄色', '绿色', '蓝色', '白色', '黑色'}:
+            return None
+        confidence = float(color_conf or 0.0)
+        if confidence < self.plate_yellow_green_min_confidence:
+            return None
+
+        buckets = track_state.get('plate_color_fusion_evidence_by_text')
+        if not isinstance(buckets, dict):
+            buckets = {}
+            track_state['plate_color_fusion_evidence_by_text'] = buckets
+        history = buckets.get(plate_text)
+        if not isinstance(history, list):
+            history = []
+        frame_idx = int(frame_idx)
+        cutoff = frame_idx - self.plate_yellow_green_window_frames + 1
+        history = [
+            item for item in history
+            if int(item.get('frame', -1)) >= cutoff and int(item.get('frame', -1)) != frame_idx
+        ]
+        history.append({
+            'frame': frame_idx,
+            'color': color,
+            'confidence': confidence,
+        })
+        buckets[plate_text] = history
+
+        yellow = [item for item in history if item['color'] == '黄色']
+        green = [item for item in history if item['color'] == '绿色']
+        conflicts = [item for item in history if item['color'] not in {'黄色', '绿色'}]
+        yellow_green_total = len(yellow) + len(green)
+        evidence_total = yellow_green_total + len(conflicts)
+        required_per_color = self.plate_yellow_green_min_hits_per_color
+        required_total = max(5, required_per_color * 2 + 1)
+        minority_ratio = (
+            min(len(yellow), len(green)) / yellow_green_total
+            if yellow_green_total > 0 else 0.0
+        )
+        conflict_ratio = len(conflicts) / evidence_total if evidence_total > 0 else 0.0
+        confirmed = bool(
+            len(yellow) >= required_per_color
+            and len(green) >= required_per_color
+            and yellow_green_total >= required_total
+            and minority_ratio >= 0.25
+            and len(conflicts) <= 1
+            and conflict_ratio <= 0.20
+        )
+        summary = {
+            'windowFrames': self.plate_yellow_green_window_frames,
+            'yellowHits': len(yellow),
+            'greenHits': len(green),
+            'conflictHits': len(conflicts),
+            'yellowMeanConfidence': round(
+                sum(item['confidence'] for item in yellow) / len(yellow), 6
+            ) if yellow else 0.0,
+            'greenMeanConfidence': round(
+                sum(item['confidence'] for item in green) / len(green), 6
+            ) if green else 0.0,
+            'minorityRatio': round(minority_ratio, 6),
+            'conflictRatio': round(conflict_ratio, 6),
+            'confirmed': confirmed,
+        }
+        return summary
 
     def _activate_plate_color_for_text(self, track_state, plate_text):
         plate_text = normalize_plate_candidate_text(plate_text)
@@ -1873,12 +1969,46 @@ class EventManager:
             trace.update(action='rejected', reason='missing_or_invalid_text')
             self.trace_record('plate_color_evidence', trace)
             return
-        if color_conf < self.plate_color_min_confidence:
-            trace.update(action='rejected', reason='low_color_confidence')
-            self.trace_record('plate_color_evidence', trace)
-            return
         if not trusted:
             trace.update(action='rejected', reason='untrusted_text_evidence')
+            self.trace_record('plate_color_evidence', trace)
+            return
+        frame_idx = int(frame_idx)
+        fusion_summary = self._record_yellow_green_fusion_evidence(
+            track_state,
+            plate_text,
+            color,
+            color_conf,
+            frame_idx,
+        )
+        if fusion_summary is not None:
+            trace['yellowGreenFusion'] = fusion_summary
+        if fusion_summary and fusion_summary.get('confirmed'):
+            buckets = track_state.get('plate_color_evidence_by_text')
+            if not isinstance(buckets, dict):
+                buckets = {}
+                track_state['plate_color_evidence_by_text'] = buckets
+            state = buckets.get(plate_text)
+            if not isinstance(state, dict):
+                state = {}
+                buckets[plate_text] = state
+            state['stable_color'] = '黄绿色'
+            state['stable_conf'] = min(
+                float(fusion_summary.get('yellowMeanConfidence', 0.0) or 0.0),
+                float(fusion_summary.get('greenMeanConfidence', 0.0) or 0.0),
+            )
+            state['candidate_color'] = ''
+            state['candidate_hits'] = 0
+            state['candidate_conf_sum'] = 0.0
+            state['fusion_summary'] = dict(fusion_summary)
+            if locked_text == plate_text:
+                self._activate_plate_color_for_text(track_state, plate_text)
+            trace.update(action='locked', reason='mixed_yellow_green_evidence')
+            self.trace_record('plate_color_evidence', trace)
+            return
+
+        if color_conf < self.plate_color_min_confidence:
+            trace.update(action='rejected', reason='low_color_confidence')
             self.trace_record('plate_color_evidence', trace)
             return
         if color not in self.allowed_plate_colors:
@@ -1901,7 +2031,6 @@ class EventManager:
             }
             buckets[plate_text] = state
 
-        frame_idx = int(frame_idx)
         votes_by_text = track_state.get('plate_color_votes_by_text')
         if not isinstance(votes_by_text, dict):
             votes_by_text = {}
@@ -1913,7 +2042,12 @@ class EventManager:
         trace['colorVotes'] = votes
 
         stable_color = self._normalize_plate_color(state.get('stable_color', ''))
-        if color == stable_color:
+        if stable_color == '黄绿色':
+            state['candidate_color'] = ''
+            state['candidate_hits'] = 0
+            state['candidate_conf_sum'] = 0.0
+            action = 'kept_fused'
+        elif color == stable_color:
             state['stable_conf'] = max(float(state.get('stable_conf', 0.0) or 0.0), float(color_conf))
             state['candidate_color'] = ''
             state['candidate_hits'] = 0
@@ -2195,7 +2329,11 @@ class EventManager:
                 locked_conf = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
             except (TypeError, ValueError):
                 locked_conf = 0.0
-            track_state['plate_color_source'] = 'locked_text_evidence'
+            track_state['plate_color_source'] = (
+                'mixed_yellow_green_evidence'
+                if locked_color == '黄绿色'
+                else 'locked_text_evidence'
+            )
             return locked_color, locked_conf
         latest_color = self._normalize_plate_color(track_state.get('plate_color_latest', ''))
         if latest_color not in self.allowed_plate_colors:

@@ -163,6 +163,11 @@
     "lane_name": "绕行",
     "plate_track_lock_frames": 6,
     "event_plate_lock_frames": 6,
+    "allowed_plate_colors": ["蓝色", "黄色", "绿色", "黄绿色"],
+    "plate_yellow_green_fusion_enabled": true,
+    "plate_yellow_green_min_confidence": 0.55,
+    "plate_yellow_green_window_frames": 50,
+    "plate_yellow_green_min_hits_per_color": 2,
     "plate_output_shape_log_once": true,
     "default_plate_color": "",
     "default_plate_color_conf": 0,
@@ -178,10 +183,7 @@
       "text_switch_margin_ratio": 0.18,
       "color_min_confidence": 0.7,
       "color_lock_frames": 3,
-      "color_window_frames": 50,
-      "color_switch_min_consecutive": 3,
-      "color_switch_gain_ratio": 1.2,
-      "color_switch_margin": 0.5
+      "color_window_frames": 50
     },
     "anchor_offset_ratio": 0.1,
     "anchor_mode": "neutral",

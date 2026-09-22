@@ -99,6 +99,7 @@
 - 事件帧时延缓存固定最多4096条，旧条目自动淘汰；事件trace关闭时不再累计锚点逐帧去重键，避免长期运行内存持续增长
 - `reader_max_reconnect=20`：主视频内部最多重连20次；处于 `waiting_reader` / `reader_reconnect` / `reader_reopen` 时心跳标记为降级，guardian不再按普通进度停滞提前杀进程
 - Guardian自动重启采用退避和熔断：默认在10分钟窗口内最多自动拉起3次，分别等待5/10/20秒；继续失败则暂停自动重启并在Web控制台明确告警，人工“启动/重启”后才清除熔断
+- 黄绿牌融合默认开启：同一已锁定车牌号码在最近50帧内，黄色和绿色模型证据置信度均不低于0.55、每色至少2次、合计至少5次、少数色占比不低于25%，且强冲突颜色最多1次时，锁定并上传 `plateColor=黄绿色`；车型兜底和不同号码的证据不参与融合
 - `logic.event_trace_enabled=false` 默认关闭事件输入追踪；本地视频手测时可临时开启
 - `logic.event_trace_dir=event_traces` 控制追踪输出根目录，相对路径按项目根目录解析
 - `logic.event_trace_queue_size=4096` 控制异步JSONL队列；队列溢出数量会写入 `summary.json`

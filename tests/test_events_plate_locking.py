@@ -130,9 +130,6 @@ class EventManagerPlateLockingTests(unittest.TestCase):
                 "color_min_confidence": 0.60,
                 "color_lock_frames": 3,
                 "color_window_frames": 20,
-                "color_switch_min_consecutive": 3,
-                "color_switch_gain_ratio": 1.20,
-                "color_switch_margin": 0.5,
             },
             "event_capture_dir": temp_dir.name,
             "event_output_dir": temp_dir.name,
@@ -450,6 +447,105 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(track_state.get("plate_text_locked"), "苏A3A329")
         self.assertEqual(track_state.get("plate_color_locked"), "")
         self.assertEqual(track_state.get("plate_color_evidence_by_text"), {})
+
+    def test_balanced_yellow_green_evidence_locks_and_uploads_mixed_color(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=3, uploader=uploader)
+        colors = ("绿色", "黄色", "绿色", "黄色", "绿色")
+        for frame_idx, color in enumerate(colors, start=1):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏C08531D",
+                plate_color=color,
+                plate_color_conf=0.62,
+            )
+
+        track_state = manager.tracks[1]
+        self.assertEqual(track_state["plate_text_locked"], "苏C08531D")
+        self.assertEqual(track_state["plate_color_locked"], "黄绿色")
+        color, confidence = manager._infer_plate_color(track_state)
+        self.assertEqual(color, "黄绿色")
+        self.assertAlmostEqual(confidence, 0.62, places=6)
+        self.assertEqual(track_state["plate_color_source"], "mixed_yellow_green_evidence")
+
+        manager._emit_event_core(
+            track_id=1,
+            event_type=2,
+            frame_idx=5,
+            frame=None,
+            payload={"captureTime": "2026-09-22 08:20:18"},
+            track_state=track_state,
+            vehicle_type="yellow truck",
+        )
+
+        self.assertEqual(uploader.payloads[-1]["plateColor"], "黄绿色")
+        self.assertAlmostEqual(uploader.payloads[-1]["plateColorConfidence"], 0.62, places=6)
+
+    def test_single_opposite_color_does_not_promote_normal_plate_to_mixed(self):
+        manager = self._manager(plate_lock_frames=3)
+        for frame_idx in range(1, 4):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏C08531D",
+                plate_color="绿色",
+                plate_color_conf=0.90,
+            )
+        self._update(
+            manager,
+            4,
+            plate_text="苏C08531D",
+            plate_color="黄色",
+            plate_color_conf=0.90,
+        )
+
+        self.assertEqual(manager.tracks[1]["plate_color_locked"], "绿色")
+
+    def test_yellow_green_fusion_rejects_low_confidence_and_conflicting_colors(self):
+        manager = self._manager(plate_lock_frames=3)
+        samples = (
+            ("黄色", 0.54),
+            ("绿色", 0.54),
+            ("黄色", 0.80),
+            ("蓝色", 0.80),
+            ("绿色", 0.80),
+            ("白色", 0.80),
+            ("黄色", 0.80),
+            ("绿色", 0.80),
+            ("绿色", 0.80),
+        )
+        for frame_idx, (color, confidence) in enumerate(samples, start=1):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏C08531D",
+                plate_color=color,
+                plate_color_conf=confidence,
+            )
+
+        self.assertNotEqual(manager.tracks[1]["plate_color_locked"], "黄绿色")
+
+    def test_yellow_green_fusion_never_combines_different_plate_texts(self):
+        manager = self._manager(plate_lock_frames=3)
+        for frame_idx in range(1, 4):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="苏C08531D",
+                plate_color="绿色",
+                plate_color_conf=0.80,
+            )
+        for frame_idx in range(4, 7):
+            self._update(
+                manager,
+                frame_idx,
+                plate_text="鲁A12345",
+                plate_color="黄色",
+                plate_color_conf=0.80,
+            )
+
+        self.assertEqual(manager.tracks[1]["plate_color_locked"], "绿色")
 
     def test_color_requires_trusted_text_evidence(self):
         manager = self._manager(plate_lock_frames=3)

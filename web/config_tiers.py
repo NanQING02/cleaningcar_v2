@@ -103,6 +103,10 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.min_track_frames_for_type1", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type1 最小帧数"},
     {"path": "logic.plate_track_lock_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌框连续锁定帧数"},
     {"path": "logic.event_plate_lock_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "事件可信车牌锁定帧数"},
+    {"path": "logic.plate_yellow_green_fusion_enabled", "tier": TIER_DEVELOPER, "group": "logic", "label": "黄绿牌跨帧融合"},
+    {"path": "logic.plate_yellow_green_min_confidence", "tier": TIER_DEVELOPER, "group": "logic", "label": "黄绿牌证据最低置信度"},
+    {"path": "logic.plate_yellow_green_window_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "黄绿牌融合窗口帧数"},
+    {"path": "logic.plate_yellow_green_min_hits_per_color", "tier": TIER_DEVELOPER, "group": "logic", "label": "黄绿牌每色最少次数"},
     {"path": "logic.plate_output_shape_log_once", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌模型 Shape 日志"},
     {"path": "logic.plate_core_mask", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌 NPU Core Mask"},
     {"path": "logic.plate_infer_stride", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌推理间隔"},
@@ -131,6 +135,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.shadow_plate_pool.text_switch_min_consecutive", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌切换连续帧"},
     {"path": "logic.shadow_plate_pool.color_min_confidence", "tier": TIER_DEVELOPER, "group": "logic", "label": "颜色最小置信度"},
     {"path": "logic.shadow_plate_pool.color_lock_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "颜色锁定帧数"},
+    {"path": "logic.shadow_plate_pool.color_window_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "颜色证据窗口帧数"},
     {"path": "event_output_dir", "tier": TIER_DEVELOPER, "group": "output", "label": "事件目录"},
     {"path": "event_capture_quality", "tier": TIER_DEVELOPER, "group": "output", "label": "事件截图质量"},
 ]

@@ -416,7 +416,39 @@ class ConfigManager:
         logic.setdefault('plate_text_max_streak_gap_frames', 2)
         logic.setdefault('plate_correction_confirm_hits', 12)
         logic.setdefault('plate_color_correction_hits', 5)
-        logic.setdefault('allowed_plate_colors', ['蓝色', '黄色', '绿色'])
+        logic.setdefault('allowed_plate_colors', ['蓝色', '黄色', '绿色', '黄绿色'])
+        logic.setdefault('plate_yellow_green_fusion_enabled', True)
+        logic.setdefault('plate_yellow_green_min_confidence', 0.55)
+        logic.setdefault('plate_yellow_green_window_frames', 50)
+        logic.setdefault('plate_yellow_green_min_hits_per_color', 2)
+        fusion_enabled = logic['plate_yellow_green_fusion_enabled']
+        if isinstance(fusion_enabled, str):
+            fusion_enabled = fusion_enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
+        logic['plate_yellow_green_fusion_enabled'] = bool(fusion_enabled)
+        configured_plate_colors = logic.get('allowed_plate_colors')
+        if not isinstance(configured_plate_colors, list):
+            configured_plate_colors = ['蓝色', '黄色', '绿色', '黄绿色']
+        configured_plate_colors = [
+            str(color).strip() for color in configured_plate_colors if str(color).strip()
+        ]
+        if logic['plate_yellow_green_fusion_enabled'] and '黄绿色' not in configured_plate_colors:
+            configured_plate_colors.append('黄绿色')
+        logic['allowed_plate_colors'] = configured_plate_colors
+        try:
+            fusion_confidence = float(logic['plate_yellow_green_min_confidence'])
+        except (TypeError, ValueError):
+            fusion_confidence = 0.55
+        logic['plate_yellow_green_min_confidence'] = max(0.0, min(1.0, fusion_confidence))
+        try:
+            fusion_window = int(logic['plate_yellow_green_window_frames'])
+        except (TypeError, ValueError):
+            fusion_window = 50
+        logic['plate_yellow_green_window_frames'] = max(5, min(600, fusion_window))
+        try:
+            fusion_hits = int(logic['plate_yellow_green_min_hits_per_color'])
+        except (TypeError, ValueError):
+            fusion_hits = 2
+        logic['plate_yellow_green_min_hits_per_color'] = max(1, min(20, fusion_hits))
         logic.setdefault('plate_output_shape_log_once', True)
         logic.setdefault('default_plate_color', '')
         logic.setdefault('default_plate_color_conf', 0.0)
@@ -497,9 +529,6 @@ class ConfigManager:
         shadow.setdefault('color_min_confidence', 0.70)
         shadow.setdefault('color_lock_frames', 3)
         shadow.setdefault('color_window_frames', 50)
-        shadow.setdefault('color_switch_min_consecutive', 3)
-        shadow.setdefault('color_switch_gain_ratio', 1.2)
-        shadow.setdefault('color_switch_margin', 0.5)
         self.data.pop('storage', None)
 
         self.data.setdefault('event_capture_quality', 70)
