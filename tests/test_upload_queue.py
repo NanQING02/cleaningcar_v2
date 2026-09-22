@@ -162,6 +162,36 @@ class UploadQueueOrderingTests(unittest.TestCase):
             finally:
                 queue.close()
 
+    def test_later_stage_is_added_to_existing_dead_letter_group(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = SQLiteUploadQueue(Path(tmpdir) / 'queue.db')
+            try:
+                queue.enqueue({'id': 'event-a', 'type': 1})
+                queue.enqueue({'id': 'event-a', 'type': 2})
+                failed_id, _, _ = queue.next_job()
+                queue.move_to_dead_letter(failed_id, 'HTTP 503', retries=10)
+
+                queue.enqueue({'id': 'event-a', 'type': 3})
+
+                self.assertEqual(queue.dead_letter_count(), 3)
+                dead = list(reversed(queue.dead_letters()))
+                self.assertEqual([item['event_type'] for item in dead], [1, 2, 3])
+                self.assertIn('blocked by existing dead-letter', dead[2]['last_error'])
+                self.assertIsNone(queue.next_job())
+
+                self.assertEqual(queue.retry_dead_letter_group('event-a'), 3)
+                observed_types = []
+                while True:
+                    job = queue.next_job()
+                    if not job:
+                        break
+                    job_id, payload, _ = job
+                    observed_types.append(payload['type'])
+                    queue.mark_success(job_id)
+                self.assertEqual(observed_types, [1, 2, 3])
+            finally:
+                queue.close()
+
     def test_ungrouped_dead_letter_can_be_retried_individually(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             queue = SQLiteUploadQueue(Path(tmpdir) / 'queue.db')

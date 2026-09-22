@@ -74,6 +74,10 @@ class SQLiteUploadQueue:
                 'CREATE INDEX IF NOT EXISTS idx_dead_letter_failed_at '
                 'ON dead_letter(failed_at DESC)'
             )
+            self.conn.execute(
+                'CREATE INDEX IF NOT EXISTS idx_dead_letter_group '
+                'ON dead_letter(group_key, id)'
+            )
             self._migrate_existing_rows_locked()
             if self.conn.in_transaction:
                 try:
@@ -121,6 +125,33 @@ class SQLiteUploadQueue:
         data = json.dumps(normalized, ensure_ascii=False)
         now = time.time()
         with self._lock:
+            blocked = None
+            if group_key:
+                blocked = self.conn.execute(
+                    'SELECT event_type, last_error FROM dead_letter '
+                    'WHERE group_key=? ORDER BY id LIMIT 1',
+                    (group_key,),
+                ).fetchone()
+            if blocked:
+                blocker_type, blocker_error = blocked
+                self.conn.execute(
+                    'INSERT INTO dead_letter '
+                    '(original_job_id, payload, retries, created, failed_at, last_error, group_key, event_type) '
+                    'VALUES (NULL, ?, 0, ?, ?, ?, ?, ?)',
+                    (
+                        data,
+                        now,
+                        now,
+                        (
+                            f'blocked by existing dead-letter event type {blocker_type}: '
+                            f'{str(blocker_error or "unknown error")}'
+                        )[:4000],
+                        group_key,
+                        event_type,
+                    ),
+                )
+                self.conn.commit()
+                return
             self.conn.execute(
                 'INSERT INTO queue '
                 '(payload, retries, next_retry, created, group_key, event_type) '
@@ -143,6 +174,12 @@ class SQLiteUploadQueue:
                 "q.group_key = '' OR NOT EXISTS ("
                 'SELECT 1 FROM queue AS older '
                 'WHERE older.group_key = q.group_key AND older.id < q.id'
+                ')'
+                ') '
+                'AND ('
+                "q.group_key = '' OR NOT EXISTS ("
+                'SELECT 1 FROM dead_letter AS failed '
+                'WHERE failed.group_key = q.group_key'
                 ')'
                 ') '
                 'ORDER BY q.id LIMIT 1',
@@ -242,10 +279,14 @@ class SQLiteUploadQueue:
                 payload = json.loads(row[2])
             except json.JSONDecodeError:
                 payload = {}
+            display_payload = dict(payload) if isinstance(payload, dict) else {}
+            capture_image = display_payload.get('captureImage')
+            if isinstance(capture_image, str) and len(capture_image) > 512:
+                display_payload['captureImage'] = f'<omitted {len(capture_image)} characters>'
             items.append({
                 'id': int(row[0]),
                 'original_job_id': int(row[1]) if row[1] is not None else None,
-                'payload': payload,
+                'payload': display_payload,
                 'retries': int(row[3]),
                 'created': float(row[4]),
                 'failed_at': float(row[5]),
@@ -288,7 +329,8 @@ class SQLiteUploadQueue:
         with self._lock:
             rows = self.conn.execute(
                 'SELECT id, payload, event_type FROM dead_letter '
-                'WHERE group_key=? ORDER BY original_job_id, id',
+                'WHERE group_key=? '
+                'ORDER BY CASE WHEN event_type IS NULL THEN 1 ELSE 0 END, event_type, id',
                 (group_key,),
             ).fetchall()
             for _dead_id, payload, event_type in rows:

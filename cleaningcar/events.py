@@ -76,7 +76,7 @@ class EventUploader:
                 self._send(payload)
             except Exception as exc:
                 delay = min(self.base_delay * (2 ** retries), self.max_delay)
-                if retries + 1 > self.max_retries:
+                if retries + 1 >= self.max_retries:
                     error_text = f'{type(exc).__name__}: {exc}'
                     dead_letter_id = None
                     if self.db:
@@ -158,7 +158,7 @@ class WheelPhotoUploader:
                 self._send(payload)
             except Exception as exc:
                 delay = min(self.base_delay * (2 ** retries), self.max_delay)
-                if retries + 1 > self.max_retries:
+                if retries + 1 >= self.max_retries:
                     error_text = f'{type(exc).__name__}: {exc}'
                     dead_letter_id = None
                     if self.db:
