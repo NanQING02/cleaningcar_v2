@@ -114,6 +114,70 @@ class UploadQueueOrderingTests(unittest.TestCase):
             finally:
                 queue.close()
 
+    def test_failed_stage_moves_same_event_tail_to_dead_letter_with_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = SQLiteUploadQueue(Path(tmpdir) / 'queue.db')
+            try:
+                queue.enqueue({'id': 'event-a', 'type': 1})
+                queue.enqueue({'id': 'event-a', 'type': 2})
+                queue.enqueue({'id': 'event-b', 'type': 1})
+                failed_id, _, _ = queue.next_job()
+
+                dead_id = queue.move_to_dead_letter(
+                    failed_id,
+                    'HTTPError: 503 Service Unavailable',
+                    retries=11,
+                )
+
+                self.assertIsNotNone(dead_id)
+                self.assertEqual(queue.dead_letter_count(), 2)
+                dead = list(reversed(queue.dead_letters()))
+                self.assertEqual([item['event_type'] for item in dead], [1, 2])
+                self.assertEqual(dead[0]['retries'], 11)
+                self.assertIn('503 Service Unavailable', dead[0]['last_error'])
+                self.assertIn('blocked by earlier dead-letter', dead[1]['last_error'])
+                _, next_payload, _ = queue.next_job()
+                self.assertEqual(next_payload['id'], 'event-b')
+            finally:
+                queue.close()
+
+    def test_dead_letter_group_retry_restores_event_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = SQLiteUploadQueue(Path(tmpdir) / 'queue.db')
+            try:
+                queue.enqueue({'id': 'event-a', 'type': 1})
+                queue.enqueue({'id': 'event-a', 'type': 2})
+                failed_id, _, _ = queue.next_job()
+                queue.move_to_dead_letter(failed_id, 'timeout', retries=11)
+
+                retried = queue.retry_dead_letter_group('event-a')
+
+                self.assertEqual(retried, 2)
+                self.assertEqual(queue.dead_letter_count(), 0)
+                first_id, first_payload, _ = queue.next_job()
+                self.assertEqual(first_payload['type'], 1)
+                queue.mark_success(first_id)
+                _, second_payload, _ = queue.next_job()
+                self.assertEqual(second_payload['type'], 2)
+            finally:
+                queue.close()
+
+    def test_ungrouped_dead_letter_can_be_retried_individually(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = SQLiteUploadQueue(Path(tmpdir) / 'queue.db')
+            try:
+                queue.enqueue({'photoUrl': '/tmp/wheel.jpg', 'type': 'left'})
+                failed_id, _, _ = queue.next_job()
+                dead_id = queue.move_to_dead_letter(failed_id, 'connection refused', retries=11)
+
+                self.assertTrue(queue.retry_dead_letter(dead_id))
+                self.assertEqual(queue.dead_letter_count(), 0)
+                _, payload, retries = queue.next_job()
+                self.assertEqual(payload['photoUrl'], '/tmp/wheel.jpg')
+                self.assertEqual(retries, 0)
+            finally:
+                queue.close()
+
 
 if __name__ == '__main__':
     unittest.main()

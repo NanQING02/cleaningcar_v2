@@ -44,6 +44,10 @@ def _event_log_path(cfg: ConfigManager) -> Path:
     return base / "event_log.csv"
 
 
+def _event_output_dir(cfg: ConfigManager) -> Path:
+    return _event_log_path(cfg).parent
+
+
 def _detection_csv_path(cfg: ConfigManager) -> Optional[Path]:
     csv_path = cfg.video.get("csv")
     if not csv_path:

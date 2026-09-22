@@ -201,6 +201,34 @@
             </div>
             <p class="hint" v-else>暂无推理日志，点击“刷新日志”获取最新输出。</p>
           </div>
+          <div class="log-section">
+            <h4>上传失败留存</h4>
+            <label>队列
+              <select v-model="deadLetterQueue" @change="refreshDeadLetters(true)">
+                <option value="event">业务事件</option>
+                <option value="wheel">车轮照片</option>
+              </select>
+            </label>
+            <button class="secondary" @click="refreshDeadLetters(false)" :disabled="busy">刷新失败记录</button>
+            <p class="hint">失败记录：{{ deadLetterCount }}。业务事件按event ID整组重试，避免type顺序错乱。</p>
+            <div class="log-table" v-if="deadLetters.length">
+              <table>
+                <thead>
+                  <tr><th>失败时间</th><th>Event ID / 文件</th><th>Type</th><th>次数</th><th>原因</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in deadLetters" :key="`${deadLetterQueue}-${item.id}`">
+                    <td>{{ formatTimestamp(item.failed_at) }}</td>
+                    <td>{{ item.group_key || item.payload?.photoUrl || `#${item.id}` }}</td>
+                    <td>{{ item.event_type ?? item.payload?.type ?? '—' }}</td>
+                    <td>{{ item.retries }}</td>
+                    <td>{{ item.last_error }}</td>
+                    <td><button class="secondary" @click="retryDeadLetter(item)" :disabled="busy">重新入队</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
         <section class="panel" v-if="logicView">
           <h3>开发者参数</h3>
@@ -650,6 +678,9 @@
           inferenceStatus: { running: false, pid: null, last_start: null, last_exit: null, restart_count: 0, auto_restart_suspended: false, next_restart_at: null, last_restart_reason: '' },
           inferenceAutoRestart: true,
           inferenceLogs: [],
+          deadLetterQueue: 'event',
+          deadLetters: [],
+          deadLetterCount: 0,
           inferenceInstances: [],
           inferenceStatusTimer: null,
           inferenceLogTimer: null,
@@ -710,6 +741,7 @@
         this.loadConfig();
         this.fetchInferenceStatus();
         this.refreshInferenceLogs();
+        this.refreshDeadLetters(true);
         this.inferenceStatusTimer = setInterval(() => this.fetchInferenceStatus(), 10000);
         this.inferenceLogTimer = setInterval(() => this.refreshInferenceLogs(true), 15000);
       },
@@ -1212,6 +1244,7 @@
             await this.loadConfig();
             this.fetchInferenceStatus();
             this.refreshInferenceLogs(true);
+            this.refreshDeadLetters(true);
             this.status = '配置已切换；如需背景帧请点击“刷新背景帧”';
           } catch (err) {
             this.status = err.message;
@@ -1351,6 +1384,47 @@
           } catch (err) {
             this.inferenceLogs = [];
             this.status = err.message;
+          }
+        },
+        async refreshDeadLetters(silent = false) {
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const queue = encodeURIComponent(this.deadLetterQueue);
+            const res = await fetch(`/uploads/dead_letters?key=${key}&queue=${queue}&limit=100`);
+            if (!res.ok) throw new Error('读取上传失败记录失败');
+            const data = await res.json();
+            this.deadLetters = data.items || [];
+            this.deadLetterCount = Number(data.count || 0);
+            if (!silent) this.status = '上传失败记录已刷新';
+          } catch (err) {
+            this.deadLetters = [];
+            this.deadLetterCount = 0;
+            if (!silent) this.status = err.message;
+          }
+        },
+        async retryDeadLetter(item) {
+          this.busy = true;
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const queue = encodeURIComponent(this.deadLetterQueue);
+            let url = `/uploads/dead_letters/retry?key=${key}&queue=${queue}`;
+            if (item.group_key) {
+              url += `&group_key=${encodeURIComponent(item.group_key)}`;
+            } else {
+              url += `&dead_letter_id=${encodeURIComponent(item.id)}`;
+            }
+            const res = await fetch(url, { method: 'POST' });
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(body.detail || '重新入队失败');
+            }
+            const data = await res.json();
+            this.status = `已重新入队 ${data.retried || 0} 条`;
+            await this.refreshDeadLetters(true);
+          } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
           }
         },
         formatTimestamp(ts) {

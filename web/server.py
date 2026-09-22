@@ -52,11 +52,13 @@ from .helpers import (
     _debug_frame_path,
     _detection_csv_path,
     _event_log_path,
+    _event_output_dir,
     _inference_log_dir,
     _load_config,
     _resolve_config_path,
     _read_csv_tail,
 )
+from utils.upload_queue import SQLiteUploadQueue
 from .inference import (
     _get_default_inference_manager,
     _get_inference_manager_for_key,
@@ -418,6 +420,62 @@ def get_event_logs(lines: int = 50, key: Optional[str] = None):
         return {"available": False, "path": str(path)}
     rows = _read_csv_tail(path, lines)
     return {"available": True, "path": str(path), "rows": rows}
+
+
+def _upload_queue_path(cfg, queue_name: str) -> Path:
+    normalized = str(queue_name or 'event').strip().lower()
+    if normalized not in {'event', 'wheel'}:
+        raise HTTPException(status_code=400, detail='queue 必须为 event 或 wheel')
+    filename = 'upload_queue.db' if normalized == 'event' else 'wheel_photo_queue.db'
+    return _event_output_dir(cfg) / filename
+
+
+@app.get("/uploads/dead_letters")
+def get_upload_dead_letters(
+    key: Optional[str] = None,
+    queue: str = 'event',
+    limit: int = 100,
+):
+    cfg = _load_config(key)
+    path = _upload_queue_path(cfg, queue)
+    if not path.exists():
+        return {'available': False, 'path': str(path), 'count': 0, 'items': []}
+    db = SQLiteUploadQueue(path)
+    try:
+        return {
+            'available': True,
+            'path': str(path),
+            'count': db.dead_letter_count(),
+            'items': db.dead_letters(limit),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/uploads/dead_letters/retry")
+def retry_upload_dead_letter(
+    key: Optional[str] = None,
+    queue: str = 'event',
+    dead_letter_id: Optional[int] = None,
+    group_key: str = '',
+):
+    cfg = _load_config(key)
+    path = _upload_queue_path(cfg, queue)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail='上传队列不存在')
+    db = SQLiteUploadQueue(path)
+    try:
+        if str(group_key or '').strip():
+            retried = db.retry_dead_letter_group(group_key)
+        elif dead_letter_id is not None:
+            retried = 1 if db.retry_dead_letter(dead_letter_id) else 0
+        else:
+            raise HTTPException(status_code=400, detail='需要 dead_letter_id 或 group_key')
+        if retried <= 0:
+            raise HTTPException(status_code=404, detail='未找到可重试记录；业务事件请按event ID整组重试')
+        return {'status': 'queued', 'retried': retried}
+    finally:
+        db.close()
 
 
 @app.get("/logs/detections")

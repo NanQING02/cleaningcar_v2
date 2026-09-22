@@ -57,6 +57,23 @@ class SQLiteUploadQueue:
             self.conn.execute(
                 'CREATE INDEX IF NOT EXISTS idx_queue_group_id ON queue(group_key, id)'
             )
+            self.conn.execute(
+                'CREATE TABLE IF NOT EXISTS dead_letter ('
+                'id INTEGER PRIMARY KEY AUTOINCREMENT,'
+                'original_job_id INTEGER,'
+                'payload TEXT NOT NULL,'
+                'retries INTEGER NOT NULL,'
+                'created REAL NOT NULL,'
+                'failed_at REAL NOT NULL,'
+                'last_error TEXT NOT NULL,'
+                "group_key TEXT NOT NULL DEFAULT '',"
+                'event_type INTEGER'
+                ')'
+            )
+            self.conn.execute(
+                'CREATE INDEX IF NOT EXISTS idx_dead_letter_failed_at '
+                'ON dead_letter(failed_at DESC)'
+            )
             self._migrate_existing_rows_locked()
             if self.conn.in_transaction:
                 try:
@@ -161,6 +178,133 @@ class SQLiteUploadQueue:
                     self.conn.commit()
                 except sqlite3.OperationalError:
                     pass
+
+    def move_to_dead_letter(self, job_id: int, error: str, retries: Optional[int] = None) -> Optional[int]:
+        error_text = str(error or 'unknown error').strip()[:4000]
+        failed_at = time.time()
+        with self._lock:
+            row = self.conn.execute(
+                'SELECT payload, retries, created, group_key, event_type '
+                'FROM queue WHERE id=?',
+                (job_id,),
+            ).fetchone()
+            if not row:
+                return None
+            group_key = str(row[3] or '')
+            if group_key:
+                rows = self.conn.execute(
+                    'SELECT id, payload, retries, created, group_key, event_type '
+                    'FROM queue WHERE group_key=? AND id>=? ORDER BY id',
+                    (group_key, int(job_id)),
+                ).fetchall()
+            else:
+                rows = [(int(job_id), row[0], row[1], row[2], group_key, row[4])]
+            first_dead_letter_id = None
+            for index, item in enumerate(rows):
+                queued_id, payload, stored_retries, created, item_group, event_type = item
+                item_error = error_text if index == 0 else (
+                    f'blocked by earlier dead-letter event type {row[4]}: {error_text}'
+                )[:4000]
+                item_retries = int(retries) if index == 0 and retries is not None else int(stored_retries)
+                cursor = self.conn.execute(
+                    'INSERT INTO dead_letter '
+                    '(original_job_id, payload, retries, created, failed_at, last_error, group_key, event_type) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (
+                        int(queued_id),
+                        payload,
+                        item_retries,
+                        float(created),
+                        failed_at,
+                        item_error,
+                        str(item_group or ''),
+                        event_type,
+                    ),
+                )
+                if first_dead_letter_id is None:
+                    first_dead_letter_id = int(cursor.lastrowid)
+            self.conn.executemany('DELETE FROM queue WHERE id=?', [(int(item[0]),) for item in rows])
+            self.conn.commit()
+            return first_dead_letter_id
+
+    def dead_letters(self, limit: int = 100):
+        limit = max(1, min(1000, int(limit or 100)))
+        with self._lock:
+            rows = self.conn.execute(
+                'SELECT id, original_job_id, payload, retries, created, failed_at, '
+                'last_error, group_key, event_type '
+                'FROM dead_letter ORDER BY failed_at DESC, id DESC LIMIT ?',
+                (limit,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            try:
+                payload = json.loads(row[2])
+            except json.JSONDecodeError:
+                payload = {}
+            items.append({
+                'id': int(row[0]),
+                'original_job_id': int(row[1]) if row[1] is not None else None,
+                'payload': payload,
+                'retries': int(row[3]),
+                'created': float(row[4]),
+                'failed_at': float(row[5]),
+                'last_error': str(row[6] or ''),
+                'group_key': str(row[7] or ''),
+                'event_type': int(row[8]) if row[8] is not None else None,
+            })
+        return items
+
+    def dead_letter_count(self) -> int:
+        with self._lock:
+            row = self.conn.execute('SELECT COUNT(1) FROM dead_letter').fetchone()
+            return int(row[0]) if row else 0
+
+    def retry_dead_letter(self, dead_letter_id: int) -> bool:
+        with self._lock:
+            row = self.conn.execute(
+                'SELECT payload, group_key, event_type FROM dead_letter WHERE id=?',
+                (int(dead_letter_id),),
+            ).fetchone()
+            if not row:
+                return False
+            payload, group_key, event_type = row
+            if str(group_key or ''):
+                return False
+            self.conn.execute(
+                'INSERT INTO queue '
+                '(payload, retries, next_retry, created, group_key, event_type) '
+                'VALUES (?, 0, 0, ?, ?, ?)',
+                (payload, time.time(), str(group_key or ''), event_type),
+            )
+            self.conn.execute('DELETE FROM dead_letter WHERE id=?', (int(dead_letter_id),))
+            self.conn.commit()
+            return True
+
+    def retry_dead_letter_group(self, group_key: str) -> int:
+        group_key = str(group_key or '').strip()
+        if not group_key:
+            return 0
+        with self._lock:
+            rows = self.conn.execute(
+                'SELECT id, payload, event_type FROM dead_letter '
+                'WHERE group_key=? ORDER BY original_job_id, id',
+                (group_key,),
+            ).fetchall()
+            for _dead_id, payload, event_type in rows:
+                self.conn.execute(
+                    'INSERT INTO queue '
+                    '(payload, retries, next_retry, created, group_key, event_type) '
+                    'VALUES (?, 0, 0, ?, ?, ?)',
+                    (payload, time.time(), group_key, event_type),
+                )
+            if rows:
+                self.conn.executemany(
+                    'DELETE FROM dead_letter WHERE id=?',
+                    [(int(row[0]),) for row in rows],
+                )
+                self.conn.commit()
+            return len(rows)
 
     def pending(self) -> int:
         with self._lock:

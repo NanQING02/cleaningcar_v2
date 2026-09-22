@@ -75,9 +75,18 @@ class EventUploader:
             except Exception as exc:
                 delay = min(self.base_delay * (2 ** retries), self.max_delay)
                 if retries + 1 > self.max_retries:
-                    print(f'[uploader] drop event after {retries} retries: {exc}')
+                    error_text = f'{type(exc).__name__}: {exc}'
+                    dead_letter_id = None
                     if self.db:
-                        self.db.mark_success(job_id)
+                        dead_letter_id = self.db.move_to_dead_letter(
+                            job_id,
+                            error_text,
+                            retries=retries + 1,
+                        )
+                    print(
+                        f'[uploader] moved event to dead-letter after {retries + 1} attempts '
+                        f'dead_letter_id={dead_letter_id}: {error_text}'
+                    )
                 else:
                     print(f'[uploader] failed to send event (retry in {delay:.1f}s): {exc}')
                     if self.db:
@@ -148,9 +157,18 @@ class WheelPhotoUploader:
             except Exception as exc:
                 delay = min(self.base_delay * (2 ** retries), self.max_delay)
                 if retries + 1 > self.max_retries:
-                    print(f'[wheel-photo-uploader] drop photo after {retries} retries: {exc}')
+                    error_text = f'{type(exc).__name__}: {exc}'
+                    dead_letter_id = None
                     if self.db:
-                        self.db.mark_success(job_id)
+                        dead_letter_id = self.db.move_to_dead_letter(
+                            job_id,
+                            error_text,
+                            retries=retries + 1,
+                        )
+                    print(
+                        f'[wheel-photo-uploader] moved photo to dead-letter after {retries + 1} attempts '
+                        f'dead_letter_id={dead_letter_id}: {error_text}'
+                    )
                 else:
                     print(f'[wheel-photo-uploader] failed to send photo (retry in {delay:.1f}s): {exc}')
                     if self.db:
