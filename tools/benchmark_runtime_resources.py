@@ -129,7 +129,9 @@ def main():
         json.dumps(sanitized_config(config_path, output_dir), ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
-    python_path = Path(args.python).resolve() if args.python else (root / 'venv-gst' / 'bin' / 'python')
+    python_path = Path(args.python).expanduser() if args.python else (root / 'venv-gst' / 'bin' / 'python')
+    if not python_path.is_absolute():
+        python_path = (Path.cwd() / python_path).absolute()
     command = [str(python_path), str(root / 'run_zone_detect.py'), '--config', str(benchmark_config)]
     if args.limit > 0:
         command.extend(['--limit', str(args.limit)])
