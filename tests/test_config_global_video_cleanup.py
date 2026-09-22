@@ -221,6 +221,13 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertEqual(resolve_runtime_queue_size("file", 32), 32)
         self.assertEqual(resolve_runtime_queue_size("auto", 0), 1)
 
+    def test_pipeline_does_not_read_event_manager_before_initialization(self):
+        pipeline_path = Path(__file__).resolve().parents[1] / "cleaningcar" / "pipeline.py"
+        source = pipeline_path.read_text(encoding="utf-8")
+        before_manager_init = source.split("event_manager = EventManager", 1)[0]
+
+        self.assertNotIn("getattr(event_manager, 'event_trace'", before_manager_init)
+
     def test_config_manager_defaults_simplified_event_controls(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"

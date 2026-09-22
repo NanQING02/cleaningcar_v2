@@ -607,7 +607,7 @@ def process_video(path, args):
         logic_cfg=logic_cfg,
     )
     anchor_trace_last_frame = {}
-    anchor_trace_enabled = getattr(event_manager, 'event_trace', None) is not None
+    anchor_trace_enabled = bool(logic_cfg.get('event_trace_enabled', False))
 
     def anchor_result_for(track_id, box, frame_idx):
         result = anchor_estimator.estimate(track_id, box, frame_idx)
