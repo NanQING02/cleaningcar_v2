@@ -1,6 +1,8 @@
 import base64
+import csv
 import hashlib
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -228,8 +230,20 @@ class EventManager:
         self.capture_dir.mkdir(parents=True, exist_ok=True)
         self.events_dir = Path(config.get('event_output_dir', './events'))
         self.enable_event_disk = bool(self.logic.get('enable_event_disk', False))
-        if self.enable_event_disk or uploader:
+        self.evidence_index_enabled = bool(self.enable_event_disk or uploader)
+        self._evidence_lock = threading.Lock()
+        self.evidence_root = self.events_dir / 'evidence'
+        self.evidence_index_path = self.events_dir / 'event_index.csv'
+        if self.evidence_index_enabled:
             self.events_dir.mkdir(parents=True, exist_ok=True)
+            self.evidence_root.mkdir(parents=True, exist_ok=True)
+            if not self.evidence_index_path.exists():
+                with self.evidence_index_path.open('w', encoding='utf-8-sig', newline='') as handle:
+                    csv.writer(handle).writerow([
+                        'capture_time', 'event_id', 'type', 'track_id', 'plate_number',
+                        'plate_color', 'vehicle_type', 'lane', 'is_abnormal',
+                        'abnormal_reason', 'capture_image', 'event_json', 'video_path', 'manifest',
+                    ])
         self.tracks = {}
         self.timeout_frames = int(config.get('track_timeout_frames', 60))
         self.base_time = datetime.now()
@@ -439,6 +453,128 @@ class EventManager:
         recorder = getattr(self, 'event_trace', None)
         if recorder is not None:
             recorder.close()
+
+    @staticmethod
+    def _safe_evidence_component(value):
+        text = re.sub(r'[^\w.\-\u4e00-\u9fff]+', '_', str(value or '').strip(), flags=re.UNICODE)
+        return text.strip('._')[:96] or 'unknown-event'
+
+    def _record_event_evidence(self, event, track_state, frame_idx, event_path=None):
+        if not self.evidence_index_enabled or not isinstance(event, dict):
+            return None
+        event_id = str(event.get('id') or '').strip()
+        if not event_id:
+            return None
+        capture_time = str(event.get('captureTime') or '')
+        date_key = re.sub(r'\D', '', capture_time)[:8]
+        if len(date_key) != 8:
+            date_key = datetime.now().strftime('%Y%m%d')
+        event_dir = self.evidence_root / date_key / self._safe_evidence_component(event_id)
+        manifest_path = event_dir / 'manifest.json'
+        event_type = int(event.get('type', 0) or 0)
+        stage_labels = {
+            1: '进入检测区',
+            2: '进入冲洗区',
+            3: '检测到冲洗水流',
+            4: '离开冲洗区',
+            5: '车辆业务闭环',
+            6: '录像落盘完成',
+        }
+        upload_state = 'disabled'
+        if self.uploader:
+            upload_state = 'waiting_type2' if event_type == 1 else 'queued'
+        stage = {
+            'stageKey': f'{event_type}:{int(frame_idx)}',
+            'type': event_type,
+            'label': stage_labels.get(event_type, f'type{event_type}'),
+            'captureTime': capture_time,
+            'frameIdx': int(frame_idx),
+            'trackId': int(event.get('trackId', 0) or 0),
+            'plateNumber': str(event.get('plateNumber') or ''),
+            'plateColor': str(event.get('plateColor') or ''),
+            'vehicleType': str(event.get('vehicleType') or ''),
+            'isAbnormal': bool(event.get('isAbnormal', False)),
+            'abnormalReason': str(event.get('abnormalReason') or ''),
+            'sequenceBackfill': bool(event.get('sequenceBackfill', False)),
+            'backfillReason': str(event.get('backfillReason') or ''),
+            'captureImage': str(event.get('captureImage') or ''),
+            'eventJson': str(event_path or ''),
+            'videoPath': str((track_state or {}).get('per_id_video_path') or ''),
+            'uploadState': upload_state,
+        }
+        with self._evidence_lock:
+            event_dir.mkdir(parents=True, exist_ok=True)
+            manifest = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                except Exception:
+                    manifest = {}
+            stages = list(manifest.get('stages') or [])
+            stages = [item for item in stages if item.get('stageKey') != stage['stageKey']]
+            stages.append(stage)
+            stages.sort(key=lambda item: (
+                str(item.get('captureTime') or ''),
+                int(item.get('frameIdx', 0) or 0),
+                int(item.get('type', 0) or 0),
+            ))
+            for order, item in enumerate(stages, start=1):
+                item['order'] = order
+            capture_images = list(dict.fromkeys(
+                str(item.get('captureImage') or '') for item in stages if item.get('captureImage')
+            ))
+            event_json_files = list(dict.fromkeys(
+                str(item.get('eventJson') or '') for item in stages if item.get('eventJson')
+            ))
+            video_paths = list(dict.fromkeys(
+                str(item.get('videoPath') or '') for item in stages if item.get('videoPath')
+            ))
+            stage_types = [int(item.get('type', 0) or 0) for item in stages]
+            manifest.update({
+                'schemaVersion': 1,
+                'eventId': event_id,
+                'deviceId': self.camera_id,
+                'lane': str(event.get('lane') or ''),
+                'firstCaptureTime': stages[0].get('captureTime') if stages else capture_time,
+                'lastCaptureTime': stages[-1].get('captureTime') if stages else capture_time,
+                'currentType': max(stage_types) if stage_types else event_type,
+                'businessComplete': 5 in stage_types,
+                'videoComplete': 6 in stage_types,
+                'plateNumber': str(event.get('plateNumber') or manifest.get('plateNumber') or ''),
+                'plateColor': str(event.get('plateColor') or manifest.get('plateColor') or ''),
+                'vehicleType': str(event.get('vehicleType') or manifest.get('vehicleType') or ''),
+                'isAbnormal': any(bool(item.get('isAbnormal')) for item in stages),
+                'abnormalReasons': sorted({
+                    str(item.get('abnormalReason') or '') for item in stages if item.get('abnormalReason')
+                }),
+                'stages': stages,
+                'artifacts': {
+                    'captureImages': capture_images,
+                    'eventJsonFiles': event_json_files,
+                    'videoPaths': video_paths,
+                },
+            })
+            temp_path = manifest_path.with_suffix('.json.tmp')
+            temp_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+            temp_path.replace(manifest_path)
+            with self.evidence_index_path.open('a', encoding='utf-8', newline='') as handle:
+                csv.writer(handle).writerow([
+                    capture_time,
+                    event_id,
+                    event_type,
+                    stage['trackId'],
+                    stage['plateNumber'],
+                    stage['plateColor'],
+                    stage['vehicleType'],
+                    str(event.get('lane') or ''),
+                    int(stage['isAbnormal']),
+                    stage['abnormalReason'],
+                    stage['captureImage'],
+                    stage['eventJson'],
+                    stage['videoPath'],
+                    str(manifest_path),
+                ])
+        return manifest_path
 
     def record_frame_timing(self, frame_idx, capture_ts, infer_ts):
         if capture_ts is None or infer_ts is None:
@@ -1623,13 +1759,24 @@ class EventManager:
                     print(line)
             except Exception:
                 pass
+        event_path = None
         if self.enable_event_disk:
-            event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
+            candidate_event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
             try:
-                with event_path.open('w', encoding='utf-8') as f:
+                with candidate_event_path.open('w', encoding='utf-8') as f:
                     json.dump(event, f, ensure_ascii=False, indent=2)
+                event_path = candidate_event_path
             except Exception:
                 pass
+        try:
+            self._record_event_evidence(event, track_state, frame_idx, event_path=event_path)
+        except Exception as exc:
+            for line in self.log_throttler.record(
+                key='evidence.index.write',
+                message=f'[evidence] failed to update event index id={event.get("id", "")}: {exc}',
+                window_seconds=30.0,
+            ):
+                print(line)
         t_json = time.perf_counter()
         print(f"[EVENT] cam={self.camera_id} track={track_id} type={event_type} time={event['captureTime']}")
         if self.event_log_path:

@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 from collections import deque
 from contextlib import asynccontextmanager
@@ -450,6 +451,66 @@ def get_upload_dead_letters(
         }
     finally:
         db.close()
+
+
+@app.get("/evidence/events")
+def search_event_evidence(
+    key: Optional[str] = None,
+    query: str = '',
+    limit: int = 100,
+):
+    cfg = _load_config(key)
+    path = _event_output_dir(cfg) / 'event_index.csv'
+    if not path.exists():
+        return {'available': False, 'path': str(path), 'rows': []}
+    needle = str(query or '').strip().casefold()
+    rows = deque(maxlen=max(1, min(500, int(limit or 100))))
+    try:
+        with path.open('r', encoding='utf-8-sig', newline='') as handle:
+            for row in csv.DictReader(handle):
+                if needle:
+                    searchable = ' '.join(str(value or '') for value in row.values()).casefold()
+                    if needle not in searchable:
+                        continue
+                rows.append(row)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'读取事件证据索引失败: {exc}') from exc
+    return {'available': True, 'path': str(path), 'rows': list(reversed(rows))}
+
+
+@app.get("/evidence/manifest")
+def get_event_evidence_manifest(event_id: str, key: Optional[str] = None):
+    event_id = str(event_id or '').strip()
+    if not event_id:
+        raise HTTPException(status_code=400, detail='event_id不能为空')
+    cfg = _load_config(key)
+    output_dir = _event_output_dir(cfg).resolve()
+    index_path = output_dir / 'event_index.csv'
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail='事件证据索引不存在')
+    manifest_value = ''
+    try:
+        with index_path.open('r', encoding='utf-8-sig', newline='') as handle:
+            for row in csv.DictReader(handle):
+                if str(row.get('event_id') or '') == event_id:
+                    manifest_value = str(row.get('manifest') or '')
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'读取事件证据索引失败: {exc}') from exc
+    if not manifest_value:
+        raise HTTPException(status_code=404, detail='未找到该event ID')
+    manifest_path = Path(manifest_value)
+    if not manifest_path.is_absolute():
+        manifest_path = (state.ROOT / manifest_path).resolve()
+    else:
+        manifest_path = manifest_path.resolve()
+    if manifest_path != output_dir and output_dir not in manifest_path.parents:
+        raise HTTPException(status_code=400, detail='manifest路径越界')
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail='manifest文件不存在')
+    try:
+        return json.loads(manifest_path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'读取manifest失败: {exc}') from exc
 
 
 @app.post("/uploads/dead_letters/retry")

@@ -230,6 +230,31 @@
             </div>
           </div>
         </section>
+        <section class="panel">
+          <h3>事件证据索引</h3>
+          <p class="hint">按event ID、车牌、时间、车型或异常原因查找；每个event ID对应一个按type排序的manifest。</p>
+          <label>查找
+            <input v-model="evidenceQuery" @keyup.enter="searchEvidence(false)" placeholder="event ID / 车牌 / 时间 / 异常原因" />
+          </label>
+          <button @click="searchEvidence(false)" :disabled="busy">查找证据</button>
+          <div class="log-table" v-if="evidenceRows.length">
+            <table>
+              <thead><tr><th>时间</th><th>Event ID</th><th>Type</th><th>车牌/颜色</th><th>车型</th><th>异常</th><th>详情</th></tr></thead>
+              <tbody>
+                <tr v-for="row in evidenceRows" :key="`${row.event_id}-${row.type}-${row.capture_time}`">
+                  <td>{{ row.capture_time }}</td>
+                  <td>{{ row.event_id }}</td>
+                  <td>{{ row.type }}</td>
+                  <td>{{ row.plate_number || '—' }} / {{ row.plate_color || '—' }}</td>
+                  <td>{{ row.vehicle_type || '—' }}</td>
+                  <td>{{ row.abnormal_reason || '—' }}</td>
+                  <td><button class="secondary" @click="loadEvidenceManifest(row.event_id)" :disabled="busy">manifest</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <pre v-if="evidenceManifestText">{{ evidenceManifestText }}</pre>
+        </section>
         <section class="panel" v-if="logicView">
           <h3>开发者参数</h3>
           <p class="hint">这里集中放算法阈值、调试输出和运行时路径。基础业务参数请只在“用户参数”面板修改。</p>
@@ -681,6 +706,9 @@
           deadLetterQueue: 'event',
           deadLetters: [],
           deadLetterCount: 0,
+          evidenceQuery: '',
+          evidenceRows: [],
+          evidenceManifestText: '',
           inferenceInstances: [],
           inferenceStatusTimer: null,
           inferenceLogTimer: null,
@@ -742,6 +770,7 @@
         this.fetchInferenceStatus();
         this.refreshInferenceLogs();
         this.refreshDeadLetters(true);
+        this.searchEvidence(true);
         this.inferenceStatusTimer = setInterval(() => this.fetchInferenceStatus(), 10000);
         this.inferenceLogTimer = setInterval(() => this.refreshInferenceLogs(true), 15000);
       },
@@ -1245,6 +1274,7 @@
             this.fetchInferenceStatus();
             this.refreshInferenceLogs(true);
             this.refreshDeadLetters(true);
+            this.searchEvidence(true);
             this.status = '配置已切换；如需背景帧请点击“刷新背景帧”';
           } catch (err) {
             this.status = err.message;
@@ -1422,6 +1452,41 @@
             this.status = `已重新入队 ${data.retried || 0} 条`;
             await this.refreshDeadLetters(true);
           } catch (err) {
+            this.status = err.message;
+          } finally {
+            this.busy = false;
+          }
+        },
+        async searchEvidence(silent = false) {
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const query = encodeURIComponent(this.evidenceQuery || '');
+            const res = await fetch(`/evidence/events?key=${key}&query=${query}&limit=100`);
+            if (!res.ok) throw new Error('读取事件证据索引失败');
+            const data = await res.json();
+            this.evidenceRows = data.rows || [];
+            this.evidenceManifestText = '';
+            if (!silent) this.status = `找到 ${this.evidenceRows.length} 条事件阶段记录`;
+          } catch (err) {
+            this.evidenceRows = [];
+            if (!silent) this.status = err.message;
+          }
+        },
+        async loadEvidenceManifest(eventId) {
+          this.busy = true;
+          try {
+            const key = encodeURIComponent(this.activeInferenceKey);
+            const event = encodeURIComponent(eventId || '');
+            const res = await fetch(`/evidence/manifest?key=${key}&event_id=${event}`);
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(body.detail || '读取manifest失败');
+            }
+            const data = await res.json();
+            this.evidenceManifestText = JSON.stringify(data, null, 2);
+            this.status = `已加载 ${eventId} 的证据manifest`;
+          } catch (err) {
+            this.evidenceManifestText = '';
             this.status = err.message;
           } finally {
             this.busy = false;

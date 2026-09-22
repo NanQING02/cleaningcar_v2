@@ -1,4 +1,5 @@
 import json
+import csv
 import tempfile
 import unittest
 from collections import deque
@@ -724,6 +725,37 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(payload["type"], 6)
         self.assertEqual(payload["lane"], "lane-a")
         self.assertFalse(payload["perIdVideoEnabled"])
+
+    def test_event_evidence_manifest_and_index_are_ordered_by_event_id(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=3, uploader=uploader)
+        manager.enable_event_disk = True
+        for frame_idx in range(1, 4):
+            self._update(manager, frame_idx, plate_text="鲁A12345")
+        track_state = manager.tracks[1]
+
+        for event_type, capture_time in ((1, "2026-09-22 10:00:00"), (2, "2026-09-22 10:00:01")):
+            manager._emit_event_core(
+                track_id=1,
+                event_type=event_type,
+                frame_idx=event_type + 10,
+                frame=None,
+                payload={"captureTime": capture_time},
+                track_state=track_state,
+                vehicle_type="car",
+            )
+
+        manifests = list(manager.evidence_root.rglob("manifest.json"))
+        self.assertEqual(len(manifests), 1)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual([item["type"] for item in manifest["stages"]], [1, 2])
+        self.assertEqual([item["order"] for item in manifest["stages"]], [1, 2])
+        self.assertEqual(manifest["eventId"], track_state["session_id"])
+        self.assertFalse(manifest["businessComplete"])
+        with manager.evidence_index_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual([int(row["type"]) for row in rows], [1, 2])
+        self.assertTrue(all(row["event_id"] == track_state["session_id"] for row in rows))
 
     def test_record_tail_frames_only_when_per_id_video_enabled(self):
         manager = self._manager(plate_lock_frames=3)
