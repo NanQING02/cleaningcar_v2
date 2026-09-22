@@ -53,6 +53,7 @@
     .header-link:hover { text-decoration: underline; }
     .subsection { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2a313d; }
     .subsection h4 { margin: 0 0 8px; font-size: 14px; color: #d8deea; }
+    .guardian-alert { margin: 10px 0; padding: 10px 12px; border: 1px solid #a84b4b; border-radius: 6px; background: rgba(168,75,75,0.18); color: #ffb8b8; }
   </style>
 </head>
 <body>
@@ -165,6 +166,11 @@
           <p>上次启动：{{ formatTimestamp(inferenceStatus.last_start) }}</p>
           <p>上次退出：{{ formatExit(inferenceStatus.last_exit) }}</p>
           <p>累计重启：{{ inferenceStatus.restart_count || 0 }}</p>
+          <p v-if="inferenceStatus.next_restart_at">下次自动重启：{{ formatTimestamp(inferenceStatus.next_restart_at) }}</p>
+          <div class="guardian-alert" v-if="inferenceStatus.auto_restart_suspended">
+            自动重启已熔断：10分钟内失败次数达到上限。原因：{{ inferenceStatus.last_restart_reason || '未知' }}。
+            请先查看推理日志，确认问题后点击“启动”或“重启”解除熔断。
+          </div>
           <label>
             <input type="checkbox" v-model="inferenceAutoRestart" @change="setAutoRestart" /> 自动重启
           </label>
@@ -296,6 +302,18 @@
             </label>
             <label>启动宽限（秒）
               <input type="number" min="1" step="1" v-model.number="form.system.heartbeat_startup_grace_seconds" />
+            </label>
+            <label>自动重启窗口最大次数
+              <input type="number" min="0" step="1" v-model.number="form.system.auto_restart_max_attempts" />
+            </label>
+            <label>自动重启统计窗口（秒）
+              <input type="number" min="1" step="1" v-model.number="form.system.auto_restart_window_seconds" />
+            </label>
+            <label>自动重启初始退避（秒）
+              <input type="number" min="0" step="1" v-model.number="form.system.auto_restart_backoff_seconds" />
+            </label>
+            <label>自动重启最大退避（秒）
+              <input type="number" min="0" step="1" v-model.number="form.system.auto_restart_backoff_max_seconds" />
             </label>
             <label>启动标志文件
               <input v-model="form.system.startup_flag_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/started.flag" />
@@ -484,6 +502,10 @@
               heartbeat_timeout_seconds: 30.0,
               progress_timeout_seconds: 90.0,
               heartbeat_startup_grace_seconds: 90.0,
+              auto_restart_max_attempts: 3,
+              auto_restart_window_seconds: 600.0,
+              auto_restart_backoff_seconds: 5.0,
+              auto_restart_backoff_max_seconds: 60.0,
               startup_capture_dir: 'captures/startup',
               manual_capture_dir: 'captures/manual',
               cpu_mask: '',
@@ -549,8 +571,6 @@
               lane_name: '冲洗',
               plate_track_lock_frames: 6,
               event_plate_lock_frames: 6,
-              event_plate_fast_lock_frames: 3,
-              event_plate_fast_speed_threshold: 10.0,
               plate_output_shape_log_once: true,
               default_plate_color: '',
               default_plate_color_conf: 0.0,
@@ -613,7 +633,7 @@
           frameSize: { w: 960, h: 540 },
           debugImageUrl: '',
           debugFrameStatus: '点击获取实时画面以读取最新调试帧',
-          inferenceStatus: { running: false, pid: null, last_start: null, last_exit: null, restart_count: 0 },
+          inferenceStatus: { running: false, pid: null, last_start: null, last_exit: null, restart_count: 0, auto_restart_suspended: false, next_restart_at: null, last_restart_reason: '' },
           inferenceAutoRestart: true,
           inferenceLogs: [],
           inferenceInstances: [],
@@ -633,7 +653,11 @@
           return '流向箭头';
         },
         inferenceStatusText() {
-          return this.inferenceStatus.running ? '运行中' : '已停止';
+          if (this.inferenceStatus.auto_restart_suspended) return '自动重启已熔断';
+          if (this.inferenceStatus.running && this.inferenceStatus.heartbeat && this.inferenceStatus.heartbeat.degraded) return '运行中（读流降级）';
+          if (this.inferenceStatus.running) return '运行中';
+          if (this.inferenceStatus.next_restart_at) return '等待自动重启';
+          return '已停止';
         },
         activeInferenceKey() {
           return this.activeConfig || this.selectedConfig || 'config.json';
@@ -841,6 +865,10 @@
           this.form.system.heartbeat_timeout_seconds = Number(this.form.system.heartbeat_timeout_seconds || 30.0);
           this.form.system.progress_timeout_seconds = Number(this.form.system.progress_timeout_seconds || 90.0);
           this.form.system.heartbeat_startup_grace_seconds = Number(this.form.system.heartbeat_startup_grace_seconds || 90.0);
+          this.form.system.auto_restart_max_attempts = Number(this.form.system.auto_restart_max_attempts ?? 3);
+          this.form.system.auto_restart_window_seconds = Number(this.form.system.auto_restart_window_seconds || 600.0);
+          this.form.system.auto_restart_backoff_seconds = Number(this.form.system.auto_restart_backoff_seconds ?? 5.0);
+          this.form.system.auto_restart_backoff_max_seconds = Number(this.form.system.auto_restart_backoff_max_seconds ?? 60.0);
           this.form.system.startup_capture_dir = this.form.system.startup_capture_dir || 'captures/startup';
           this.form.system.manual_capture_dir = this.form.system.manual_capture_dir || 'captures/manual';
           this.form.system.cpu_mask = this.form.system.cpu_mask || '';
@@ -957,8 +985,6 @@
           this.form.logic.event_trace_queue_size = Number(this.form.logic.event_trace_queue_size || 4096);
           this.form.logic.plate_track_lock_frames = Number(this.form.logic.plate_track_lock_frames || 6);
           this.form.logic.event_plate_lock_frames = Number(this.form.logic.event_plate_lock_frames || 6);
-          this.form.logic.event_plate_fast_lock_frames = Number(this.form.logic.event_plate_fast_lock_frames || 3);
-          this.form.logic.event_plate_fast_speed_threshold = Number(this.form.logic.event_plate_fast_speed_threshold || 10.0);
           this.form.logic.plate_output_shape_log_once = (typeof this.form.logic.plate_output_shape_log_once === 'undefined') ? true : !!this.form.logic.plate_output_shape_log_once;
           this.form.logic.plate_core_mask = this.form.logic.plate_core_mask || '';
           this.form.logic.plate_infer_stride = Number(this.form.logic.plate_infer_stride || 1);
@@ -1048,6 +1074,10 @@
               heartbeat_timeout_seconds: this.form.system.heartbeat_timeout_seconds,
               progress_timeout_seconds: this.form.system.progress_timeout_seconds,
               heartbeat_startup_grace_seconds: this.form.system.heartbeat_startup_grace_seconds,
+              auto_restart_max_attempts: this.form.system.auto_restart_max_attempts,
+              auto_restart_window_seconds: this.form.system.auto_restart_window_seconds,
+              auto_restart_backoff_seconds: this.form.system.auto_restart_backoff_seconds,
+              auto_restart_backoff_max_seconds: this.form.system.auto_restart_backoff_max_seconds,
               startup_capture_dir: this.form.system.startup_capture_dir,
               manual_capture_dir: this.form.system.manual_capture_dir,
               cpu_mask: this.form.system.cpu_mask,
@@ -1102,8 +1132,6 @@
               per_id_video_source: this.form.logic.per_id_video_source,
               plate_track_lock_frames: this.form.logic.plate_track_lock_frames,
               event_plate_lock_frames: this.form.logic.event_plate_lock_frames,
-              event_plate_fast_lock_frames: this.form.logic.event_plate_fast_lock_frames,
-              event_plate_fast_speed_threshold: this.form.logic.event_plate_fast_speed_threshold,
               plate_output_shape_log_once: this.form.logic.plate_output_shape_log_once,
               plate_core_mask: this.form.logic.plate_core_mask,
               plate_infer_stride: this.form.logic.plate_infer_stride,
@@ -1256,8 +1284,14 @@
             const res = await fetch(`/inference/status?key=${key}`);
             if (!res.ok) throw new Error('获取推理状态失败');
             const data = await res.json();
+            const newlySuspended = !!data.auto_restart_suspended && !this.inferenceStatus.auto_restart_suspended;
             this.inferenceStatus = data;
             this.inferenceAutoRestart = !!data.auto_restart;
+            if (newlySuspended) {
+              const reason = data.last_restart_reason || '未知原因';
+              this.status = `推理自动重启已熔断：${reason}`;
+              window.alert(`推理连续启动失败，自动重启已暂停。\n原因：${reason}\n请查看推理日志，处理后手动启动或重启。`);
+            }
           } catch (err) {
             this.status = err.message;
           }

@@ -34,7 +34,7 @@ from .monitoring import monitor_loop
 from .npu_monitor import format_npu_status, npu_status_flags, snapshot_npu_status
 from .plate import PlateTextTracker, is_valid_plate, normalize_plate_candidate_text
 from .resize_accel import resize_backend_name, resize_bgr
-from .runtime_config import load_config
+from .runtime_config import load_config, resolve_runtime_queue_size
 from .runtime_signals import (
     load_json_file,
     resolve_runtime_settings,
@@ -606,15 +606,17 @@ def process_video(path, args):
         flow_vector=(flow_start, flow_end),
         logic_cfg=logic_cfg,
     )
-    anchor_trace_recorded = set()
+    anchor_trace_last_frame = {}
+    anchor_trace_enabled = getattr(event_manager, 'event_trace', None) is not None
 
     def anchor_result_for(track_id, box, frame_idx):
         result = anchor_estimator.estimate(track_id, box, frame_idx)
         if result is None:
             return None
-        trace_key = (int(result.track_id), int(result.frame_idx))
-        if trace_key not in anchor_trace_recorded:
-            anchor_trace_recorded.add(trace_key)
+        trace_track_id = int(result.track_id)
+        trace_frame_idx = int(result.frame_idx)
+        if anchor_trace_enabled and anchor_trace_last_frame.get(trace_track_id) != trace_frame_idx:
+            anchor_trace_last_frame[trace_track_id] = trace_frame_idx
             try:
                 event_manager.trace_record('anchor_update', result.to_dict())
             except Exception:
@@ -775,7 +777,13 @@ def process_video(path, args):
     wash_priority_active = False
     wash_priority_active_tracks = []
     wash_priority_last_change_ts = None
-    task_q = Queue(maxsize=args.queue_size)
+    runtime_queue_size = resolve_runtime_queue_size(source_mode, args.queue_size)
+    if runtime_queue_size != int(args.queue_size):
+        print(
+            f'[realtime] task queue capped configured={args.queue_size} '
+            f'runtime={runtime_queue_size} source_mode={source_mode}'
+        )
+    task_q = Queue(maxsize=runtime_queue_size)
     result_q = Queue()
     dropped_frame_count = 0
     dropped_frame_ids = set()
@@ -2448,6 +2456,11 @@ def process_video(path, args):
                     capture_ts=capture_ts,
                 )
                 anchor_estimator.cleanup(next_frame_to_write, config.get('track_timeout_frames', 60))
+                if anchor_trace_enabled:
+                    trace_cutoff = next_frame_to_write - max(1, int(config.get('track_timeout_frames', 60)))
+                    for trace_track_id, last_trace_frame in list(anchor_trace_last_frame.items()):
+                        if int(last_trace_frame) < trace_cutoff:
+                            anchor_trace_last_frame.pop(trace_track_id, None)
                 t_after_flush = time.perf_counter()
                 cleanup_alias_confirm(next_frame_to_write)
                 t_after_cleanup = time.perf_counter()
@@ -2483,6 +2496,7 @@ def process_video(path, args):
             return True
 
     frame_limit = args.limit if args.limit and args.limit > 0 else None
+    terminal_failure = None
 
     while True:
         _advance_dropped_frames()
@@ -2515,7 +2529,19 @@ def process_video(path, args):
                 _log_decode_open_result('恢复打开', decode_meta, False)
                 reconnect_count += 1
                 if reader_max_reconnect and reconnect_count >= reader_max_reconnect:
-                    print('[reader] max reconnect attempts reached during runtime resume, aborting stream.')
+                    terminal_failure = (
+                        f'main reader reconnect exhausted during runtime resume '
+                        f'after {reconnect_count} attempts'
+                    )
+                    print(f'[reader] {terminal_failure}, aborting stream.')
+                    write_heartbeat(
+                        status='reader_failed',
+                        force=True,
+                        extra={
+                            'failure_reason': terminal_failure,
+                            'reconnect_attempt': reconnect_count,
+                        },
+                    )
                     break
                 time.sleep(reader_reconnect_delay)
                 continue
@@ -2571,7 +2597,17 @@ def process_video(path, args):
                 continue
             _log_decode_open_result('重连', decode_meta, False)
             if reader_max_reconnect and reconnect_count >= reader_max_reconnect:
-                print('[reader] max reconnect attempts reached, aborting stream.')
+                terminal_failure = f'main reader reconnect exhausted after {reconnect_count} attempts'
+                print(f'[reader] {terminal_failure}, aborting stream.')
+                write_heartbeat(
+                    status='reader_failed',
+                    force=True,
+                    extra={
+                        'failure_reason': terminal_failure,
+                        'reconnect_attempt': reconnect_count,
+                        **failure_extra,
+                    },
+                )
                 break
             time.sleep(reader_reconnect_delay)
             continue
@@ -2696,7 +2732,7 @@ def process_video(path, args):
             npu_status = snapshot_npu_status()
             npu_flags = npu_status_flags(npu_status)
             diag_flags = []
-            if dropped_delta > 0 or task_q_size > max(1, args.queue_size // 2) or result_q_size > max(1, args.queue_size // 2):
+            if dropped_delta > 0 or task_q_size > max(1, runtime_queue_size // 2) or result_q_size > max(1, runtime_queue_size // 2):
                 diag_flags.append('pipeline_backpressure')
             if main_reconnect_delta > 0:
                 diag_flags.append('main_reader_reconnect')
@@ -2751,7 +2787,7 @@ def process_video(path, args):
             service_stats = wheel_stats_now.get('_service', {}) if isinstance(wheel_stats_now, dict) else {}
             print(
                 f'[diag] flags={",".join(diag_flags) if diag_flags else "ok"} '
-                f'q=task:{task_q_size}/{args.queue_size},result:{result_q_size},pending:{len(pending)} '
+                f'q=task:{task_q_size}/{runtime_queue_size},result:{result_q_size},pending:{len(pending)} '
                 f'drop=win:{dropped_delta},total:{dropped_frame_count},pending:{len(dropped_frame_ids)} '
                 f'main_reader_reconnect=win:{main_reconnect_delta},total:{reconnect_count} '
                 f'uploads=event:{event_upload_pending},wheel:{wheel_upload_pending} '
@@ -2768,10 +2804,12 @@ def process_video(path, args):
             reader_log_last_reconnect_count = reconnect_count
             reader_log_frames = 0
             reader_log_last_time = now
-        while result_q.qsize() > args.queue_size // 2:
+        while result_q.qsize() > runtime_queue_size // 2:
             drain_results(block=False)
 
-    write_heartbeat(status='stopping', force=True)
+    shutdown_heartbeat_status = 'reader_failed' if terminal_failure else 'stopping'
+    shutdown_heartbeat_extra = {'failure_reason': terminal_failure} if terminal_failure else None
+    write_heartbeat(status=shutdown_heartbeat_status, force=True, extra=shutdown_heartbeat_extra)
     for _ in workers:
         while True:
             try:
@@ -2780,12 +2818,13 @@ def process_video(path, args):
             except Full:
                 drain_results(block=False)
                 poll_runtime_commands(force=True)
-                write_heartbeat(status='stopping', force=True)
+                write_heartbeat(status=shutdown_heartbeat_status, force=True, extra=shutdown_heartbeat_extra)
     task_q.join()
     while finished_workers < len(workers):
         if not drain_results(block=True):
             poll_runtime_commands(force=True)
-            write_heartbeat(status='draining', force=True)
+            drain_status = 'reader_failed' if terminal_failure else 'draining'
+            write_heartbeat(status=drain_status, force=True, extra=shutdown_heartbeat_extra)
 
     cleanup_runtime()
     try:
@@ -2794,8 +2833,12 @@ def process_video(path, args):
         pass
 
     elapsed = time.time() - start
-    write_heartbeat(status='stopped', force=True, extra={'elapsed_seconds': elapsed})
-    _write_metrics(status='stopped', perf_snapshot=last_perf_snapshot)
+    final_status = 'reader_failed' if terminal_failure else 'stopped'
+    final_extra = {'elapsed_seconds': elapsed}
+    if terminal_failure:
+        final_extra['failure_reason'] = terminal_failure
+    write_heartbeat(status=final_status, force=True, extra=final_extra)
+    _write_metrics(status=final_status, perf_snapshot=last_perf_snapshot)
     if total_frames:
         print(f'Video {path}: frames={total_frames} elapsed={elapsed:.2f}s ({total_frames/elapsed:.2f} FPS)')
     agg_frames = sum(w.frames for w in workers)
@@ -2806,3 +2849,5 @@ def process_video(path, args):
         if w.frames:
             rate = w.frames / elapsed
             print(f'Worker {w.idx}: frames={w.frames} infer_ms={w.infer_time*1000/w.frames:.2f} throughput={rate:.2f} FPS')
+    if terminal_failure:
+        raise RuntimeError(terminal_failure)

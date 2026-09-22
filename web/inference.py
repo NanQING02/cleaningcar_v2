@@ -87,6 +87,15 @@ class InferenceManager:
         self.heartbeat_timeout_seconds = 30.0
         self.progress_timeout_seconds = 90.0
         self.heartbeat_startup_grace_seconds = 90.0
+        self.auto_restart_max_attempts = 3
+        self.auto_restart_window_seconds = 600.0
+        self.auto_restart_backoff_seconds = 5.0
+        self.auto_restart_backoff_max_seconds = 60.0
+        self.automatic_restart_times = deque(maxlen=64)
+        self.restart_history = deque(maxlen=32)
+        self.auto_restart_suspended = False
+        self.next_restart_at: Optional[float] = None
+        self.last_restart_reason = ''
         self.last_heartbeat_status: Dict[str, object] = {
             'available': False,
             'healthy': True,
@@ -294,6 +303,7 @@ class InferenceManager:
     def start(self):
         with self.lock:
             self._sync_source_policy_locked()
+            self._reset_restart_guard_locked()
             self.desired = True
             if not self.process or self.process.poll() is not None:
                 self._launch_locked()
@@ -302,12 +312,14 @@ class InferenceManager:
     def stop(self):
         with self.lock:
             self.desired = False
+            self.next_restart_at = None
             self._terminate_locked()
         return self.status()
 
     def restart(self):
         with self.lock:
             self._sync_source_policy_locked()
+            self._reset_restart_guard_locked()
             self.desired = True
             self._terminate_locked()
             self._launch_locked()
@@ -318,6 +330,10 @@ class InferenceManager:
             self.auto_restart = bool(enabled)
             self.auto_restart_user_set = True
             self.single_shot = bool(self.file_source and not self.auto_restart)
+            if self.auto_restart:
+                self._reset_restart_guard_locked()
+            else:
+                self.next_restart_at = None
         self._append_log(f'[guardian] auto_restart set to {enabled}')
 
     def status(self):
@@ -336,6 +352,10 @@ class InferenceManager:
             device_id = self.device_id
             launch_id = self.launch_id
             heartbeat_path = str(self.heartbeat_path) if self.heartbeat_path else ''
+            auto_restart_suspended = self.auto_restart_suspended
+            next_restart_at = self.next_restart_at
+            last_restart_reason = self.last_restart_reason
+            restart_history = list(self.restart_history)
         status = {
             'running': running,
             'pid': pid,
@@ -350,6 +370,10 @@ class InferenceManager:
             'device_id': device_id,
             'launch_id': launch_id,
             'heartbeat_path': heartbeat_path,
+            'auto_restart_suspended': auto_restart_suspended,
+            'next_restart_at': next_restart_at,
+            'last_restart_reason': last_restart_reason,
+            'restart_history': restart_history,
         }
         return status
 
@@ -391,6 +415,68 @@ class InferenceManager:
         if not self.auto_restart_user_set:
             self.auto_restart = not self.file_source
         self.single_shot = bool(self.file_source and not self.auto_restart)
+
+    def _reset_restart_guard_locked(self):
+        self.automatic_restart_times.clear()
+        self.restart_history.clear()
+        self.auto_restart_suspended = False
+        self.next_restart_at = None
+        self.last_restart_reason = ''
+
+    def _schedule_auto_restart_locked(self, reason, now=None):
+        now = time.time() if now is None else float(now)
+        reason = str(reason or 'unknown')
+        cutoff = now - max(1.0, float(self.auto_restart_window_seconds))
+        while self.automatic_restart_times and self.automatic_restart_times[0] < cutoff:
+            self.automatic_restart_times.popleft()
+        max_attempts = max(0, int(self.auto_restart_max_attempts))
+        if max_attempts and len(self.automatic_restart_times) >= max_attempts:
+            self.auto_restart_suspended = True
+            self.next_restart_at = None
+            self.last_restart_reason = reason
+            self.restart_history.append({
+                'time': now,
+                'reason': reason,
+                'action': 'suspended',
+            })
+            self._append_log(
+                f'[guardian] auto restart suspended after {len(self.automatic_restart_times)} '
+                f'attempts in {self.auto_restart_window_seconds:.0f}s reason={reason}'
+            )
+            return False
+        attempt_index = len(self.automatic_restart_times)
+        delay = min(
+            max(0.0, float(self.auto_restart_backoff_seconds)) * (2 ** attempt_index),
+            max(0.0, float(self.auto_restart_backoff_max_seconds)),
+        )
+        self.automatic_restart_times.append(now)
+        self.next_restart_at = now + delay
+        self.last_restart_reason = reason
+        self.restart_history.append({
+            'time': now,
+            'reason': reason,
+            'action': 'scheduled',
+            'delay_seconds': delay,
+            'attempt': len(self.automatic_restart_times),
+        })
+        self._append_log(
+            f'[guardian] auto restart scheduled attempt={len(self.automatic_restart_times)} '
+            f'delay={delay:.1f}s reason={reason}'
+        )
+        return True
+
+    def _process_exit_reason_locked(self, code):
+        reason = f'process_exit:{code}'
+        if not self.heartbeat_path:
+            return reason
+        heartbeat = load_json_file(self.heartbeat_path) or {}
+        runtime_status = str(heartbeat.get('status') or '').strip().lower()
+        failure_reason = str(heartbeat.get('failure_reason') or '').strip()
+        if runtime_status.endswith('failed'):
+            reason = runtime_status
+            if failure_reason:
+                reason = f'{reason}:{failure_reason}'
+        return reason
 
     @staticmethod
     def _coerce_float(value) -> Optional[float]:
@@ -452,9 +538,11 @@ class InferenceManager:
         try:
             cfg = ConfigManager(self.config_path)
             runtime = resolve_runtime_settings(cfg.data, self.config_path.parent, namespace_hint=self.config_path.stem)
+            system_cfg = cfg.system
         except ConfigError as exc:
             self._append_log(f'[guardian] config error: {exc}')
             runtime = resolve_runtime_settings({}, self.config_path.parent, namespace_hint=self.config_path.stem)
+            system_cfg = {}
         self.heartbeat_path = Path(runtime['heartbeat_path']) if runtime.get('heartbeat_path') else None
         self.startup_flag_path = Path(runtime['startup_flag_path']) if runtime.get('startup_flag_path') else None
         self.command_dir = Path(runtime['command_dir']) if runtime.get('command_dir') else None
@@ -464,6 +552,22 @@ class InferenceManager:
         self.progress_timeout_seconds = float(runtime.get('progress_timeout_seconds', 90.0) or 90.0)
         self.heartbeat_startup_grace_seconds = float(
             runtime.get('heartbeat_startup_grace_seconds', self.progress_timeout_seconds) or self.progress_timeout_seconds
+        )
+        self.auto_restart_max_attempts = max(
+            0,
+            int(system_cfg.get('auto_restart_max_attempts', 3) or 0),
+        )
+        self.auto_restart_window_seconds = max(
+            1.0,
+            float(system_cfg.get('auto_restart_window_seconds', 600.0) or 600.0),
+        )
+        self.auto_restart_backoff_seconds = max(
+            0.0,
+            float(system_cfg.get('auto_restart_backoff_seconds', 5.0) or 0.0),
+        )
+        self.auto_restart_backoff_max_seconds = max(
+            self.auto_restart_backoff_seconds,
+            float(system_cfg.get('auto_restart_backoff_max_seconds', 60.0) or 60.0),
         )
 
     def _terminate_stale_runtime_process_locked(self):
@@ -533,6 +637,8 @@ class InferenceManager:
 
         heartbeat = load_json_file(self.heartbeat_path) or {}
         info['heartbeat'] = heartbeat
+        runtime_status = str(heartbeat.get('status') or '').strip().lower()
+        info['runtime_status'] = runtime_status
 
         heartbeat_ts = self._coerce_float(heartbeat.get('timestamp'))
         if heartbeat_ts is None and stat is not None:
@@ -585,6 +691,10 @@ class InferenceManager:
             progress_age = max(0.0, now - last_progress_ts)
             info['progress_age_seconds'] = progress_age
             if not startup_in_grace and progress_age > self.progress_timeout_seconds:
+                if runtime_status in {'waiting_reader', 'reader_reconnect', 'reader_reopen'}:
+                    info['degraded'] = True
+                    info['reason'] = runtime_status
+                    return info
                 info['healthy'] = False
                 info['reason'] = 'progress_stale'
                 return info
@@ -723,6 +833,7 @@ class InferenceManager:
 
     def _monitor_loop(self):
         while not self.shutdown.is_set():
+            now = time.time()
             with self.lock:
                 self._sync_source_policy_locked()
                 desired = self.desired
@@ -732,7 +843,12 @@ class InferenceManager:
                 should_launch = False
                 with self.lock:
                     if not self.process:
-                        should_launch = True
+                        should_launch = bool(
+                            auto_restart
+                            and not self.auto_restart_suspended
+                            and self.next_restart_at is not None
+                            and now >= self.next_restart_at
+                        )
                     else:
                         code = self.process.poll()
                         if code is not None:
@@ -744,8 +860,11 @@ class InferenceManager:
                                 self.desired = False
                                 self._append_log('[guardian] 本地文件源已跑完一遍，自动重启未开启，等待手动启动')
                                 self.single_shot = False
-                            else:
-                                should_launch = auto_restart
+                            elif auto_restart:
+                                self._schedule_auto_restart_locked(
+                                    self._process_exit_reason_locked(code),
+                                    now=now,
+                                )
                         else:
                             heartbeat = self._check_heartbeat_locked()
                             self.last_heartbeat_status = heartbeat
@@ -757,15 +876,28 @@ class InferenceManager:
                                 if file_source and not auto_restart:
                                     self.desired = False
                                     self.single_shot = False
-                                else:
-                                    should_launch = auto_restart
+                                elif auto_restart:
+                                    self._schedule_auto_restart_locked(f'heartbeat:{reason}', now=now)
                 if should_launch:
                     try:
                         with self.lock:
                             self._launch_locked()
+                            self.next_restart_at = None
+                            self.restart_history.append({
+                                'time': time.time(),
+                                'reason': self.last_restart_reason,
+                                'action': 'launched',
+                                'pid': self.process.pid if self.process else None,
+                            })
                     except Exception as exc:
                         self._append_log(f'[guardian] failed to start inference: {exc}')
-                        time.sleep(5)
+                        with self.lock:
+                            self.next_restart_at = None
+                            if self.auto_restart and not self.auto_restart_suspended:
+                                self._schedule_auto_restart_locked(
+                                    f'launch_failed:{type(exc).__name__}',
+                                    now=time.time(),
+                                )
             else:
                 with self.lock:
                     if self.process:

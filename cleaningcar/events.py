@@ -4,7 +4,7 @@ import json
 import threading
 import time
 import urllib.request
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime
 from math import ceil, hypot
 from pathlib import Path
@@ -225,14 +225,6 @@ class EventManager:
             1,
             int(self.logic.get('event_plate_lock_frames', self.logic.get('plate_lock_frames', 6))),
         )
-        self.event_plate_fast_lock_frames = max(
-            1,
-            int(self.logic.get('event_plate_fast_lock_frames', 3)),
-        )
-        self.event_plate_fast_speed_threshold = max(
-            0.0,
-            float(self.logic.get('event_plate_fast_speed_threshold', 10.0)),
-        )
         self.plate_text_max_streak_gap_frames = max(
             1,
             int(self.logic.get('plate_text_max_streak_gap_frames', 2)),
@@ -398,7 +390,11 @@ class EventManager:
             if not self.upload_log_sent.exists():
                 with self.upload_log_sent.open('w', encoding='utf-8') as f:
                     f.write('capture_time,id,type,payload\n')
-        self.frame_timing = {}
+        self.frame_timing_max_entries = max(
+            128,
+            min(10000, int(self.logic.get('frame_timing_max_entries', 4096) or 4096)),
+        )
+        self.frame_timing = OrderedDict()
         self.log_throttler = WindowedLogThrottler()
         self.latency_log_window_seconds = float(self.logic.get('latency_log_window_seconds', 10.0))
         self._capture_base64_cache = {}
@@ -427,7 +423,11 @@ class EventManager:
         if capture_ts is None or infer_ts is None:
             return
         try:
-            self.frame_timing[int(frame_idx)] = (float(capture_ts), float(infer_ts))
+            normalized_frame = int(frame_idx)
+            self.frame_timing[normalized_frame] = (float(capture_ts), float(infer_ts))
+            self.frame_timing.move_to_end(normalized_frame)
+            while len(self.frame_timing) > self.frame_timing_max_entries:
+                self.frame_timing.popitem(last=False)
         except Exception:
             return
 
@@ -2435,6 +2435,8 @@ class EventManager:
         metrics['active_tracks'] = len(self.tracks)
         metrics['upload_buffered'] = sum(len(v) for v in self.upload_buffer.values())
         metrics['capture_base64_cached'] = len(self._capture_base64_cache)
+        metrics['frame_timing_entries'] = len(self.frame_timing)
+        metrics['frame_timing_limit'] = self.frame_timing_max_entries
         return metrics
 
     def _build_api_payload(self, event, track_state, frame_idx):

@@ -60,6 +60,16 @@ def load_config(path):
     return merged
 
 
+def resolve_runtime_queue_size(source_mode, configured_size):
+    try:
+        configured = max(1, int(configured_size or 1))
+    except (TypeError, ValueError):
+        configured = 1
+    if str(source_mode or '').strip().lower() == 'camera':
+        return min(configured, 8)
+    return configured
+
+
 def apply_cli_overrides(args, config):
     defaults = getattr(args, '_defaults', None)
 

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from config_manager import ConfigManager, _derive_wheel_photo_url
+from cleaningcar.runtime_config import resolve_runtime_queue_size
 from web.config_tiers import CONFIG_FIELD_REGISTRY
 
 
@@ -134,6 +135,13 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.data["event_capture_quality"], 70)
 
             self.assertEqual(manager.video["reader_frame_timeout_seconds"], 5.0)
+            self.assertEqual(manager.data["reader_fail_threshold"], 5)
+            self.assertEqual(manager.data["reader_reconnect_delay"], 2.0)
+            self.assertEqual(manager.data["reader_max_reconnect"], 20)
+            self.assertEqual(manager.system["auto_restart_max_attempts"], 3)
+            self.assertEqual(manager.system["auto_restart_window_seconds"], 600.0)
+            self.assertEqual(manager.system["auto_restart_backoff_seconds"], 5.0)
+            self.assertEqual(manager.system["auto_restart_backoff_max_seconds"], 60.0)
             self.assertEqual(manager.logic["track_lost_grace_seconds"], 4.0)
             self.assertNotIn("type34_min_interval_frames", manager.logic)
             self.assertNotIn("water_window_min_hits", manager.logic)
@@ -184,6 +192,10 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertIn("logic.event_trace_enabled", field_paths)
         self.assertIn("logic.event_trace_dir", field_paths)
         self.assertIn("logic.event_trace_queue_size", field_paths)
+        self.assertIn("system.auto_restart_max_attempts", field_paths)
+        self.assertIn("system.auto_restart_window_seconds", field_paths)
+        self.assertIn("system.auto_restart_backoff_seconds", field_paths)
+        self.assertIn("system.auto_restart_backoff_max_seconds", field_paths)
         self.assertNotIn("logic.anchor_mode", field_paths)
         self.assertIn("zones.direction_reference_edge", field_paths)
         self.assertIn("logic.anchor_shadow_compare", field_paths)
@@ -203,6 +215,12 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         ):
             self.assertNotIn(path, field_paths)
 
+    def test_realtime_queue_is_capped_but_file_queue_keeps_configured_size(self):
+        self.assertEqual(resolve_runtime_queue_size("camera", 32), 8)
+        self.assertEqual(resolve_runtime_queue_size("camera", 4), 4)
+        self.assertEqual(resolve_runtime_queue_size("file", 32), 32)
+        self.assertEqual(resolve_runtime_queue_size("auto", 0), 1)
+
     def test_config_manager_defaults_simplified_event_controls(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
@@ -221,7 +239,8 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             self.assertEqual(manager.logic["plate_track_lock_frames"], 6)
             self.assertEqual(manager.logic["event_plate_lock_frames"], 6)
-            self.assertEqual(manager.logic["event_plate_fast_lock_frames"], 3)
+            self.assertNotIn("event_plate_fast_lock_frames", manager.logic)
+            self.assertNotIn("event_plate_fast_speed_threshold", manager.logic)
             self.assertTrue(manager.logic["plate_output_shape_log_once"])
             self.assertEqual(manager.logic["shadow_plate_pool"]["text_window_frames"], 50)
             self.assertEqual(manager.logic["shadow_plate_pool"]["color_min_confidence"], 0.70)

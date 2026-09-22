@@ -96,8 +96,6 @@ class EventManagerPlateLockingTests(unittest.TestCase):
     def test_initial_plate_lock_always_uses_six_hits(self):
         manager = self._manager(plate_lock_frames=6)
         manager.event_plate_lock_frames = 6
-        manager.event_plate_fast_lock_frames = 3
-        manager.event_plate_fast_speed_threshold = 10.0
 
         self.assertEqual(manager._event_plate_lock_required_hits({'speed_buf': [1.0, 3.0]}), 6)
         self.assertEqual(manager._event_plate_lock_required_hits({'speed_buf': [36.0, 42.0]}), 6)

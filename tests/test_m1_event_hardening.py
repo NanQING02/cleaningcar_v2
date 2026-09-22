@@ -233,6 +233,17 @@ class M1EventHardeningTests(unittest.TestCase):
         self.assertIn(5, manager.tracks[1]['events'])
         self.assertIn('TRACK_LOST_IN_ZONE_A_TIMEOUT', manager.tracks[1]['abnormal_reasons'])
 
+    def test_frame_timing_cache_is_bounded_to_recent_entries(self):
+        manager = self._manager()
+        manager.frame_timing_max_entries = 3
+
+        for frame_idx in range(1, 6):
+            manager.record_frame_timing(frame_idx, 100.0 + frame_idx, 100.1 + frame_idx)
+
+        self.assertEqual(list(manager.frame_timing.keys()), [3, 4, 5])
+        self.assertIsNone(manager._capture_timestamp(1))
+        self.assertEqual(manager._capture_timestamp(5), 105.0)
+
     def test_verified_plate_handoff_reuses_lost_lifecycle_event_id(self):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
