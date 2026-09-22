@@ -25,7 +25,7 @@ def _install_fake_rknn():
 _install_fake_rknn()
 
 from cleaningcar.constants import LICENSE_CLASS  # noqa: E402
-from cleaningcar.worker import DetectWorker  # noqa: E402
+from cleaningcar.worker import DetectWorker, should_copy_draw_frame  # noqa: E402
 
 
 class _FakeRK:
@@ -123,6 +123,7 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         postprocessor=None,
         dual_lpr=None,
         plate_requires_vehicle=False,
+        copy_draw_frame=False,
     ):
         worker = DetectWorker.__new__(DetectWorker)
         worker.idx = 0
@@ -138,6 +139,7 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         worker.dual_lpr = dual_lpr or _FakeDualLpr()
         worker.plate_infer_stride = 1
         worker.plate_requires_vehicle = plate_requires_vehicle
+        worker.copy_draw_frame = copy_draw_frame
         worker.frames = 0
         worker.infer_time = 0.0
         return worker
@@ -169,6 +171,24 @@ class WorkerPlateColorConfTests(unittest.TestCase):
 
         _, _, frame_out, _, _ = worker.result_q.get_nowait()
         self.assertTrue(np.array_equal(frame_out, frame))
+        self.assertIs(frame_out, frame)
+
+    def test_worker_copies_frame_only_for_annotated_recording(self):
+        worker = self._build_worker(copy_draw_frame=True)
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        worker.task_q.put((0, frame))
+        worker.task_q.put(None)
+
+        worker.run()
+
+        _, _, frame_out, _, _ = worker.result_q.get_nowait()
+        self.assertTrue(np.array_equal(frame_out, frame))
+        self.assertIsNot(frame_out, frame)
+
+    def test_draw_frame_copy_policy_follows_debug_video_selection(self):
+        self.assertFalse(should_copy_draw_frame({}))
+        self.assertFalse(should_copy_draw_frame({"enable_per_id_video": True, "per_id_video_source": "raw"}))
+        self.assertTrue(should_copy_draw_frame({"enable_per_id_video": True, "per_id_video_source": "annotated"}))
 
     def test_worker_reports_empty_result_and_finishes_queue_when_frame_fails(self):
         worker = self._build_worker(rk=_FailingRK())

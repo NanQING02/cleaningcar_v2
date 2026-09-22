@@ -85,6 +85,7 @@
 - 当前只保留单车视频留存开关 `logic.enable_per_id_video`
 - 单车视频仅使用 `FFmpeg` 硬编写出；FFmpeg 硬编不可用时不保存该段单车视频
 - 单车录像画面只由 `logic.per_id_video_source` 控制：`annotated` 写完整调试帧，`raw` 写干净原始帧，`auto` 为兼容值并按 `raw` 处理
+- 选择 `raw`/`auto` 或关闭单车录像时，worker直接复用原帧，不再逐帧复制1080p画面；只有 `annotated` 调试录像需要独立副本，避免画框污染原视频
 - `annotated` 模式会统一启用车辆框、车牌框/关键点、Zone、轨迹状态、方向、H/D/L 锚点、水流框和双模型车牌结果绘制，不再由多个 `debug_*` 参数分别拼装 per-id 画面
 - `logic.track_lost_grace_seconds=4.0` 按视频源 FPS 换算锚点消失确认与 tracker 丢失保留帧数；25 FPS 时为100帧。连续4秒没有可用锚点后触发 `type=5`，Zone A 内消失会标记异常
 - `logic.min_track_frames_for_type1=5`：车辆在 Zone A 内连续稳定5帧后触发 `type=1`；若先确认进入 Zone B，会严格按 `type1 -> type2` 顺序补齐

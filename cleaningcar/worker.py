@@ -14,6 +14,14 @@ from .fp_detect import FpModelPostprocessor
 from .plate_lpr import DualPlateRecognizer
 
 
+def should_copy_draw_frame(logic_cfg=None):
+    logic_cfg = logic_cfg or {}
+    if not bool(logic_cfg.get('enable_per_id_video', False)):
+        return False
+    source = str(logic_cfg.get('per_id_video_source', 'auto') or 'auto').strip().lower()
+    return source in {'annotated', 'draw', 'debug'}
+
+
 class DetectWorker(threading.Thread):
     def __init__(self, idx, args, core_mask, task_q, result_q, plate_core_mask=None):
         super().__init__(daemon=True)
@@ -26,6 +34,7 @@ class DetectWorker(threading.Thread):
         self.rk = None
         self.dual_lpr = None
         logic_cfg = ((getattr(args, "_config", {}) or {}).get("logic", {}) or {})
+        self.copy_draw_frame = should_copy_draw_frame(logic_cfg)
         plate_output_shape_log_once = bool(logic_cfg.get("plate_output_shape_log_once", True))
 
         try:
@@ -73,7 +82,8 @@ class DetectWorker(threading.Thread):
             print(
                 f"plate_infer_stride={self.plate_infer_stride} "
                 f"plate_core_mask={self.plate_core_mask} "
-                f"plate_requires_vehicle={self.plate_requires_vehicle}"
+                f"plate_requires_vehicle={self.plate_requires_vehicle} "
+                f"copy_draw_frame={self.copy_draw_frame}"
             )
 
         self.frames = 0
@@ -130,7 +140,7 @@ class DetectWorker(threading.Thread):
                 csv_rows = []
                 det_payload = []
                 base_frame = frame
-                draw_frame = frame.copy()
+                draw_frame = frame.copy() if self.copy_draw_frame else frame
                 has_vehicle_candidates = False
                 primary_boxes = np.empty((0, 4), dtype=np.float32)
                 primary_scores = np.empty((0,), dtype=np.float32)
