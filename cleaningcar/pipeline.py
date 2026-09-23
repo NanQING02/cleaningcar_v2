@@ -1421,6 +1421,7 @@ def process_video(path, args):
             'perf': perf_snapshot or last_perf_snapshot,
             'per_id_video': _snapshot_per_id_video_metrics(),
             'events': event_manager.snapshot_metrics() if hasattr(event_manager, 'snapshot_metrics') else {},
+            'tracker': vehicle_tracker.snapshot_stats() if hasattr(vehicle_tracker, 'snapshot_stats') else {},
             'wheel': wheel_service.snapshot_stats() if wheel_service is not None else {},
             'process': {
                 'rss_kb': _process_rss_kb(),

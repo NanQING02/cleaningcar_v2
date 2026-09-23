@@ -25,6 +25,7 @@ class BusinessLifecycle:
     last_motion_direction: str = 'unknown'
     lost_ts: float = 0.0
     closed: bool = False
+    closed_ts: float = 0.0
 
 
 class BusinessLifecycleManager:
@@ -117,12 +118,45 @@ class BusinessLifecycleManager:
         lifecycle.lost_ts = time() if capture_ts is None else float(capture_ts)
         return lifecycle
 
-    def finalize(self, tracker_id):
+    def finalize(self, tracker_id, capture_ts=None):
         lifecycle = self.get(tracker_id)
         if lifecycle is not None:
+            if not lifecycle.closed or lifecycle.closed_ts <= 0.0:
+                lifecycle.closed_ts = time() if capture_ts is None else float(capture_ts)
             lifecycle.closed = True
             lifecycle.active_tracker_id = 0
         return lifecycle
+
+    def cleanup(self, capture_ts=None, closed_retention_seconds=60.0):
+        now = time() if capture_ts is None else float(capture_ts)
+        retention = max(self.grace_seconds, float(closed_retention_seconds))
+        expired_event_ids = [
+            event_id
+            for event_id, lifecycle in self.by_event_id.items()
+            if (
+                lifecycle.closed
+                and lifecycle.closed_ts > 0.0
+                and now - lifecycle.closed_ts >= retention
+            )
+        ]
+        for event_id in expired_event_ids:
+            lifecycle = self.by_event_id.pop(event_id, None)
+            if lifecycle is None:
+                continue
+            for tracker_id in lifecycle.tracker_ids:
+                if self.by_tracker_id.get(int(tracker_id)) == event_id:
+                    self.by_tracker_id.pop(int(tracker_id), None)
+        return len(expired_event_ids)
+
+    def snapshot(self):
+        lifecycles = list(self.by_event_id.values())
+        return {
+            'total': len(lifecycles),
+            'active': sum(1 for item in lifecycles if not item.closed and item.active_tracker_id),
+            'waiting': sum(1 for item in lifecycles if not item.closed and not item.active_tracker_id),
+            'closed_retained': sum(1 for item in lifecycles if item.closed),
+            'tracker_mappings': len(self.by_tracker_id),
+        }
 
     def is_waiting(self, tracker_id, capture_ts):
         lifecycle = self.get(tracker_id)

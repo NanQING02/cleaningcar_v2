@@ -136,14 +136,18 @@ def main():
     if args.limit > 0:
         command.extend(['--limit', str(args.limit)])
     log_path = output_dir / 'inference.log'
-    samples = []
+    samples_path = output_dir / 'samples.jsonl'
+    sample_count = 0
+    all_rss_sum_kb = 0.0
+    steady_sample_count = 0
+    steady_rss_sum_kb = 0.0
     peak_rss_kb = 0
     peak_hwm_kb = 0
     peak_threads = 0
     min_available_kb = None
     started = time.time()
     clock_ticks = max(1, int(os.sysconf(os.sysconf_names['SC_CLK_TCK'])))
-    with log_path.open('w', encoding='utf-8') as log_handle:
+    with log_path.open('w', encoding='utf-8') as log_handle, samples_path.open('w', encoding='utf-8') as sample_handle:
         proc = subprocess.Popen(
             command,
             cwd=str(root),
@@ -161,12 +165,20 @@ def main():
             peak_hwm_kb = max(peak_hwm_kb, snapshot['hwm_kb'])
             peak_threads = max(peak_threads, snapshot['threads'])
             min_available_kb = mem_available if min_available_kb is None else min(min_available_kb, mem_available)
-            samples.append({
+            sample = {
                 'elapsed_seconds': round(elapsed, 3),
                 'rss_kb': snapshot['rss_kb'],
                 'threads': snapshot['threads'],
                 'mem_available_kb': mem_available,
-            })
+            }
+            sample_handle.write(json.dumps(sample, ensure_ascii=False) + '\n')
+            sample_count += 1
+            all_rss_sum_kb += float(snapshot['rss_kb'])
+            if elapsed >= max(0.0, float(args.warmup_seconds)):
+                steady_sample_count += 1
+                steady_rss_sum_kb += float(snapshot['rss_kb'])
+            if sample_count % 20 == 0:
+                sample_handle.flush()
             if args.duration > 0.0 and elapsed >= float(args.duration):
                 proc.terminate()
                 try:
@@ -181,16 +193,12 @@ def main():
     log_text = log_path.read_text(encoding='utf-8', errors='replace')
     frame_match = re.findall(r'Video .* frames=([0-9]+) elapsed=([0-9.]+)s \(([0-9.]+) FPS\)', log_text)
     dropped_matches = re.findall(r'drop=win:[0-9]+,total:([0-9]+)', log_text)
-    steady_samples = [
-        item for item in samples
-        if float(item.get('elapsed_seconds', 0.0)) >= max(0.0, float(args.warmup_seconds))
-    ]
-    if not steady_samples:
-        steady_samples = samples
-    steady_average_rss_mb = (
-        sum(float(item.get('rss_kb', 0)) for item in steady_samples) / len(steady_samples) / 1024.0
-        if steady_samples else 0.0
-    )
+    if steady_sample_count > 0:
+        steady_average_rss_mb = steady_rss_sum_kb / steady_sample_count / 1024.0
+    elif sample_count > 0:
+        steady_average_rss_mb = all_rss_sum_kb / sample_count / 1024.0
+    else:
+        steady_average_rss_mb = 0.0
     result = {
         'label': args.label,
         'return_code': return_code,
@@ -204,12 +212,13 @@ def main():
         'min_system_available_mb': round((min_available_kb or 0) / 1024.0, 2),
         'video_summary': frame_match[-1] if frame_match else None,
         'dropped_frames_total': int(dropped_matches[-1]) if dropped_matches else 0,
-        'samples': samples,
+        'sample_count': sample_count,
+        'samples_path': str(samples_path),
         'log_path': str(log_path),
     }
     result_path = output_dir / 'result.json'
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(json.dumps({key: value for key, value in result.items() if key != 'samples'}, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     raise SystemExit(return_code)
 
 

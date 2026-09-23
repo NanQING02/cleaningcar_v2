@@ -122,3 +122,23 @@ class BusinessLifecycleManagerTests(unittest.TestCase):
         self.assertEqual(manager.find_waiting_lifecycles('car', 108), [car])
         self.assertEqual(manager.find_waiting_lifecycles('car', 110), [])
         self.assertNotIn(truck, manager.find_waiting_lifecycles('car', 108))
+
+    def test_closed_lifecycles_are_pruned_after_retention_window(self):
+        manager = BusinessLifecycleManager('cam', grace_seconds=8)
+        lifecycle = manager.create(1, 'car', capture_ts=100)
+        manager.handoff(manager.mark_lost(1, capture_ts=101), 2, 102)
+        manager.finalize(2, capture_ts=110)
+
+        self.assertEqual(manager.cleanup(capture_ts=169, closed_retention_seconds=60), 0)
+        self.assertIs(manager.get(1), lifecycle)
+        self.assertEqual(manager.cleanup(capture_ts=170, closed_retention_seconds=60), 1)
+        self.assertIsNone(manager.get(1))
+        self.assertIsNone(manager.get(2))
+        self.assertEqual(manager.snapshot()['total'], 0)
+
+    def test_cleanup_keeps_active_lifecycle(self):
+        manager = BusinessLifecycleManager('cam', grace_seconds=8)
+        manager.create(1, 'car', capture_ts=100)
+
+        self.assertEqual(manager.cleanup(capture_ts=10000, closed_retention_seconds=60), 0)
+        self.assertEqual(manager.snapshot()['active'], 1)

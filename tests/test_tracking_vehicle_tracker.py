@@ -48,6 +48,25 @@ class VehicleTrackerTests(unittest.TestCase):
         self.assertNotEqual(ids_f3[0], first_id)
         self.assertGreater(ids_f3[0], first_id)
 
+    def test_bytetrack_removed_history_is_bounded(self):
+        tracker = VehicleTracker(iou_thresh=0.3, max_age=1, center_gate_ratio=0.0)
+
+        for frame_idx in range(1, 400):
+            x1 = float(frame_idx * 1000)
+            tracker.update(
+                frame_idx,
+                [{"box": [x1, 0.0, x1 + 20.0, 20.0], "score": 0.95, "cls": 0}],
+            )
+        tracker.update(400, [])
+        tracker.update(401, [])
+
+        self.assertLessEqual(
+            len(tracker._tracker.removed_stracks),
+            tracker._tracker.removed_history_size,
+        )
+        stats = tracker.snapshot_stats()
+        self.assertLessEqual(stats['removed_retained'], stats['removed_limit'])
+
 
 if __name__ == "__main__":
     unittest.main()

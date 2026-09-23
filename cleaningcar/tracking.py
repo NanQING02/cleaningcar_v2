@@ -256,6 +256,7 @@ class ByteTrackTracker:
         self.tracked_stracks = []
         self.lost_stracks = []
         self.removed_stracks = []
+        self.removed_history_size = 128
 
     def _normalize_frame_id(self, frame_idx):
         try:
@@ -551,6 +552,8 @@ class ByteTrackTracker:
         self.lost_stracks = self._sub_stracks(self.lost_stracks, removed_stracks)
 
         self.removed_stracks = self._joint_stracks(self.removed_stracks, removed_stracks)
+        if len(self.removed_stracks) > self.removed_history_size:
+            self.removed_stracks = self.removed_stracks[-self.removed_history_size:]
         self.tracked_stracks, self.lost_stracks = self._remove_duplicate_stracks(
             self.tracked_stracks, self.lost_stracks
         )
@@ -717,3 +720,22 @@ class VehicleTracker:
 
     def get_retained_track_ids(self):
         return self._tracker.get_retained_track_ids()
+
+    def snapshot_stats(self):
+        if self.impl == 'bytetrack':
+            return {
+                'impl': self.impl,
+                'tracked': len(self._tracker.tracked_stracks),
+                'lost': len(self._tracker.lost_stracks),
+                'removed_retained': len(self._tracker.removed_stracks),
+                'removed_limit': int(self._tracker.removed_history_size),
+                'next_id': int(self._tracker.next_id),
+            }
+        return {
+            'impl': self.impl,
+            'tracked': len(self._tracker.tracks),
+            'lost': 0,
+            'removed_retained': 0,
+            'removed_limit': 0,
+            'next_id': int(self._tracker.next_id),
+        }

@@ -351,6 +351,12 @@ class EventManager:
             self.camera_id,
             grace_seconds=float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0),
         )
+        self.lifecycle_closed_retention_seconds = max(
+            60.0,
+            float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0) * 2.0,
+        )
+        self.lifecycle_cleanup_interval_seconds = 10.0
+        self.lifecycle_last_cleanup_ts = 0.0
         self.track_lost_grace_seconds = max(
             0.0,
             float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0),
@@ -1515,7 +1521,15 @@ class EventManager:
             lifecycle = self.lifecycle_manager.get(tid)
             key = lifecycle.event_id if lifecycle is not None else f'{self.camera_id}_{tid}'
             self.upload_buffer.pop(key, None)
+            self.upload_qualified.discard(key)
             self.tracks.pop(tid, None)
+        cleanup_ts = capture_ts if capture_ts is not None else time.time()
+        if cleanup_ts - self.lifecycle_last_cleanup_ts >= self.lifecycle_cleanup_interval_seconds:
+            self.lifecycle_manager.cleanup(
+                capture_ts=cleanup_ts,
+                closed_retention_seconds=self.lifecycle_closed_retention_seconds,
+            )
+            self.lifecycle_last_cleanup_ts = cleanup_ts
 
     def emit_event(self, track_id, event_type, frame_idx, frame, payload, track_state):
         if event_type not in self.allowed_events:
@@ -2740,6 +2754,8 @@ class EventManager:
         metrics['capture_base64_cached'] = len(self._capture_base64_cache)
         metrics['frame_timing_entries'] = len(self.frame_timing)
         metrics['frame_timing_limit'] = self.frame_timing_max_entries
+        metrics['upload_qualified'] = len(self.upload_qualified)
+        metrics['lifecycles'] = self.lifecycle_manager.snapshot()
         return metrics
 
     def _build_api_payload(self, event, track_state, frame_idx):
