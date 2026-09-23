@@ -141,7 +141,7 @@ run_zone_detect.py
 - `logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - `wheel.enabled=true`
 - `wheel.event_driven=true`
-- `wheel.target_fps=5.0`
+- `wheel.reader_idle_fps=5.0`（推理未激活时 reader 低频保留新鲜帧，激活后全帧率；reader 常开不再提供事件驱动启停开关）
 - `system.api.capture_mode=path`
 
 ## 运行口径

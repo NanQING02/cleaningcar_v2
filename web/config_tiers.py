@@ -70,7 +70,6 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "wheel.model", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮模型路径"},
     {"path": "wheel.classes", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮分类标签"},
     {"path": "wheel.event_driven", "tier": TIER_DEVELOPER, "group": "wheel", "label": "事件驱动车轮推理"},
-    {"path": "wheel.reader_event_driven", "tier": TIER_DEVELOPER, "group": "wheel", "label": "事件驱动车轮拉流"},
     {"path": "wheel.reader_idle_fps", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮空闲拉流 FPS"},
     {"path": "wheel.ignore_broken_rtp_info", "tier": TIER_DEVELOPER, "group": "wheel", "label": "忽略异常 RTP-Info 基准"},
     {"path": "wheel.target_fps", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮目标 FPS"},

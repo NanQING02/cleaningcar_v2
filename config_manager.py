@@ -190,11 +190,9 @@ class ConfigManager:
             wheel['event_driven'] = event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
         else:
             wheel['event_driven'] = bool(event_driven)
-        reader_event_driven = wheel.get('reader_event_driven', False)
-        if isinstance(reader_event_driven, str):
-            wheel['reader_event_driven'] = reader_event_driven.strip().lower() in {'1', 'true', 'yes', 'on'}
-        else:
-            wheel['reader_event_driven'] = bool(reader_event_driven)
+        # reader_event_driven已移除：reader常开是既定口径（保证连接稳定与照片即时性），
+        # 空闲降载由reader_idle_fps实现；残留配置字段直接丢弃
+        wheel.pop('reader_event_driven', None)
         ignore_broken_rtp_info = wheel.get('ignore_broken_rtp_info', True)
         if isinstance(ignore_broken_rtp_info, str):
             wheel['ignore_broken_rtp_info'] = ignore_broken_rtp_info.strip().lower() in {'1', 'true', 'yes', 'on'}

@@ -137,7 +137,7 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - `wheel.left_source` / `wheel.right_source`
   - 左右车轮视频源
 - `wheel.target_fps`
-  - 每路非活动状态节流推理频率；`wheel.event_driven=true` 且无 Zone A 活跃轨迹时，车轮 processor 暂停推理，reader 仍持续拉流
+  - 每路非活动状态节流推理频率；注意 `wheel.event_driven=true`（当前生产配置）时车轮 processor 在无活跃轨迹期间整体暂停，该值仅在 `event_driven=false` 模式下对非活动期推理起节流作用
 - `wheel.active_target_fps`
   - 主轨迹进入/经过 Zone A 后的车轮推理频率；`0` 表示活动窗口内不额外节流，只受模型推理耗时限制
 - `wheel.classes`
