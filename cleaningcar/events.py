@@ -219,6 +219,7 @@ class EventManager:
         session_id='',
         wheel_photo_bucket_seconds=0.5,
         wheel_photo_min_score=0.3,
+        wheel_photo_history_max_buckets=20,
     ):
         self.config = config
         self.logic = config.get('logic', {})
@@ -363,6 +364,7 @@ class EventManager:
         )
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
+        self.wheel_photo_history_max_buckets = max(1, int(wheel_photo_history_max_buckets))
         wheel_cfg = config.get('wheel', {}) or {}
         try:
             self.wheel_bind_pre_start_seconds = max(0.0, float(wheel_cfg.get('bind_pre_start_seconds', 3.0)))
@@ -3535,8 +3537,10 @@ class EventManager:
             'capture_ts': float(candidate.get('capture_ts', 0.0) or 0.0),
             'entryId': entry_id,
         })
+        self._prune_wheel_photo_history_buckets(side_history)
         new_rep_candidate = self._select_bucket_representative(bucket['candidates'])
         if new_rep_candidate is None:
+            self._strip_bucket_candidate_photos(bucket)
             return
         clean_class_name = self._select_bucket_clean_class_name(bucket['candidates'])
         clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(clean_class_name, 0)
@@ -3545,6 +3549,7 @@ class EventManager:
         if current_rep and int(current_rep.get('entryId', 0) or 0) == int(new_rep_candidate.get('entryId', 0) or 0):
             if int(current_rep.get('cleanValue', 0) or 0) != int(clean_value):
                 current_rep['cleanValue'] = int(clean_value)
+            self._strip_bucket_candidate_photos(bucket)
             return
         if current_rep and new_rep_hash and current_rep.get('imageHash') == new_rep_hash:
             current_rep.update({
@@ -3553,6 +3558,7 @@ class EventManager:
                 'capture_ts': float(new_rep_candidate.get('capture_ts', 0.0) or 0.0),
                 'entryId': int(new_rep_candidate.get('entryId', 0) or 0),
             })
+            self._strip_bucket_candidate_photos(bucket)
             return
         duplicate_photo_url = ''
         duplicate_rep = None
@@ -3587,6 +3593,9 @@ class EventManager:
                 class_name=new_rep_candidate.get('className', ''),
             )
         if not photo_url:
+            # 保存失败时保留最佳候选的照片字节，等下一次候选到来重试保存
+            self._strip_bucket_candidate_photos(
+                bucket, keep_entry_id=new_rep_candidate.get('entryId'))
             return
         bucket['representative'] = {
             'photoUrl': photo_url,
@@ -3599,6 +3608,32 @@ class EventManager:
             'imageHash': new_rep_hash,
             'duplicatePhoto': bool(duplicate_photo_url),
         }
+        # 代表照片已落盘，桶内候选只保留元数据，释放JPEG字节
+        self._strip_bucket_candidate_photos(bucket)
+
+    @staticmethod
+    def _strip_bucket_candidate_photos(bucket, keep_entry_id=None):
+        """释放桶内候选携带的JPEG字节；代表选择只用元数据，不再需要图像。"""
+        candidates = bucket.get('candidates') if isinstance(bucket, dict) else None
+        if not candidates:
+            return
+        keep_id = int(keep_entry_id or 0)
+        for candidate in candidates:
+            if keep_id > 0 and int(candidate.get('entryId', 0) or 0) == keep_id:
+                continue
+            if candidate.get('imageJpegBytes'):
+                candidate['imageJpegBytes'] = b''
+
+    def _prune_wheel_photo_history_buckets(self, side_history):
+        """限制每侧照片桶数量，防止长停留轨迹的history无界增长。"""
+        if not isinstance(side_history, dict) or not side_history:
+            return
+        max_buckets = self.wheel_photo_history_max_buckets
+        overflow = len(side_history) - int(max_buckets)
+        if overflow <= 0:
+            return
+        for key in sorted(side_history.keys())[:overflow]:
+            side_history.pop(key, None)
 
     @staticmethod
     def _select_bucket_clean_class_name(candidates):

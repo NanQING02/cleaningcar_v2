@@ -1,7 +1,9 @@
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from cleaningcar.events import EventManager
@@ -9,7 +11,7 @@ from cleaningcar.constants import (
     WHEEL_CLASS_NAME_TO_CLEAN_VALUE,
     WHEEL_SIDE_TO_PHOTO_TYPE,
 )
-from cleaningcar.wheel import WheelResultCache
+from cleaningcar.wheel import WheelResultCache, _crop_wheel_photo
 
 
 class _DummyZoneManager:
@@ -83,7 +85,7 @@ class ConstantMapTests(unittest.TestCase):
 
 class WheelPhotoTests(unittest.TestCase):
     def _manager(self, uploader=None, base_dir=None, bucket_seconds=0.5,
-                 min_score=0.3, wheel_provider=None):
+                 min_score=0.3, wheel_provider=None, history_max_buckets=20):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         if base_dir is None:
@@ -115,6 +117,7 @@ class WheelPhotoTests(unittest.TestCase):
             session_id='143025',
             wheel_photo_bucket_seconds=bucket_seconds,
             wheel_photo_min_score=min_score,
+            wheel_photo_history_max_buckets=history_max_buckets,
         )
 
     @staticmethod
@@ -525,6 +528,103 @@ class WheelPhotoTests(unittest.TestCase):
         mgr._enqueue_wheel_photos(st, now_ts=1002.00, force=True, track_id=1)
         self.assertEqual(len(uploader.enqueued), 2)
 
+    def test_candidate_photos_are_stripped_after_representative_saved(self):
+        uploader = _FakeWheelPhotoUploader()
+        mgr = self._manager(uploader=uploader)
+        st = self._new_track(mgr)
+        claimer = _StaticClaimer()
+        for idx, ts in enumerate([1000.00, 1000.05, 1000.10], start=1):
+            mgr._update_wheel_photo_history(
+                track_id=1,
+                track_state=st,
+                side='left',
+                candidate=self._candidate(capture_ts=ts, entry_id=idx,
+                                          image_bytes=f'jpg-{idx}'.encode('ascii')),
+                claimer=claimer,
+            )
+        bucket = list(st['wheel_photo_history']['left'].values())[0]
+        self.assertIsNotNone(bucket.get('representative'))
+        # 代表已落盘后，候选只留元数据，不再持有JPEG字节
+        for candidate in bucket['candidates']:
+            self.assertEqual(candidate.get('imageJpegBytes'), b'')
+
+    def test_photo_history_buckets_are_capped(self):
+        uploader = _FakeWheelPhotoUploader()
+        mgr = self._manager(uploader=uploader, bucket_seconds=0.25,
+                            history_max_buckets=3)
+        st = self._new_track(mgr)
+        claimer = _StaticClaimer()
+        # 5个不同桶（每0.25s一个），上限3 → 只保留最新3个
+        for idx, ts in enumerate([1000.0, 1000.3, 1000.6, 1000.9, 1001.2], start=1):
+            mgr._update_wheel_photo_history(
+                track_id=1,
+                track_state=st,
+                side='left',
+                candidate=self._candidate(capture_ts=ts, entry_id=idx),
+                claimer=claimer,
+            )
+        side_history = st['wheel_photo_history']['left']
+        self.assertEqual(len(side_history), 3)
+        self.assertEqual(sorted(side_history.keys()), [4002, 4003, 4004])
+
+    def test_failed_photo_save_keeps_best_candidate_bytes_for_retry(self):
+        uploader = _FakeWheelPhotoUploader()
+        mgr = self._manager(uploader=uploader)
+        st = self._new_track(mgr)
+        claimer = _StaticClaimer()
+        with unittest.mock.patch.object(
+                EventManager, '_save_wheel_photo', return_value=''):
+            mgr._update_wheel_photo_history(
+                track_id=1,
+                track_state=st,
+                side='left',
+                candidate=self._candidate(capture_ts=1000.0, entry_id=1,
+                                          image_bytes=b'jpg-1'),
+                claimer=claimer,
+            )
+        bucket = list(st['wheel_photo_history']['left'].values())[0]
+        # 保存失败时保留最佳候选字节用于重试
+        kept = [c for c in bucket['candidates'] if c.get('imageJpegBytes')]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]['entryId'], 1)
+
+        # 下一次更优候选到来时应能成功保存并成为代表
+        mgr._update_wheel_photo_history(
+            track_id=1,
+            track_state=st,
+            side='left',
+            candidate=self._candidate(capture_ts=1000.05, entry_id=2,
+                                      image_bytes=b'jpg-2', center_distance=1.0),
+            claimer=claimer,
+        )
+        rep = bucket.get('representative')
+        self.assertIsNotNone(rep)
+        self.assertEqual(rep['entryId'], 2)
+
+    def test_wheel_photo_crop_reduces_jpeg_size(self):
+        cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
+        rng = np.random.default_rng(7)
+        frame = rng.integers(0, 256, (1080, 1920, 3), dtype=np.uint8)
+        frame[500:560, 900:960] = 255
+        cache.update_from_detections(
+            side='left',
+            frame=frame,
+            capture_ts=1000.0,
+            boxes=np.array([[900.0, 500.0, 960.0, 560.0]], dtype=np.float32),
+            classes=np.array([0], dtype=np.int64),
+            scores=np.array([0.9], dtype=np.float32),
+            class_names=['0-25', '25-50', '50-75', '75-100'],
+        )
+        entries = cache._entries.get('left') or []
+        self.assertEqual(len(entries), 1)
+        cropped_bytes = entries[0]['imageJpegBytes']
+        self.assertTrue(cropped_bytes)
+
+        ok, full_encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        self.assertTrue(ok)
+        # 特写远小于整帧编码
+        self.assertLess(len(cropped_bytes), len(full_encoded.tobytes()) // 4)
+
     def test_type5_force_enqueue_includes_locked_photo_not_in_history(self):
         uploader = _FakeWheelPhotoUploader()
         mgr = self._manager(uploader=uploader, bucket_seconds=0.5)
@@ -591,6 +691,44 @@ class WheelPhotoTests(unittest.TestCase):
         rep2 = EventManager._select_bucket_representative(candidates2)
         # 全是 0-25，选 centerDistance 最小（50.0）
         self.assertEqual(rep2['entryId'], 5)
+
+
+class WheelPhotoCropTests(unittest.TestCase):
+    def _frame(self, height=100, width=100):
+        return np.arange(height * width * 3, dtype=np.uint8).reshape(height, width, 3)
+
+    def test_crop_expands_by_margin_and_clamps_to_frame(self):
+        frame = self._frame()
+        crop = _crop_wheel_photo(frame, [40, 40, 60, 60], margin_ratio=0.5)
+        # box 20x20，四周各扩10 → 40x40
+        self.assertEqual(crop.shape, (40, 40, 3))
+        np.testing.assert_array_equal(crop, frame[30:70, 30:70])
+
+        # 靠近边缘时被画面边界截断
+        crop_edge = _crop_wheel_photo(frame, [0, 0, 20, 20], margin_ratio=0.5, min_size=16)
+        self.assertEqual(crop_edge.shape, (30, 30, 3))
+        np.testing.assert_array_equal(crop_edge, frame[0:30, 0:30])
+
+    def test_negative_margin_ratio_returns_full_frame(self):
+        frame = self._frame()
+        crop = _crop_wheel_photo(frame, [40, 40, 60, 60], margin_ratio=-1.0)
+        self.assertIs(crop, frame)
+
+    def test_zero_margin_crops_exact_box(self):
+        frame = self._frame()
+        crop = _crop_wheel_photo(frame, [10, 10, 50, 40], margin_ratio=0.0, min_size=16)
+        np.testing.assert_array_equal(crop, frame[10:40, 10:50])
+
+    def test_crop_below_min_size_returns_full_frame(self):
+        frame = self._frame()
+        crop = _crop_wheel_photo(frame, [0, 0, 20, 20], margin_ratio=0.5)
+        self.assertIs(crop, frame)
+
+    def test_invalid_box_returns_full_frame(self):
+        frame = self._frame()
+        for box in (None, [1, 2, 3], [60, 60, 40, 40]):
+            crop = _crop_wheel_photo(frame, box, margin_ratio=0.5)
+            self.assertIs(crop, frame)
 
 
 if __name__ == '__main__':

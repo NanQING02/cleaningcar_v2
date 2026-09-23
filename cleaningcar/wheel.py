@@ -203,6 +203,7 @@ def resolve_wheel_settings(config, base_dir=None):
         "reader_stale_hash_size": max(4, min(_safe_int(raw.get("reader_stale_hash_size", 16), 16), 64)),
         "ignore_broken_rtp_info": _safe_bool(raw.get("ignore_broken_rtp_info", True), True),
         "reader_idle_fps": max(0.0, _safe_float(raw.get("reader_idle_fps", 0.0), 0.0)),
+        "photo_crop_margin_ratio": _safe_float(raw.get("photo_crop_margin_ratio", 0.5), 0.5),
     }
 
 
@@ -270,6 +271,41 @@ def _encode_frame_jpeg_bytes(frame, image_quality=85):
     return encoded.tobytes()
 
 
+def _crop_wheel_photo(frame, box, margin_ratio=0.5, min_size=32):
+    """按检测框四周扩边裁剪原图作为车轮照片特写；像素仍来自原帧，无任何标注。"""
+    if frame is None or box is None or len(box) != 4:
+        return frame
+    try:
+        margin_ratio = float(margin_ratio)
+    except (TypeError, ValueError):
+        margin_ratio = 0.5
+    if margin_ratio < 0.0:
+        # 负值表示不裁剪，保留整帧
+        return frame
+    frame_h, frame_w = frame.shape[:2]
+    try:
+        x1, y1, x2, y2 = (int(round(float(v))) for v in box)
+    except (TypeError, ValueError):
+        return frame
+    if x2 <= x1 or y2 <= y1 or x1 >= frame_w or y1 >= frame_h:
+        return frame
+    box_w, box_h = x2 - x1, y2 - y1
+    margin_x = int(round(box_w * margin_ratio))
+    margin_y = int(round(box_h * margin_ratio))
+    x1 = max(0, x1 - margin_x)
+    y1 = max(0, y1 - margin_y)
+    x2 = min(frame_w, x2 + margin_x)
+    y2 = min(frame_h, y2 + margin_y)
+    try:
+        min_size = int(min_size)
+    except (TypeError, ValueError):
+        min_size = 32
+    if (x2 - x1) < min_size or (y2 - y1) < min_size:
+        # 裁剪结果过小（框贴近画面边缘且本身极小）时退回整帧
+        return frame
+    return frame[y1:y2, x1:x2]
+
+
 def _jpeg_bytes_to_base64(data):
     if not data:
         return ""
@@ -282,10 +318,13 @@ class WheelResultCache:
         bind_window_seconds=30.0,
         image_quality=85,
         entry_cluster_seconds=DEFAULT_ENTRY_CLUSTER_SECONDS,
+        photo_crop_margin_ratio=0.5,
     ):
         self.bind_window_seconds = max(1.0, float(bind_window_seconds))
         self.image_quality = int(min(max(int(image_quality), 1), 100))
         self.entry_cluster_seconds = max(0.0, float(entry_cluster_seconds))
+        # 车轮照片裁剪：0.5=框四周扩50%；0=仅框内；负值=整帧原图
+        self.photo_crop_margin_ratio = float(photo_crop_margin_ratio)
         self._entries: Dict[str, list] = {}
         self._lock = threading.Lock()
         self._next_entry_id = 1
@@ -332,7 +371,12 @@ class WheelResultCache:
         if not candidate:
             return False
 
-        image_jpeg = _encode_frame_jpeg_bytes(frame, image_quality=self.image_quality)
+        photo = _crop_wheel_photo(
+            frame,
+            candidate.get("box"),
+            margin_ratio=self.photo_crop_margin_ratio,
+        )
+        image_jpeg = _encode_frame_jpeg_bytes(photo, image_quality=self.image_quality)
         if not image_jpeg:
             return False
 
@@ -1051,6 +1095,7 @@ class WheelDetectionService:
         self.result_cache = WheelResultCache(
             bind_window_seconds=self.settings["bind_window_seconds"],
             image_quality=image_quality,
+            photo_crop_margin_ratio=self.settings.get("photo_crop_margin_ratio", 0.5),
         )
         self.stop_event = threading.Event()
         self.inference_active_event = threading.Event()
