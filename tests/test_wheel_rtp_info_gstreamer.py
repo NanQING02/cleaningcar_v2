@@ -4,7 +4,11 @@ import unittest
 
 import numpy as np
 
-from cleaningcar.wheel_gstreamer import WheelGstCapture, _sanitized_gst_caps
+from cleaningcar.wheel_gstreamer import (
+    WheelGstCapture,
+    _sanitized_gst_caps,
+    depay_elements_for,
+)
 
 
 try:
@@ -125,6 +129,17 @@ class GStreamerRtpInfoRegressionTests(unittest.TestCase):
         np.testing.assert_array_equal(frame, expected)
         self.assertEqual((width, height), (2, 2))
         self.assertEqual(fps, 20.0)
+
+
+class WheelDepayElementMappingTests(unittest.TestCase):
+    def test_h265_and_h264_map_to_matching_elements(self):
+        self.assertEqual(depay_elements_for("H265"), ("rtph265depay", "h265parse"))
+        self.assertEqual(depay_elements_for("HEVC"), ("rtph265depay", "h265parse"))
+        self.assertEqual(depay_elements_for("H264"), ("rtph264depay", "h264parse"))
+
+    def test_unknown_or_empty_encoding_falls_back_to_h265(self):
+        self.assertEqual(depay_elements_for(None), ("rtph265depay", "h265parse"))
+        self.assertEqual(depay_elements_for("mp4v"), ("rtph265depay", "h265parse"))
 
 
 class WheelCaptureIdleThrottleAndOwnershipTests(unittest.TestCase):

@@ -12,6 +12,22 @@ import numpy as np
 RTP_BASE_FIELDS = ("seqnum-base", "clock-base")
 VIDEO_ENCODINGS = {"H264", "H265", "HEVC"}
 
+# 车轮RTSP默认按H265建链（当前现场相机为HEVC）；打开失败时按序回退，
+# 兼容换用H264相机后depay不匹配导致旁路整体失效的情况
+WHEEL_ENCODINGS_FALLBACK_ORDER = ("H265", "H264")
+_DEPAY_ELEMENTS = {
+    "H265": ("rtph265depay", "h265parse"),
+    "HEVC": ("rtph265depay", "h265parse"),
+    "H264": ("rtph264depay", "h264parse"),
+}
+
+
+def depay_elements_for(encoding):
+    encoding = str(encoding or "").strip().upper()
+    if encoding not in _DEPAY_ELEMENTS:
+        return _DEPAY_ELEMENTS["H265"]
+    return _DEPAY_ELEMENTS[encoding]
+
 
 def safe_rtsp_source_label(source):
     text = str(source or "")
@@ -162,6 +178,7 @@ class WheelGstCapture:
         gst_modules=None,
         idle_keep_fps=0.0,
         active_event=None,
+        encodings=None,
     ):
         self.source = str(source)
         self.side = str(side)
@@ -179,6 +196,13 @@ class WheelGstCapture:
         self._active_event = active_event
         self._last_keep_monotonic = 0.0
         self._skipped_sample_count = 0
+        # 编码兜底顺序：默认H265优先（当前现场相机为HEVC），失败回退H264
+        encodings = tuple(encodings) if encodings else WHEEL_ENCODINGS_FALLBACK_ORDER
+        self._encodings = tuple(
+            enc for enc in (str(item).strip().upper() for item in encodings)
+            if enc in _DEPAY_ELEMENTS
+        ) or WHEEL_ENCODINGS_FALLBACK_ORDER
+        self._active_encoding = None
 
         self.width = 0
         self.height = 0
@@ -213,8 +237,24 @@ class WheelGstCapture:
         try:
             self._publish_state("starting")
             self.Gst, self.GstRtsp = gst_modules or _load_gstreamer()
-            self._build_pipeline()
-            self._start_pipeline()
+            opened = False
+            init_error = None
+            for encoding in self._encodings:
+                try:
+                    self._build_pipeline(encoding)
+                    self._start_pipeline()
+                    opened = bool(self._opened)
+                    if opened:
+                        self._active_encoding = encoding
+                        break
+                    init_error = self._last_error or "open_failed"
+                except Exception as exc:
+                    init_error = str(exc)
+                if not opened:
+                    # 当前编码打开失败：清理残留，尝试下一个编码兜底
+                    self._teardown_pipeline()
+            if not opened:
+                raise RuntimeError(f"all encodings failed: {self._encodings}; last error: {init_error}")
         except Exception as exc:
             self._fail(f"pipeline_init_failed: {exc}")
             self.release()
@@ -225,15 +265,44 @@ class WheelGstCapture:
             raise RuntimeError(f"missing GStreamer element: {factory}")
         return element
 
-    def _build_pipeline(self):
+    def _teardown_pipeline(self):
+        """编码兜底重试之间清理半开的pipeline与线程状态。"""
+        if self._pipeline is not None:
+            try:
+                self._pipeline.set_state(self.Gst.State.NULL)
+            except Exception:
+                pass
+        self._pipeline = None
+        self._source = None
+        self._depay = None
+        self._appsink = None
+        self._probe_ids = []
+        self._probe_guards = set()
+        bus_thread = self._bus_thread
+        if bus_thread is not None and bus_thread.is_alive():
+            self._bus_stop.set()
+            try:
+                bus_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        self._bus_stop.clear()
+        self._bus_thread = None
+        self._first_frame_event.clear()
+        self._first_bgr_monotonic = 0.0
+        self._first_rtp_monotonic = 0.0
+        self._rtsp_ready_monotonic = 0.0
+        self._opened = False
+
+    def _build_pipeline(self, encoding=None):
         Gst = self.Gst
         self._pipeline = Gst.Pipeline.new(f"wheel-{self.side}")
         if self._pipeline is None:
             raise RuntimeError("failed to create GStreamer pipeline")
 
+        depay_name, parser_name = depay_elements_for(encoding)
         self._source = self._make("rtspsrc", "wheel-source")
-        self._depay = self._make("rtph265depay", "wheel-depay")
-        parser = self._make("h265parse", "wheel-parser")
+        self._depay = self._make(depay_name, "wheel-depay")
+        parser = self._make(parser_name, "wheel-parser")
         decoder = self._make("mppvideodec", "wheel-decoder")
         capsfilter = self._make("capsfilter", "wheel-bgr-caps")
         self._appsink = self._make("appsink", "wheel-appsink")
@@ -509,6 +578,7 @@ class WheelGstCapture:
             "width": self.width,
             "height": self.height,
             "fps": self.fps,
+            "encoding": self._active_encoding,
             "sample_count": self._sample_count,
             "idle_keep_fps": self.idle_keep_fps,
             "skipped_sample_count": int(self._skipped_sample_count),
