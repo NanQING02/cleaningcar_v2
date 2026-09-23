@@ -158,6 +158,8 @@ class WheelGstCapture:
         state_callback=None,
         cancel_event=None,
         gst_modules=None,
+        idle_keep_fps=0.0,
+        active_event=None,
     ):
         self.source = str(source)
         self.side = str(side)
@@ -169,6 +171,12 @@ class WheelGstCapture:
         self.reconnect_count = max(0, int(reconnect_count))
         self._state_callback = state_callback
         self._cancel_event = cancel_event
+        # 空闲降载：推理未激活时按 idle_keep_fps 保留新鲜帧，跳过其余整帧拷贝；
+        # active_event 置位（推理激活或非事件驱动模式）时恢复全帧率。
+        self.idle_keep_fps = max(0.0, float(idle_keep_fps or 0.0))
+        self._active_event = active_event
+        self._last_keep_monotonic = 0.0
+        self._skipped_sample_count = 0
 
         self.width = 0
         self.height = 0
@@ -354,13 +362,29 @@ class WheelGstCapture:
             buffer.unmap(mapped)
         return frame, width, height, fps
 
+    def _should_skip_for_idle(self, now):
+        """推理未激活时按 idle_keep_fps 决定是否跳过本帧（不拷贝、不入槽）。"""
+        if self.idle_keep_fps <= 0.0:
+            return False
+        if self._active_event is not None and self._active_event.is_set():
+            return False
+        if self._first_bgr_monotonic <= 0.0:
+            return False
+        interval = 1.0 / self.idle_keep_fps
+        return (now - self._last_keep_monotonic) < interval
+
     def _on_new_sample(self, appsink):
         try:
             sample = appsink.emit("pull-sample")
             if sample is None:
                 return self.Gst.FlowReturn.ERROR
-            frame, width, height, fps = self._sample_to_frame(sample)
             now = time.monotonic()
+            if self._should_skip_for_idle(now):
+                with self._frame_cond:
+                    self._sample_count += 1
+                    self._skipped_sample_count += 1
+                return self.Gst.FlowReturn.OK
+            frame, width, height, fps = self._sample_to_frame(sample)
             with self._frame_cond:
                 self.width = width
                 self.height = height
@@ -369,6 +393,7 @@ class WheelGstCapture:
                 self._frame_seq += 1
                 self._sample_count += 1
                 self._latest_frame = frame
+                self._last_keep_monotonic = now
                 if self._first_bgr_monotonic <= 0.0:
                     self._first_bgr_monotonic = now
                     self._publish_state("bgr_ready")
@@ -434,7 +459,10 @@ class WheelGstCapture:
             if not self.isOpened() or self._latest_frame is None:
                 return False, None
             self._read_seq = self._frame_seq
-            return True, self._latest_frame.copy()
+            # 所有权交接：回调每次都新分配数组，直接把槽内帧交给消费者可省一次整帧拷贝。
+            frame = self._latest_frame
+            self._latest_frame = None
+            return True, frame
 
     def get(self, prop_id):
         if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
@@ -472,6 +500,9 @@ class WheelGstCapture:
             "height": self.height,
             "fps": self.fps,
             "sample_count": self._sample_count,
+            "idle_keep_fps": self.idle_keep_fps,
+            "skipped_sample_count": int(self._skipped_sample_count),
+            "inference_active": bool(self._active_event.is_set()) if self._active_event is not None else None,
         }
 
     def release(self):
@@ -515,6 +546,8 @@ def create_wheel_gstreamer_capture(
     reconnect_count=0,
     state_callback=None,
     cancel_event=None,
+    idle_keep_fps=0.0,
+    active_event=None,
 ):
     return WheelGstCapture(
         source=source,
@@ -527,4 +560,6 @@ def create_wheel_gstreamer_capture(
         reconnect_count=reconnect_count,
         state_callback=state_callback,
         cancel_event=cancel_event,
+        idle_keep_fps=idle_keep_fps,
+        active_event=active_event,
     )

@@ -1,4 +1,5 @@
 import struct
+import threading
 import unittest
 
 import numpy as np
@@ -124,6 +125,65 @@ class GStreamerRtpInfoRegressionTests(unittest.TestCase):
         np.testing.assert_array_equal(frame, expected)
         self.assertEqual((width, height), (2, 2))
         self.assertEqual(fps, 20.0)
+
+
+class WheelCaptureIdleThrottleAndOwnershipTests(unittest.TestCase):
+    """不依赖 PyGObject 的纯逻辑测试：空闲降载跳帧与 read 所有权交接。"""
+
+    def _capture(self, **attrs):
+        capture = object.__new__(WheelGstCapture)
+        capture.idle_keep_fps = 0.0
+        capture._active_event = None
+        capture._first_bgr_monotonic = 1.0
+        capture._last_keep_monotonic = 0.0
+        capture._skipped_sample_count = 0
+        capture._sample_count = 0
+        capture._frame_seq = 0
+        capture._read_seq = 0
+        capture._latest_frame = None
+        capture._frame_cond = threading.Condition()
+        capture._opened = True
+        capture._released = False
+        capture._state = "bgr_ready"
+        capture.read_timeout_seconds = 5.0
+        for key, value in attrs.items():
+            setattr(capture, key, value)
+        return capture
+
+    def test_idle_skip_respects_rate_and_active_event(self):
+        event = threading.Event()
+        capture = self._capture(idle_keep_fps=5.0, _active_event=event)
+
+        # 尚未取得首帧时不跳，保证首帧时延
+        self.assertFalse(capture._should_skip_for_idle(100.0))
+
+        capture._first_bgr_monotonic = 50.0
+        capture._last_keep_monotonic = 100.0
+        # 空闲且距上次保留不足 0.2s → 跳过
+        self.assertTrue(capture._should_skip_for_idle(100.1))
+        # 空闲但超过间隔 → 保留
+        self.assertFalse(capture._should_skip_for_idle(100.21))
+        # 推理激活 → 恢复全帧率
+        event.set()
+        self.assertFalse(capture._should_skip_for_idle(100.1))
+
+    def test_idle_fps_zero_never_skips(self):
+        capture = self._capture(idle_keep_fps=0.0)
+        self.assertFalse(capture._should_skip_for_idle(100.0))
+
+    def test_read_takes_frame_ownership_without_copy(self):
+        capture = self._capture()
+        frame = np.zeros((4, 6, 3), dtype=np.uint8)
+        capture._frame_seq = 3
+        capture._read_seq = 2
+        capture._latest_frame = frame
+
+        ok, out = capture.read()
+
+        self.assertTrue(ok)
+        self.assertIs(out, frame)
+        self.assertIsNone(capture._latest_frame)
+        self.assertEqual(capture._read_seq, 3)
 
 
 if __name__ == "__main__":

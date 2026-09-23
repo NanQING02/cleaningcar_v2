@@ -33,6 +33,7 @@ def create_wheel_video_reader(
     reconnect_count=0,
     state_callback=None,
     cancel_event=None,
+    active_event=None,
 ):
     config = getattr(reader_args, "_config", {}) or {}
     wheel_cfg = config.get("wheel", {}) or {}
@@ -59,6 +60,7 @@ def create_wheel_video_reader(
         timeout_seconds = max(0.1, float(video_cfg.get("reader_frame_timeout_seconds", 5.0)))
     except (TypeError, ValueError):
         timeout_seconds = 5.0
+    idle_keep_fps = _safe_float(wheel_cfg.get("reader_idle_fps", 0.0), 0.0)
     cap = create_wheel_gstreamer_capture(
         source=source,
         side=side,
@@ -70,6 +72,8 @@ def create_wheel_video_reader(
         reconnect_count=reconnect_count,
         state_callback=state_callback,
         cancel_event=cancel_event,
+        idle_keep_fps=idle_keep_fps,
+        active_event=active_event,
     )
     meta = {
         "decode_mode": "hw" if cap.isOpened() else "none",
@@ -198,6 +202,7 @@ def resolve_wheel_settings(config, base_dir=None):
         ),
         "reader_stale_hash_size": max(4, min(_safe_int(raw.get("reader_stale_hash_size", 16), 16), 64)),
         "ignore_broken_rtp_info": _safe_bool(raw.get("ignore_broken_rtp_info", True), True),
+        "reader_idle_fps": max(0.0, _safe_float(raw.get("reader_idle_fps", 0.0), 0.0)),
     }
 
 
@@ -574,6 +579,7 @@ class WheelReaderThread(threading.Thread):
         stale_seconds=5.0,
         stale_check_interval_frames=15,
         stale_hash_size=16,
+        active_event=None,
     ):
         super().__init__(daemon=True)
         self.side = str(side)
@@ -581,6 +587,7 @@ class WheelReaderThread(threading.Thread):
         self.reader_args = reader_args
         self.frame_slot = frame_slot
         self.stop_event = stop_event
+        self.active_event = active_event
         self.reader_fail_threshold = max(1, int(reader_fail_threshold))
         self.reconnect_delay = max(0.2, float(reconnect_delay))
         self.stale_seconds = max(0.0, float(stale_seconds))
@@ -711,6 +718,7 @@ class WheelReaderThread(threading.Thread):
                         reconnect_count=self.reconnect_count,
                         state_callback=self._set_reader_state,
                         cancel_event=self.stop_event,
+                        active_event=self.active_event,
                     )
                     self._capture = cap
                     if cap is None or not hasattr(cap, "isOpened") or not cap.isOpened():
@@ -1139,6 +1147,7 @@ class WheelDetectionService:
                 stale_seconds=self.reader_stale_seconds,
                 stale_check_interval_frames=self.reader_stale_check_interval_frames,
                 stale_hash_size=self.reader_stale_hash_size,
+                active_event=self.inference_active_event,
             )
             processor = WheelProcessorThread(
                 side=side,
@@ -1176,6 +1185,7 @@ class WheelDetectionService:
             f"event_driven={self.event_driven} "
             f"target_fps={self.settings['target_fps']:.2f} "
             f"active_target_fps={self.settings['active_target_fps']:.2f} "
+            f"reader_idle_fps={self.settings.get('reader_idle_fps', 0.0):.2f} "
             f"imgsz={self.imgsz} core_mask={self.core_mask}"
         )
         return True

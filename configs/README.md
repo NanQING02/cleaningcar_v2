@@ -143,6 +143,9 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - `wheel.classes`
   - 当前默认：`0-25`、`25-50`、`50-75`、`75-100`
   - `type=5` 上传时直接透传为 `wheelResults[].className`
+- `wheel.reader_idle_fps`
+  - 推理未激活时（`event_driven=true` 且无 Zone A 活跃轨迹）reader 的保留帧率：只对该频率的帧做整帧拷贝并入槽，其余解码帧直接跳过，降低空闲期 CPU/内存带宽；`0` 表示不降载
+  - 推理激活后自动恢复全帧率；连接保持不受影响（管线始终 PLAYING）
 - `wheel.bind_window_seconds` / `wheel.bind_pre_start_seconds` / `wheel.bind_after_end_seconds` / `wheel.bind_require_active`
   - `bind_window_seconds` 是车轮缓存保留和候选查询窗口
   - `bind_require_active=true` 时，只在主轨迹进入/经过 Zone A 后锁定车轮结果

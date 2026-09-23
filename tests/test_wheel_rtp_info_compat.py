@@ -184,8 +184,8 @@ class WheelReaderIntegrationTests(unittest.TestCase):
         frame = np.ones((16, 16, 3), dtype=np.uint8)
         right_cap = _FakeCapture(opened=True, frame=frame)
 
-        def fake_factory(source, _args, side, reconnect_count=0, state_callback=None, cancel_event=None):
-            del source, reconnect_count, cancel_event
+        def fake_factory(source, _args, side, reconnect_count=0, state_callback=None, cancel_event=None, active_event=None):
+            del source, reconnect_count, cancel_event, active_event
             if side == "left":
                 if state_callback:
                     state_callback("failed")
