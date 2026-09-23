@@ -2,6 +2,7 @@ import base64
 import csv
 import hashlib
 import json
+import queue
 import re
 import threading
 import time
@@ -365,6 +366,12 @@ class EventManager:
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
         self.wheel_photo_history_max_buckets = max(1, int(wheel_photo_history_max_buckets))
+        # 事件截图异步编码：默认关闭（保持同步语义）；开启后主线程只算路径，
+        # resize/JPEG编码/写盘交给后台单线程队列，队满回退同步
+        self.event_capture_async = bool(self.logic.get('event_capture_async', False))
+        self._capture_queue = None
+        self._capture_worker = None
+        self._capture_stop = threading.Event()
         wheel_cfg = config.get('wheel', {}) or {}
         try:
             self.wheel_bind_pre_start_seconds = max(0.0, float(wheel_cfg.get('bind_pre_start_seconds', 3.0)))
@@ -461,6 +468,73 @@ class EventManager:
         recorder = getattr(self, 'event_trace', None)
         if recorder is not None:
             recorder.close()
+        self._stop_event_capture_worker()
+
+    def _ensure_event_capture_worker(self):
+        if not self.event_capture_async:
+            return None
+        if self._capture_worker is not None and self._capture_worker.is_alive():
+            return self._capture_queue
+        self._capture_queue = queue.Queue(maxsize=8)
+        self._capture_stop.clear()
+        self._capture_worker = threading.Thread(
+            target=self._event_capture_worker_loop,
+            name='event-capture-writer',
+            daemon=True,
+        )
+        self._capture_worker.start()
+        return self._capture_queue
+
+    def _event_capture_worker_loop(self):
+        while True:
+            try:
+                item = self._capture_queue.get(timeout=0.2)
+            except queue.Empty:
+                if self._capture_stop.is_set():
+                    return
+                continue
+            try:
+                if item is None:
+                    return
+                self._encode_event_capture(**item)
+            except Exception as exc:
+                try:
+                    self._capture_metrics['failed'] += 1
+                    print(f'[event-capture] async encode failed: {exc}')
+                except Exception:
+                    pass
+            finally:
+                try:
+                    self._capture_queue.task_done()
+                except Exception:
+                    pass
+
+    def _stop_event_capture_worker(self):
+        if self._capture_queue is not None:
+            try:
+                self._capture_queue.join()  # 排空待写截图
+            except Exception:
+                pass
+        self._capture_stop.set()
+        worker = self._capture_worker
+        if worker is not None and worker.is_alive():
+            try:
+                worker.join(timeout=5.0)
+            except Exception:
+                pass
+        self._capture_worker = None
+
+    def wait_for_event_captures(self, timeout=5.0):
+        """等待异步截图队列排空（测试与收尾用）。"""
+        q = self._capture_queue
+        if q is None:
+            return True
+        deadline = None if timeout is None else time.time() + max(0.0, float(timeout))
+        while not q.empty():
+            if deadline is not None and time.time() >= deadline:
+                return False
+            time.sleep(0.02)
+        return True
 
     @staticmethod
     def _safe_evidence_component(value):
@@ -2677,6 +2751,35 @@ class EventManager:
         safe_camera_id = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in str(self.camera_id or 'CAM'))
         capture_file = capture_dir / f'{stamp}_{safe_camera_id}_{track_id}_t{event_type}_f{frame_idx}.jpg'
         capture_path = str(capture_file)
+        if self.event_capture_async:
+            capture_queue = self._ensure_event_capture_worker()
+            if capture_queue is not None:
+                try:
+                    capture_queue.put_nowait({
+                        'event_type': int(event_type),
+                        'track_id': track_id,
+                        'frame_idx': frame_idx,
+                        'frame': frame,
+                        'capture_file': capture_file,
+                        'capture_path': capture_path,
+                        'cap_t0': _cap_t0,
+                    })
+                    return capture_path
+                except queue.Full:
+                    pass  # 队满回退同步，保证证据不丢
+        return self._encode_event_capture(
+            event_type=event_type,
+            track_id=track_id,
+            frame_idx=frame_idx,
+            frame=frame,
+            capture_file=capture_file,
+            capture_path=capture_path,
+            cap_t0=_cap_t0,
+        )
+
+    def _encode_event_capture(self, event_type, track_id, frame_idx, frame,
+                               capture_file=None, capture_path='', cap_t0=None):
+        _cap_t0 = time.perf_counter() if cap_t0 is None else cap_t0
         try:
             h, w = frame.shape[:2]
             target_w, target_h = 1920, 1080

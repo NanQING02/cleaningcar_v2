@@ -213,6 +213,7 @@
     "copy_raw_frame_cache": false,
     "plate_core_mask": "0",
     "plate_infer_stride": 2,
+    "event_capture_async": true,
     "enable_event_disk": true,
     "vehicle_tracker_impl": "bytetrack",
     "plate_requires_vehicle": true,
