@@ -760,6 +760,8 @@ def process_video(path, args):
     next_frame_to_write = 0
     pending = {}
     raw_frame_cache = {}
+    task_enqueue_ts = {}
+    late_frame_count = [0]
     reader_log_interval = float(config.get('reader_fps_log_interval', 10.0))
     reader_log_last_time = start
     reader_log_frames = 0
@@ -994,7 +996,37 @@ def process_video(path, args):
             return
         dropped_frame_ids.add(frame_idx)
         raw_frame_cache.pop(frame_idx, None)
+        task_enqueue_ts.pop(frame_idx, None)
         dropped_frame_count += 1
+
+    # 单帧结果看门狗：worker推理挂死时其帧结果永不返回，
+    # next_frame_to_write会永久卡住并使pending/raw_frame_cache只增不减。
+    # 超时后合成空结果推进管线（等价于该帧无检测），迟到结果直接丢弃。
+    result_watchdog_seconds = max(0.0, float(video_cfg.get('result_watchdog_seconds', 5.0)))
+
+    def _check_result_watchdog():
+        idx = next_frame_to_write
+        if idx in pending or idx in dropped_frame_ids:
+            return False
+        enq_ts = task_enqueue_ts.get(idx)
+        if enq_ts is None:
+            return False
+        if (time.time() - enq_ts) <= result_watchdog_seconds:
+            return False
+        task_enqueue_ts.pop(idx, None)
+        late_frame_count[0] += 1
+        print(
+            f'[watchdog] frame {idx} result overdue after {time.time() - enq_ts:.2f}s '
+            f'(threshold={result_watchdog_seconds:.2f}s); synthesizing empty result to unblock pipeline'
+        )
+        write_heartbeat(
+            status='running',
+            extra={'watchdog_frame': int(idx), 'watchdog_late_results': late_frame_count[0]},
+        )
+        pending[idx] = (raw_frame_cache.get(idx), [], [], None)
+        # 合成结果可能无人消费（result_q空、task_q未满时不会再触发drain），主动排一次
+        drain_results(block=False)
+        return True
         try:
             event_manager.trace_record('dropped_frame', {
                 'frameIdx': frame_idx,
@@ -1935,6 +1967,13 @@ def process_video(path, args):
                 capture_ts = None
             else:
                 idx, capture_ts, frame_out, rows, det_payload = item
+            task_enqueue_ts.pop(idx, None)
+            if idx < next_frame_to_write:
+                # 看门狗已合成空结果推进过该帧，迟到结果直接丢弃
+                late_frame_count[0] += 1
+                raw_frame_cache.pop(idx, None)
+                print(f'[watchdog] discarding late result for already-advanced frame {idx}')
+                return True
             pending[idx] = (frame_out, rows, det_payload, capture_ts)
             _advance_dropped_frames()
             while next_frame_to_write in pending:
@@ -2532,7 +2571,9 @@ def process_video(path, args):
         if signal_shutdown_requested.is_set():
             print('[signal] shutdown requested, exiting main loop')
             break
-        _advance_dropped_frames()
+        if result_watchdog_seconds > 0.0:
+            _check_result_watchdog()
+            _advance_dropped_frames()
         poll_runtime_commands()
         if runtime_paused:
             last_progress_ts = time.time()
@@ -2656,6 +2697,7 @@ def process_video(path, args):
         while True:
             try:
                 task_q.put_nowait((frame_idx, frame, capture_ts))
+                task_enqueue_ts[frame_idx] = time.time()
                 break
             except Full:
                 dropped = False

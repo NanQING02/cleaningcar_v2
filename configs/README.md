@@ -143,6 +143,8 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - `wheel.classes`
   - 当前默认：`0-25`、`25-50`、`50-75`、`75-100`
   - `type=5` 上传时直接透传为 `wheelResults[].className`
+- `video.result_watchdog_seconds`
+  - 单帧结果看门狗（默认 `5.0`）：某帧交给worker后超过该时长仍无结果（如RKNN C层卡死）时，合成空结果推进管线，避免 `next_frame_to_write` 永久卡住、`pending`/`raw_frame_cache` 只增不减；迟到结果会被丢弃并计数。`0` 表示关闭
 - `wheel.reader_idle_fps`
   - 推理未激活时（`event_driven=true` 且无 Zone A 活跃轨迹）reader 的保留帧率：只对该频率的帧做整帧拷贝并入槽，其余解码帧直接跳过，降低空闲期 CPU/内存带宽；`0` 表示不降载
   - 推理激活后自动恢复全帧率；连接保持不受影响（管线始终 PLAYING）
