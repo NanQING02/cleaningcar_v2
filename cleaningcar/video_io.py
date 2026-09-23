@@ -645,7 +645,8 @@ class FfmpegH264Writer:
         exit_code = None
         if self.proc:
             try:
-                self.proc.wait(timeout=60.0)
+                # 正常收尾只需 flush 尾部少量帧；10s 内未退出的编码进程按异常处理
+                self.proc.wait(timeout=10.0)
                 exit_code = self.proc.returncode
             except Exception:
                 try:
@@ -666,6 +667,38 @@ class FfmpegH264Writer:
             except Exception as exc:
                 print(f'[per-id-video] rename failed {self._output_path} -> {self.path}: {exc}')
         return finalized
+
+    def discard(self):
+        """不合格视频的快速回收：不等编码收尾，杀进程并删除临时/目标文件。"""
+        if getattr(self, '_discarded', False):
+            return
+        self._discarded = True
+        try:
+            if self.stdin:
+                self.stdin.close()
+        except Exception:
+            pass
+        self.stdin = None
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            try:
+                self.proc.wait(timeout=2.0)
+            except Exception:
+                pass
+            self.proc = None
+        self._opened = False
+        for target in (getattr(self, '_output_path', None), self.path):
+            if not target:
+                continue
+            try:
+                os.remove(target)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
 
 
 class AsyncPerIdVideoWriter:
@@ -769,7 +802,8 @@ class AsyncPerIdVideoWriter:
         self._released = True
         self._stop.set()
         try:
-            self._thread.join(timeout=30.0)
+            # 队列最多queue_size帧，正常排空在1s内；8s上限防御磁盘级阻塞
+            self._thread.join(timeout=8.0)
         except Exception:
             pass
         if self._thread.is_alive():
@@ -782,6 +816,31 @@ class AsyncPerIdVideoWriter:
                 finalized = False
             self.writer = None
         return finalized
+
+    def discard(self):
+        """直接丢弃：不等队列排空和编码收尾，用于确定不保留的视频。"""
+        if self._released:
+            return False
+        self._released = True
+        self._stop.set()
+        try:
+            self._thread.join(timeout=2.0)
+        except Exception:
+            pass
+        if self.writer is not None:
+            discard_fn = getattr(self.writer, 'discard', None)
+            if callable(discard_fn):
+                try:
+                    discard_fn()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.writer.release()
+                except Exception:
+                    pass
+            self.writer = None
+        return False
 
 
 def _safe_release_writer(writer):
@@ -1280,23 +1339,43 @@ def reset_pre_type2_recording_state(track_state, frame_idx):
 def finalize_per_id_recording(writer, track_id, track_state, event_manager, per_id_video_enabled=True):
     if writer is None:
         return False
+
+    state = track_state or {}
+    output_path = Path(getattr(writer, 'path', '') or '')
+    keep_video = bool(state.get('type2_qualified'))
+    if not keep_video:
+        # 不合格视频直接快速丢弃：原实现先优雅收尾编码再删除文件，
+        # 白白等待ffmpeg flush一段注定删除的视频
+        if DELETE_UNQUALIFIED_PER_ID_VIDEO:
+            discard_fn = getattr(writer, 'discard', None)
+            if callable(discard_fn):
+                try:
+                    discard_fn()
+                except Exception:
+                    pass
+            else:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+                if output_path:
+                    try:
+                        output_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        else:
+            try:
+                writer.release()
+            except Exception:
+                pass
+        return False
+
     finalized = False
     try:
         finalized = bool(writer.release())
     except Exception:
         finalized = False
     if not finalized:
-        return False
-
-    state = track_state or {}
-    output_path = Path(getattr(writer, 'path', '') or '')
-    keep_video = bool(state.get('type2_qualified'))
-    if not keep_video:
-        if DELETE_UNQUALIFIED_PER_ID_VIDEO and output_path:
-            try:
-                output_path.unlink(missing_ok=True)
-            except Exception:
-                pass
         return False
 
     if output_path and not output_path.exists():

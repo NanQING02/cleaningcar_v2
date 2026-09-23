@@ -18,6 +18,19 @@ class _DummyWriter:
         return True
 
 
+class _DummyDiscardWriter(_DummyWriter):
+    def __init__(self, path):
+        super().__init__(path)
+        self.discard_calls = 0
+
+    def discard(self):
+        self.discard_calls += 1
+        try:
+            os.remove(self.path)
+        except FileNotFoundError:
+            pass
+
+
 class _DummyEventManager:
     def __init__(self):
         self.calls = []
@@ -66,6 +79,27 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertTrue(second.exists())
 
     def test_finalize_per_id_recording_deletes_unqualified_video_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "session.mp4"
+            output_path.write_text("video", encoding="utf-8")
+            writer = _DummyDiscardWriter(output_path)
+            event_manager = _DummyEventManager()
+
+            result = video_io.finalize_per_id_recording(
+                writer,
+                track_id=7,
+                track_state={"type2_qualified": False},
+                event_manager=event_manager,
+            )
+
+            self.assertFalse(result)
+            self.assertFalse(output_path.exists())
+            # 不合格视频走discard快速回收，不再等编码优雅收尾
+            self.assertEqual(writer.discard_calls, 1)
+            self.assertEqual(writer.release_calls, 0)
+            self.assertEqual(event_manager.calls, [])
+
+    def test_finalize_per_id_recording_unqualified_falls_back_to_release_without_discard(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "session.mp4"
             output_path.write_text("video", encoding="utf-8")
