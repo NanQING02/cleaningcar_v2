@@ -1440,6 +1440,10 @@ class EventManager:
                         'eventId': lifecycle.event_id,
                         'captureTs': float(now_capture_ts),
                     })
+                # type2已达标且开始丢失的轨迹：在宽限期内后台预热车轮等待，
+                # type5发射时主线程无需再同步阻塞
+                if self._should_prewait_type5_wheel(st):
+                    self._ensure_type5_wheel_prewait(tid, st, lifecycle)
                 if self.lifecycle_manager.is_waiting(tid, now_capture_ts):
                     continue
             timed_out = (
@@ -3201,20 +3205,41 @@ class EventManager:
         wait_seconds = float(self.wheel_bind_wait_seconds)
         if wait_seconds <= 0.0:
             return
+        # 优先等待丢失宽限期内已启动的prewait线程：其等待预算几乎总已耗尽，
+        # 主线程join即刻返回，不再阻塞帧消费循环
+        thread = track_state.get('wheel_prewait_thread')
+        if thread is not None:
+            deadline = float(track_state.get('wheel_bind_wait_deadline_ts') or 0.0)
+            remaining = max(0.0, deadline - time.time())
+            if remaining > 0.0:
+                thread.join(timeout=remaining)
+            return
+        # 无prewait的罕见路径（如15分钟强制闭环时轨迹仍活跃）：维持同步等待
+        self._run_type5_wheel_wait(track_id, track_state, time.time() + wait_seconds)
+
+    def _run_type5_wheel_wait(self, track_id, track_state, deadline):
         expected = self._expected_wheel_side_count()
         started = time.time()
-        deadline = started + wait_seconds
+        wait_seconds = max(0.0, float(deadline) - started)
         locked_count = self._locked_wheel_side_count(track_state)
-        while locked_count < expected:
-            now = time.time()
-            if now >= deadline:
-                break
-            self._update_wheel_track_activity(track_id, track_state, frame_ts=now, active=True)
-            self._update_track_wheel_results(track_id, track_state, frame_ts=now)
-            locked_count = self._locked_wheel_side_count(track_state)
-            if locked_count >= expected:
-                break
-            time.sleep(min(self.wheel_bind_wait_poll_seconds, max(0.0, deadline - time.time())))
+        try:
+            while locked_count < expected:
+                now = time.time()
+                if now >= deadline:
+                    break
+                self._update_wheel_track_activity(track_id, track_state, frame_ts=now, active=True)
+                self._update_track_wheel_results(track_id, track_state, frame_ts=now)
+                locked_count = self._locked_wheel_side_count(track_state)
+                if locked_count >= expected:
+                    break
+                time.sleep(min(self.wheel_bind_wait_poll_seconds, max(0.0, deadline - time.time())))
+        finally:
+            # 等待结束后若type5已发射/轨迹已关闭，释放该轨迹对车轮推理的活跃标记
+            if 5 in (track_state.get('events') or set()) or track_state.get('closed'):
+                try:
+                    self._update_wheel_track_activity(track_id, track_state, frame_ts=time.time(), active=False)
+                except Exception:
+                    pass
         elapsed = time.time() - started
         locked = track_state.get('wheel_results_locked') if isinstance(track_state, dict) else {}
         locked_sides = ','.join(sorted(str(side) for side in (locked or {}).keys())) if isinstance(locked, dict) else ''
@@ -3231,6 +3256,46 @@ class EventManager:
             f"timeout={wait_seconds:.2f}s"
             f"{stats_part}"
         )
+
+    def _should_prewait_type5_wheel(self, track_state):
+        if self.wheel_result_provider is None:
+            return False
+        if not isinstance(track_state, dict):
+            return False
+        if track_state.get('closed') or 5 in (track_state.get('events') or set()):
+            return False
+        return self._can_emit_type5(track_state)
+
+    def _ensure_type5_wheel_prewait(self, track_id, track_state, lifecycle):
+        """轨迹丢失宽限期内预热type5车轮等待，让主线程发射type5时零阻塞。"""
+        if not isinstance(track_state, dict):
+            return
+        wait_seconds = float(self.wheel_bind_wait_seconds)
+        if wait_seconds <= 0.0:
+            return
+        now = time.time()
+        # 以lifecycle.lost_ts标记丢失周期：轨迹短暂丢帧又复现时重置等待预算
+        lost_ts = float(getattr(lifecycle, 'lost_ts', 0.0) or 0.0)
+        if track_state.get('wheel_prewait_episode_ts') != lost_ts:
+            track_state['wheel_prewait_episode_ts'] = lost_ts
+            track_state['wheel_bind_wait_deadline_ts'] = 0.0
+        deadline = float(track_state.get('wheel_bind_wait_deadline_ts') or 0.0)
+        if deadline <= 0.0:
+            deadline = now + wait_seconds
+            track_state['wheel_bind_wait_deadline_ts'] = deadline
+        if deadline <= now:
+            return
+        thread = track_state.get('wheel_prewait_thread')
+        if thread is not None and thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._run_type5_wheel_wait,
+            args=(track_id, track_state, deadline),
+            name=f'type5-wheel-prewait-{track_id}',
+            daemon=True,
+        )
+        track_state['wheel_prewait_thread'] = thread
+        thread.start()
 
     @staticmethod
     def _wheel_candidate_center_distance(item, default=float('inf')):
@@ -3563,7 +3628,8 @@ class EventManager:
         duplicate_photo_url = ''
         duplicate_rep = None
         if new_rep_hash:
-            for existing_bucket_key, existing_bucket in side_history.items():
+            # prewait线程可能与主线程并发更新history，迭代前做快照
+            for existing_bucket_key, existing_bucket in list(side_history.items()):
                 if existing_bucket_key == bucket_ts:
                     continue
                 existing_rep = existing_bucket.get('representative') if isinstance(existing_bucket, dict) else None
@@ -3693,7 +3759,8 @@ class EventManager:
                 side_history = history.get(side)
                 if not isinstance(side_history, dict):
                     continue
-                for bucket_key, bucket in side_history.items():
+                # prewait线程可能与主线程并发更新history，迭代前做快照
+                for bucket_key, bucket in list(side_history.items()):
                     if not isinstance(bucket, dict):
                         continue
                     rep = bucket.get('representative')
