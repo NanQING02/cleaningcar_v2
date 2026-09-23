@@ -22,6 +22,38 @@ class _DummyZoneManager:
         return 0, ""
 
 
+class WheelForgetTrackTests(unittest.TestCase):
+    def _manager(self, provider):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        config = {
+            "logic": {},
+            "shadow_pool": {},
+            "event_capture_dir": self._tmp.name,
+            "event_output_dir": self._tmp.name,
+        }
+        return EventManager(
+            config,
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_DummyZoneManager(),
+            wheel_result_provider=provider,
+        )
+
+    def test_flush_removal_calls_provider_forget_track(self):
+        provider = types.SimpleNamespace()
+        provider.forgotten = []
+        provider.get_recent_result_entries = lambda **kwargs: []
+        provider.forget_track = lambda tid: provider.forgotten.append(tid)
+        mgr = self._manager(provider)
+
+        mgr.tracks[1] = {'events': {5}, 'last_frame_idx': 0, 'closed': True}
+        mgr.flush_inactive(set(), 10000)
+
+        self.assertNotIn(1, mgr.tracks)
+        self.assertEqual(provider.forgotten, [1])
+
+
 class Type5WheelPrewaitTests(unittest.TestCase):
     def _manager(self, bind_wait=0.4):
         self._tmp = tempfile.TemporaryDirectory()

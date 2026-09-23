@@ -1603,6 +1603,14 @@ class EventManager:
             self.upload_buffer.pop(key, None)
             self.upload_qualified.discard(key)
             self.tracks.pop(tid, None)
+            # 轨迹最终移除时兜底清理车轮服务的活跃标记，防止inference_active永久置位
+            provider = getattr(self, 'wheel_result_provider', None)
+            forget = getattr(provider, 'forget_track', None)
+            if callable(forget):
+                try:
+                    forget(tid)
+                except Exception:
+                    pass
         cleanup_ts = capture_ts if capture_ts is not None else time.time()
         if cleanup_ts - self.lifecycle_last_cleanup_ts >= self.lifecycle_cleanup_interval_seconds:
             self.lifecycle_manager.cleanup(

@@ -145,6 +145,8 @@ def _parse_rtp_seqnum(buffer, map_flags):
 class WheelGstCapture:
     """Wheel-only RTSP capture that ignores broken RTP-Info sequence bases."""
 
+    MAX_RETAINED_JITTER_PROBES = 4
+
     def __init__(
         self,
         source,
@@ -281,6 +283,14 @@ class WheelGstCapture:
         mask = self.Gst.PadProbeType.EVENT_DOWNSTREAM | self.Gst.PadProbeType.BUFFER
         probe_id = sink_pad.add_probe(mask, self._on_jitterbuffer_sink_probe)
         self._probe_ids.append((sink_pad, probe_id))
+        # rtspsrc每次重协商都新建jitterbuffer，旧pad上的probe已无作用；
+        # 只保留最近几个，防止长运行下probe和退休pad强引用无界累积
+        while len(self._probe_ids) > self.MAX_RETAINED_JITTER_PROBES:
+            old_pad, old_probe_id = self._probe_ids.pop(0)
+            try:
+                old_pad.remove_probe(old_probe_id)
+            except Exception:
+                pass
 
     def _on_jitterbuffer_sink_probe(self, pad, info):
         Gst = self.Gst

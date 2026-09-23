@@ -4,13 +4,18 @@ import time
 class WindowedLogThrottler:
     """First message prints immediately; suppressed messages are summarized per window."""
 
+    # key含高基数成分（如entryId）时_states会持续增长，定期清理超过滞留阈值的旧key
+    PURGE_INTERVAL_SECONDS = 60.0
+
     def __init__(self, window_seconds=10.0):
         self.window_seconds = max(0.1, float(window_seconds))
         self._states = {}
+        self._last_purge_ts = time.time()
 
     def record(self, key, message, now=None, window_seconds=None):
         ts = time.time() if now is None else float(now)
         window = self.window_seconds if window_seconds is None else max(0.1, float(window_seconds))
+        self._maybe_purge(ts)
         state = self._states.get(key)
         if state is None:
             self._states[key] = {"window_start": ts, "suppressed": 0}
@@ -31,6 +36,19 @@ class WindowedLogThrottler:
         state["window_start"] = ts
         state["suppressed"] = 0
         return messages
+
+    def _maybe_purge(self, now):
+        if now - self._last_purge_ts < self.PURGE_INTERVAL_SECONDS:
+            return
+        self._last_purge_ts = now
+        horizon = max(self.window_seconds, 1.0) * 4.0
+        stale_keys = [
+            key
+            for key, state in self._states.items()
+            if now - float(state.get("window_start", 0.0)) > horizon
+        ]
+        for key in stale_keys:
+            self._states.pop(key, None)
 
 
 class WindowedLogThrottle:
