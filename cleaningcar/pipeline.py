@@ -2444,7 +2444,7 @@ def process_video(path, args):
                 last_result_ts = time.time()
                 last_progress_ts = last_result_ts
                 emit_startup_signal_if_needed()
-                poll_runtime_commands(force=True)
+                poll_runtime_commands()
                 write_heartbeat(status='running')
                 if csv_writer and rows:
                     csv_writer.writerows(rows)
@@ -2632,14 +2632,14 @@ def process_video(path, args):
                     dropped = _drop_stale_task_for_realtime()
                     if not dropped:
                         drain_results(block=False)
-                        time.sleep(0.001)
+                        time.sleep(0.005)
                 else:
                     drain_results(block=True)
                 _advance_dropped_frames()
-                poll_runtime_commands(force=True)
+                poll_runtime_commands()
+                # 背压期心跳走常规1s节流：饱和期不该做每帧原子写盘
                 write_heartbeat(
                     status='backpressure',
-                    force=True,
                     extra={
                         'dropped_frames': dropped_frame_count,
                         'dropped_pending': len(dropped_frame_ids),
