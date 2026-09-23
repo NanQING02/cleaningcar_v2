@@ -747,9 +747,9 @@ def process_video(path, args):
         except Exception:
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
+    # raw/auto 模式下无人对原帧做原地绘制，缓存直接存引用即可；
+    # logic.copy_raw_frame_cache=true 保留为显式防御性复制开关。
     copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
-    if bool(logic_cfg.get('enable_per_id_video', False)) and per_id_video_source == 'raw':
-        copy_raw_frame_cache = True
     debug_frame_max_width = max(0, int(video_cfg.get('debug_frame_max_width', 960) or 0))
     debug_frame_quality = min(max(int(video_cfg.get('debug_frame_quality', 80) or 80), 1), 100)
 
