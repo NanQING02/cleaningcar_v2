@@ -2,6 +2,7 @@ import atexit
 import csv
 from math import hypot
 import os
+import signal
 import threading
 import time
 from collections import deque
@@ -2500,7 +2501,37 @@ def process_video(path, args):
     frame_limit = args.limit if args.limit and args.limit > 0 else None
     terminal_failure = None
 
+    # SIGTERM/SIGINT优雅停机：guardian/systemd stop时正常走退出清理
+    # （排空结果、收尾录像writer、关CSV与上传队列），而不是被默认信号直接杀死
+    # 留下孤儿ffmpeg和不转正的*_temp.mp4；第二次信号恢复默认处理允许强杀。
+    signal_shutdown_requested = threading.Event()
+
+    def _handle_shutdown_signal(signum, _frame):
+        if signal_shutdown_requested.is_set():
+            try:
+                signal.signal(signum, signal.SIG_DFL)
+            except Exception:
+                pass
+            os.kill(os.getpid(), signum)
+            return
+        print(f'[signal] received signal {signum}, requesting graceful shutdown')
+        signal_shutdown_requested.set()
+
+    if threading.current_thread() is threading.main_thread():
+        _installed = False
+        for _sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(_sig, _handle_shutdown_signal)
+                _installed = True
+            except (ValueError, OSError, AttributeError):
+                pass
+        if _installed:
+            print('[signal] graceful shutdown handlers installed for SIGTERM/SIGINT')
+
     while True:
+        if signal_shutdown_requested.is_set():
+            print('[signal] shutdown requested, exiting main loop')
+            break
         _advance_dropped_frames()
         poll_runtime_commands()
         if runtime_paused:
