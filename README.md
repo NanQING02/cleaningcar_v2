@@ -224,14 +224,14 @@ systemctl status cleaningcar-web --no-pager
 4. 看心跳文件是否持续更新
 5. 看 `logs/inference/` 和 `web_server_8000.log`
 6. 看 `events/<配置名>` 是否生成事件 JSON
-7. 看事件里的 `captureImage` 是否非空，并确认文件真实存在
+7. 看事件里的 `captureImage` 是否非空，并确认文件真实存在（异步截图开启时路径可能领先文件几十毫秒，稍候重查即可）
 8. 若中文框或标签异常，确认 `fonts/platech.ttf` 是否随包部署
 9. 若车轮结果缺失，确认 `wheel.enabled`、左右 RTSP 源、车轮模型路径和旁路摄像头画面
 
 ## 易踩点
 
 - 根目录文档和代码都以 UTF-8 保存；Windows PowerShell 默认编码可能把中文显示成乱码，读取时请显式使用 UTF-8
-- `captureImage` 只表示截图文件真实落盘；对外上报是路径还是 base64 由 `system.api.capture_mode` 决定
+- `captureImage` 的取值口径：`capture_mode=path`（当前交付口径）下事件 JSON 先携带截图路径，上传器发送前校验文件已落盘，未就绪则留在 SQLite 队列按既有策略退避重试，保证平台收到路径时文件已存在；开启 `logic.event_capture_async` 时路径写入可能领先文件落盘几十毫秒，最终一致。`capture_mode=base64` 仍要求发送时文件存在并同步编码。对外上报是路径还是 base64 由 `system.api.capture_mode` 决定
 - 本地文件视频默认跑完一遍就退出；如果 guardian 自动重启开启，看起来会像循环跑
 - 全局视频保存字段已经移除；不要再使用旧的 `video.save_video` 或 `logic.enable_global_video`
 - 运行产物清理实现暂存于 `future_modules/storage_cleanup.py`，当前不会主动删除产物
