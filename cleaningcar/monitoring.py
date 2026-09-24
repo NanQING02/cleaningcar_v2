@@ -55,7 +55,7 @@ def _read_throttle_flags():
     return ",".join(flags)
 
 
-def _snapshot_children(proc):
+def _snapshot_children(proc, cpu_state=None, now=None):
     result = {
         "count": 0,
         "ffmpeg_count": 0,
@@ -64,21 +64,46 @@ def _snapshot_children(proc):
     }
     if proc is None:
         return result
+    state = cpu_state if cpu_state is not None else {}
+    sample_ts = time.monotonic() if now is None else float(now)
     try:
         children = proc.children(recursive=True)
     except Exception:
         return result
     result["count"] = len(children)
+    seen_pids = set()
     for child in children:
         try:
+            pid = int(child.pid)
+            seen_pids.add(pid)
             name = (child.name() or "").lower()
             cmdline = " ".join(child.cmdline()).lower()
             if "ffmpeg" in name or "ffmpeg" in cmdline:
                 result["ffmpeg_count"] += 1
-            result["cpu"] += _safe_percent(child.cpu_percent(interval=None))
+            cpu_times = child.cpu_times()
+            cpu_total = float(cpu_times.user) + float(cpu_times.system)
+            create_time = float(child.create_time())
+            previous = state.get(pid)
+            child_cpu = 0.0
+            if previous and float(previous['create_time']) == create_time:
+                elapsed = sample_ts - float(previous['sample_ts'])
+                if elapsed > 0.0:
+                    child_cpu = max(
+                        0.0,
+                        (cpu_total - float(previous['cpu_total'])) / elapsed * 100.0,
+                    )
+            state[pid] = {
+                'create_time': create_time,
+                'cpu_total': cpu_total,
+                'sample_ts': sample_ts,
+            }
+            result["cpu"] += child_cpu
             result["rss_mb"] += _safe_mb(child.memory_info().rss)
         except Exception:
             continue
+    for pid in list(state.keys()):
+        if pid not in seen_pids:
+            state.pop(pid, None)
     return result
 
 
@@ -133,6 +158,7 @@ def monitor_loop(interval, stop_event):
     sum_mem = 0.0
     max_cpu = 0.0
     max_mem = 0.0
+    child_cpu_state = {}
     while not stop_event.is_set():
         per_cpu = psutil.cpu_percent(interval=None, percpu=True)
         cpu = sum(per_cpu) / max(1, len(per_cpu)) if per_cpu else psutil.cpu_percent(interval=None)
@@ -153,7 +179,7 @@ def monitor_loop(interval, stop_event):
                     proc_fds = int(proc.num_fds())
             except Exception:
                 rss_mb = 0.0
-        child_stats = _snapshot_children(proc)
+        child_stats = _snapshot_children(proc, child_cpu_state)
         count += 1
         sum_cpu += cpu
         sum_mem += mem

@@ -99,6 +99,12 @@ class EventUploader:
                 self.db.mark_success(job_id)
 
     def _send(self, data):
+        capture_image = str((data or {}).get('captureImage') or '').strip()
+        if capture_image:
+            candidate = Path(capture_image)
+            if candidate.suffix.lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}:
+                if not candidate.is_file() or candidate.stat().st_size <= 0:
+                    raise FileNotFoundError(f'capture image is not ready: {candidate}')
         body = json.dumps(data).encode('utf-8')
         req = urllib.request.Request(self.url, data=body, method='POST')
         req.add_header('Content-Type', 'application/json')
@@ -369,6 +375,10 @@ class EventManager:
         # 事件截图异步编码：默认关闭（保持同步语义）；开启后主线程只算路径，
         # resize/JPEG编码/写盘交给后台单线程队列，队满回退同步
         self.event_capture_async = bool(self.logic.get('event_capture_async', False))
+        self.event_capture_shutdown_timeout = max(
+            0.1,
+            float(self.logic.get('event_capture_shutdown_timeout_seconds', 5.0) or 5.0),
+        )
         self._capture_queue = None
         self._capture_worker = None
         self._capture_stop = threading.Event()
@@ -510,12 +520,14 @@ class EventManager:
                     pass
 
     def _stop_event_capture_worker(self):
-        if self._capture_queue is not None:
-            try:
-                self._capture_queue.join()  # 排空待写截图
-            except Exception:
-                pass
         self._capture_stop.set()
+        drained = self.wait_for_event_captures(timeout=self.event_capture_shutdown_timeout)
+        if not drained:
+            pending = int(getattr(self._capture_queue, 'unfinished_tasks', 0) or 0)
+            print(
+                f'[event-capture] shutdown timeout after '
+                f'{self.event_capture_shutdown_timeout:.1f}s pending={pending}'
+            )
         worker = self._capture_worker
         if worker is not None and worker.is_alive():
             try:
@@ -529,11 +541,19 @@ class EventManager:
         q = self._capture_queue
         if q is None:
             return True
-        deadline = None if timeout is None else time.time() + max(0.0, float(timeout))
-        while not q.empty():
-            if deadline is not None and time.time() >= deadline:
-                return False
-            time.sleep(0.02)
+        deadline = None if timeout is None else time.monotonic() + max(0.0, float(timeout))
+        condition = getattr(q, 'all_tasks_done', None)
+        if condition is None:
+            return int(getattr(q, 'unfinished_tasks', 0) or 0) == 0
+        with condition:
+            while int(getattr(q, 'unfinished_tasks', 0) or 0) > 0:
+                if deadline is None:
+                    condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                condition.wait(timeout=remaining)
         return True
 
     @staticmethod
@@ -2711,9 +2731,9 @@ class EventManager:
         if not capture_path:
             return ''
         capture_file = Path(capture_path)
-        if not capture_file.exists():
-            return ''
         if self.capture_mode == 'base64':
+            if not capture_file.exists():
+                return ''
             cached = self._capture_base64_cache.pop(str(capture_file), None)
             if cached:
                 return cached
@@ -2728,6 +2748,8 @@ class EventManager:
                 return encoded
             except Exception:
                 return ''
+        # path模式允许异步截图先把路径写入持久上传队列；EventUploader发送前
+        # 会验证文件已落盘，未就绪则按现有退避策略重试，不再静默清空字段。
         return str(capture_file)
 
     def _log_capture_failure(self, event_type, track_id, frame_idx, capture_path, frame,

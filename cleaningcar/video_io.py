@@ -616,9 +616,9 @@ class FfmpegH264Writer:
 
     def write(self, frame):
         if not self.is_opened():
-            return
+            return False
         if frame is None:
-            return
+            return False
         try:
             self.stdin.write(frame.tobytes())
             self._frames_total += 1
@@ -630,9 +630,11 @@ class FfmpegH264Writer:
                 print(f'[per-id-video] encoder={self.encoder} fps={fps:.2f} window={elapsed:.1f}s total_frames={self._frames_total} path={self.path}')
                 self._frames_since_log = 0
                 self._last_log_time = now
+            return True
         except Exception as exc:
             print(f'[per-id-video] write failed for {self.path}: {exc}')
             self.release()
+            return False
 
     def release(self):
         finalized = False
@@ -763,9 +765,12 @@ class AsyncPerIdVideoWriter:
             try:
                 frame_to_write = self.resize_fn(frame) if self.resize_fn is not None else frame
                 if frame_to_write is not None and self.writer is not None:
-                    self.writer.write(frame_to_write)
+                    write_result = self.writer.write(frame_to_write)
                     with self._lock:
-                        self._written += 1
+                        if write_result is False:
+                            self._write_errors += 1
+                        else:
+                            self._written += 1
                 now = time.time()
                 if self._log_interval > 0 and now - self._last_log_time >= self._log_interval:
                     stats = self.snapshot_stats()

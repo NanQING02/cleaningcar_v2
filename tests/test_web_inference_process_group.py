@@ -40,6 +40,8 @@ class InferenceProcessGroupTests(unittest.TestCase):
         mgr.progress_timeout_seconds = 90.0
         mgr.heartbeat_startup_grace_seconds = 90.0
         mgr.last_heartbeat_status = {}
+        mgr._routine_last_emit = {}
+        mgr._routine_suppressed = {}
         mgr._wash_priority_bypass_paused = False
         mgr._wash_priority_resume_due = None
         mgr._wash_priority_last_target = ""
@@ -88,7 +90,7 @@ class InferenceProcessGroupTests(unittest.TestCase):
         self.assertEqual(mgr.process, proc)
         thread_instance.start.assert_called_once()
 
-    @patch("web.inference.os.killpg")
+    @patch("web.inference.os.killpg", create=True)
     @patch("web.inference.os.kill")
     def test_signal_target_prefers_process_group_for_group_leader(self, kill_mock, killpg_mock):
         mgr = self._manager()
@@ -100,7 +102,7 @@ class InferenceProcessGroupTests(unittest.TestCase):
         killpg_mock.assert_called_once_with(4321, signal.SIGTERM)
         kill_mock.assert_not_called()
 
-    @patch("web.inference.os.killpg")
+    @patch("web.inference.os.killpg", create=True)
     @patch("web.inference.os.kill")
     def test_signal_target_falls_back_to_pid_for_non_group_leader(self, kill_mock, killpg_mock):
         mgr = self._manager()
@@ -302,7 +304,12 @@ class InferenceProcessGroupTests(unittest.TestCase):
             mgr._signal_target.call_args_list,
             [
                 unittest.mock.call(4321, signal.SIGTERM, reason="tracked_stop", allow_group=True),
-                unittest.mock.call(4321, signal.SIGKILL, reason="tracked_kill", allow_group=True),
+                unittest.mock.call(
+                    4321,
+                    getattr(signal, 'SIGKILL', signal.SIGTERM),
+                    reason="tracked_kill",
+                    allow_group=True,
+                ),
             ],
         )
 

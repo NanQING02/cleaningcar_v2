@@ -49,7 +49,9 @@
     "segment_minutes": 60,
     "debug_frame_max_width": 960,
     "debug_frame_quality": 80,
-    "reader_frame_timeout_seconds": 5.0
+    "reader_frame_timeout_seconds": 5.0,
+    "result_watchdog_seconds": 5.0,
+    "result_watchdog_max_consecutive": 3
   },
   "wheel": {
     "enabled": true,
@@ -213,6 +215,7 @@
     "plate_core_mask": "0",
     "plate_infer_stride": 2,
     "event_capture_async": true,
+    "event_capture_shutdown_timeout_seconds": 5.0,
     "enable_event_disk": true,
     "vehicle_tracker_impl": "bytetrack",
     "plate_requires_vehicle": true,

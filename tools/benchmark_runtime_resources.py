@@ -19,6 +19,8 @@ def parse_args():
     parser.add_argument('--warmup-seconds', type=float, default=20.0)
     parser.add_argument('--sample-interval', type=float, default=0.5)
     parser.add_argument('--label', default='benchmark')
+    parser.add_argument('--plate-core-mask', default=None)
+    parser.add_argument('--keep-wheel', action='store_true')
     return parser.parse_args()
 
 
@@ -92,7 +94,7 @@ def system_memory_kb():
     return fields['MemTotal'], fields['MemAvailable']
 
 
-def sanitized_config(source_path, output_dir):
+def sanitized_config(source_path, output_dir, plate_core_mask=None, keep_wheel=False):
     data = json.loads(Path(source_path).read_text(encoding='utf-8'))
     system = data.setdefault('system', {})
     api = system.setdefault('api', {})
@@ -108,11 +110,14 @@ def sanitized_config(source_path, output_dir):
     video['csv'] = ''
     video['debug_frame_path'] = str(output_dir / 'debug.jpg')
     wheel = data.setdefault('wheel', {})
-    wheel['enabled'] = False
+    if not keep_wheel:
+        wheel['enabled'] = False
     logic = data.setdefault('logic', {})
     logic['enable_event_disk'] = False
     logic['enable_per_id_video'] = False
     logic['event_trace_enabled'] = False
+    if plate_core_mask is not None:
+        logic['plate_core_mask'] = str(plate_core_mask)
     data['event_output_dir'] = str(output_dir / 'events')
     data['event_capture_dir'] = str(output_dir / 'captures')
     return data
@@ -126,7 +131,16 @@ def main():
     config_path = Path(args.config).resolve()
     benchmark_config = output_dir / 'benchmark_config.json'
     benchmark_config.write_text(
-        json.dumps(sanitized_config(config_path, output_dir), ensure_ascii=False, indent=2),
+        json.dumps(
+            sanitized_config(
+                config_path,
+                output_dir,
+                plate_core_mask=args.plate_core_mask,
+                keep_wheel=args.keep_wheel,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding='utf-8',
     )
     python_path = Path(args.python).expanduser() if args.python else (root / 'venv-gst' / 'bin' / 'python')
@@ -213,6 +227,8 @@ def main():
         'video_summary': frame_match[-1] if frame_match else None,
         'dropped_frames_total': int(dropped_matches[-1]) if dropped_matches else 0,
         'sample_count': sample_count,
+        'plate_core_mask': args.plate_core_mask,
+        'keep_wheel': bool(args.keep_wheel),
         'samples_path': str(samples_path),
         'log_path': str(log_path),
     }

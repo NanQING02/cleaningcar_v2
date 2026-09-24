@@ -161,6 +161,16 @@ class ConfigManager:
             reader_frame_timeout = 5.0
         video['reader_frame_timeout_seconds'] = max(0.0, reader_frame_timeout)
         try:
+            result_watchdog_seconds = float(video.get('result_watchdog_seconds', 5.0))
+        except (TypeError, ValueError):
+            result_watchdog_seconds = 5.0
+        video['result_watchdog_seconds'] = max(0.0, result_watchdog_seconds)
+        try:
+            watchdog_consecutive = int(video.get('result_watchdog_max_consecutive', 3))
+        except (TypeError, ValueError):
+            watchdog_consecutive = 3
+        video['result_watchdog_max_consecutive'] = max(1, min(100, watchdog_consecutive))
+        try:
             segment_minutes = int(video.get('segment_minutes', 60))
         except (TypeError, ValueError):
             segment_minutes = 0
@@ -513,6 +523,17 @@ class ConfigManager:
         per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()
         logic['per_id_video_dir'] = per_id_video_dir or DEFAULT_PER_ID_VIDEO_DIR
         logic.setdefault('enable_event_disk', False)
+        logic.setdefault('event_capture_async', False)
+        try:
+            capture_shutdown_timeout = float(
+                logic.get('event_capture_shutdown_timeout_seconds', 5.0)
+            )
+        except (TypeError, ValueError):
+            capture_shutdown_timeout = 5.0
+        logic['event_capture_shutdown_timeout_seconds'] = max(
+            0.1,
+            min(60.0, capture_shutdown_timeout),
+        )
         shadow = logic.get('shadow_plate_pool')
         if not isinstance(shadow, dict):
             shadow = {}

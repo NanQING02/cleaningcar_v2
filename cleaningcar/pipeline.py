@@ -61,6 +61,7 @@ from .video_io import (
 from .vision import box_iou, point_in_box, scale_point, scale_polygon
 from .wheel import WheelDetectionService
 from .worker import DetectWorker
+from .watchdog import ResultWatchdog
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PER_ID_VIDEO_DIR = (PROJECT_ROOT / 'video_result' / 'per_id').resolve()
@@ -673,7 +674,11 @@ def process_video(path, args):
     uploader = None
     if getattr(args, 'api_url', None):
         queue_db = Path(config.get('event_output_dir', './events')) / 'upload_queue.db'
-        uploader = EventUploader(args.api_url, getattr(args, 'api_token', None), queue_path=queue_db)
+        uploader = EventUploader(
+            args.api_url,
+            getattr(args, 'api_token', None),
+            queue_path=queue_db,
+        )
     wheel_photo_uploader = None
     wheel_photo_url = config.get('wheel_photo_url') or getattr(args, 'wheel_photo_url', '')
     if wheel_photo_url:
@@ -762,6 +767,8 @@ def process_video(path, args):
     raw_frame_cache = {}
     task_enqueue_ts = {}
     late_frame_count = [0]
+    terminal_failure = None
+    worker_watchdog_failure = False
     reader_log_interval = float(config.get('reader_fps_log_interval', 10.0))
     reader_log_last_time = start
     reader_log_frames = 0
@@ -998,35 +1005,6 @@ def process_video(path, args):
         raw_frame_cache.pop(frame_idx, None)
         task_enqueue_ts.pop(frame_idx, None)
         dropped_frame_count += 1
-
-    # 单帧结果看门狗：worker推理挂死时其帧结果永不返回，
-    # next_frame_to_write会永久卡住并使pending/raw_frame_cache只增不减。
-    # 超时后合成空结果推进管线（等价于该帧无检测），迟到结果直接丢弃。
-    result_watchdog_seconds = max(0.0, float(video_cfg.get('result_watchdog_seconds', 5.0)))
-
-    def _check_result_watchdog():
-        idx = next_frame_to_write
-        if idx in pending or idx in dropped_frame_ids:
-            return False
-        enq_ts = task_enqueue_ts.get(idx)
-        if enq_ts is None:
-            return False
-        if (time.time() - enq_ts) <= result_watchdog_seconds:
-            return False
-        task_enqueue_ts.pop(idx, None)
-        late_frame_count[0] += 1
-        print(
-            f'[watchdog] frame {idx} result overdue after {time.time() - enq_ts:.2f}s '
-            f'(threshold={result_watchdog_seconds:.2f}s); synthesizing empty result to unblock pipeline'
-        )
-        write_heartbeat(
-            status='running',
-            extra={'watchdog_frame': int(idx), 'watchdog_late_results': late_frame_count[0]},
-        )
-        pending[idx] = (raw_frame_cache.get(idx), [], [], None)
-        # 合成结果可能无人消费（result_q空、task_q未满时不会再触发drain），主动排一次
-        drain_results(block=False)
-        return True
         try:
             event_manager.trace_record('dropped_frame', {
                 'frameIdx': frame_idx,
@@ -1039,6 +1017,64 @@ def process_video(path, args):
             f'[realtime] dropped stale frame idx={frame_idx}, total={dropped_frame_count}',
             window_seconds=10.0,
         )
+
+    # 单帧结果看门狗：worker推理挂死时其帧结果永不返回，
+    # next_frame_to_write会永久卡住并使pending/raw_frame_cache只增不减。
+    # 超时后合成空结果推进管线（等价于该帧无检测），迟到结果直接丢弃。
+    result_watchdog_seconds = max(0.0, float(video_cfg.get('result_watchdog_seconds', 5.0)))
+    result_watchdog = ResultWatchdog(
+        video_cfg.get('result_watchdog_max_consecutive', 3)
+    )
+
+    def _check_result_watchdog():
+        nonlocal terminal_failure, worker_watchdog_failure
+        idx = next_frame_to_write
+        if idx in pending or idx in dropped_frame_ids:
+            return False
+        enq_ts = task_enqueue_ts.get(idx)
+        if enq_ts is None:
+            return False
+        if (time.time() - enq_ts) <= result_watchdog_seconds:
+            return False
+        task_enqueue_ts.pop(idx, None)
+        late_frame_count[0] += 1
+        should_abort = result_watchdog.record_timeout()
+        print(
+            f'[watchdog] frame {idx} result overdue after {time.time() - enq_ts:.2f}s '
+            f'(threshold={result_watchdog_seconds:.2f}s); synthesizing empty result to unblock pipeline'
+        )
+        write_heartbeat(
+            status='running',
+            extra={
+                'watchdog_frame': int(idx),
+                'watchdog_late_results': late_frame_count[0],
+                'watchdog_consecutive': result_watchdog.consecutive,
+            },
+        )
+        # 合成结果必须进入result_q；直接写pending后再调用drain_results时，
+        # result_q为空会提前返回，next_frame_to_write仍无法推进。
+        result_q.put_nowait((idx, None, raw_frame_cache.get(idx), [], [], True))
+        drain_results(block=False)
+        if should_abort:
+            worker_watchdog_failure = True
+            terminal_failure = (
+                f'inference worker produced no result for '
+                f'{result_watchdog.consecutive} consecutive frames '
+                f'(timeout={result_watchdog_seconds:.2f}s)'
+            )
+            print(f'[watchdog] fatal: {terminal_failure}')
+            write_heartbeat(
+                status='worker_failed',
+                force=True,
+                extra={
+                    'failure_reason': terminal_failure,
+                    'watchdog_frame': int(idx),
+                    'watchdog_late_results': late_frame_count[0],
+                    'watchdog_consecutive': result_watchdog.consecutive,
+                },
+            )
+            return 'fatal'
+        return 'timeout'
 
     def _advance_dropped_frames():
         nonlocal next_frame_to_write
@@ -1962,9 +1998,12 @@ def process_video(path, args):
         if item is None:
             finished_workers += 1
         else:
+            synthetic_result = False
             if len(item) == 4:
                 idx, frame_out, rows, det_payload = item
                 capture_ts = None
+            elif len(item) == 6:
+                idx, capture_ts, frame_out, rows, det_payload, synthetic_result = item
             else:
                 idx, capture_ts, frame_out, rows, det_payload = item
             task_enqueue_ts.pop(idx, None)
@@ -1974,6 +2013,8 @@ def process_video(path, args):
                 raw_frame_cache.pop(idx, None)
                 print(f'[watchdog] discarding late result for already-advanced frame {idx}')
                 return True
+            if not synthetic_result:
+                result_watchdog.record_success()
             pending[idx] = (frame_out, rows, det_payload, capture_ts)
             _advance_dropped_frames()
             while next_frame_to_write in pending:
@@ -2538,8 +2579,6 @@ def process_video(path, args):
             return True
 
     frame_limit = args.limit if args.limit and args.limit > 0 else None
-    terminal_failure = None
-
     # SIGTERM/SIGINT优雅停机：guardian/systemd stop时正常走退出清理
     # （排空结果、收尾录像writer、关CSV与上传队列），而不是被默认信号直接杀死
     # 留下孤儿ffmpeg和不转正的*_temp.mp4；第二次信号恢复默认处理允许强杀。
@@ -2572,7 +2611,8 @@ def process_video(path, args):
             print('[signal] shutdown requested, exiting main loop')
             break
         if result_watchdog_seconds > 0.0:
-            _check_result_watchdog()
+            if _check_result_watchdog() == 'fatal':
+                break
             _advance_dropped_frames()
         poll_runtime_commands()
         if runtime_paused:
@@ -2879,27 +2919,33 @@ def process_video(path, args):
             reader_log_last_reconnect_count = reconnect_count
             reader_log_frames = 0
             reader_log_last_time = now
-        while result_q.qsize() > runtime_queue_size // 2:
-            drain_results(block=False)
+        while drain_results(block=False):
+            pass
 
-    shutdown_heartbeat_status = 'reader_failed' if terminal_failure else 'stopping'
+    shutdown_heartbeat_status = (
+        'worker_failed' if worker_watchdog_failure
+        else ('reader_failed' if terminal_failure else 'stopping')
+    )
     shutdown_heartbeat_extra = {'failure_reason': terminal_failure} if terminal_failure else None
     write_heartbeat(status=shutdown_heartbeat_status, force=True, extra=shutdown_heartbeat_extra)
-    for _ in workers:
-        while True:
-            try:
-                task_q.put(None, timeout=0.5)
-                break
-            except Full:
-                drain_results(block=False)
+    if not worker_watchdog_failure:
+        for _ in workers:
+            while True:
+                try:
+                    task_q.put(None, timeout=0.5)
+                    break
+                except Full:
+                    drain_results(block=False)
+                    poll_runtime_commands(force=True)
+                    write_heartbeat(status=shutdown_heartbeat_status, force=True, extra=shutdown_heartbeat_extra)
+        task_q.join()
+        while finished_workers < len(workers):
+            if not drain_results(block=True):
                 poll_runtime_commands(force=True)
-                write_heartbeat(status=shutdown_heartbeat_status, force=True, extra=shutdown_heartbeat_extra)
-    task_q.join()
-    while finished_workers < len(workers):
-        if not drain_results(block=True):
-            poll_runtime_commands(force=True)
-            drain_status = 'reader_failed' if terminal_failure else 'draining'
-            write_heartbeat(status=drain_status, force=True, extra=shutdown_heartbeat_extra)
+                drain_status = 'reader_failed' if terminal_failure else 'draining'
+                write_heartbeat(status=drain_status, force=True, extra=shutdown_heartbeat_extra)
+    else:
+        print('[watchdog] skipping worker queue drain because the inference thread is unresponsive')
 
     cleanup_runtime()
     try:
@@ -2908,7 +2954,10 @@ def process_video(path, args):
         pass
 
     elapsed = time.time() - start
-    final_status = 'reader_failed' if terminal_failure else 'stopped'
+    final_status = (
+        'worker_failed' if worker_watchdog_failure
+        else ('reader_failed' if terminal_failure else 'stopped')
+    )
     final_extra = {'elapsed_seconds': elapsed}
     if terminal_failure:
         final_extra['failure_reason'] = terminal_failure

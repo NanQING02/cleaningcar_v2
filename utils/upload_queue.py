@@ -8,6 +8,8 @@ from typing import Optional, Tuple
 
 
 PLATFORM_EVENT_ID_MAX_LENGTH = 36
+UPLOAD_QUEUE_SCHEMA_VERSION = 1
+MIGRATION_BATCH_SIZE = 500
 
 
 def normalize_event_id(value, max_length=PLATFORM_EVENT_ID_MAX_LENGTH):
@@ -30,6 +32,7 @@ class SQLiteUploadQueue:
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.execute('PRAGMA journal_mode=WAL;')
         self.conn.execute('PRAGMA synchronous=NORMAL;')
+        self.conn.execute('PRAGMA busy_timeout=5000;')
         self._lock = threading.Lock()
         self._init_schema()
 
@@ -78,7 +81,11 @@ class SQLiteUploadQueue:
                 'CREATE INDEX IF NOT EXISTS idx_dead_letter_group '
                 'ON dead_letter(group_key, id)'
             )
-            self._migrate_existing_rows_locked()
+            schema_version_row = self.conn.execute('PRAGMA user_version').fetchone()
+            schema_version = int(schema_version_row[0]) if schema_version_row else 0
+            if schema_version < UPLOAD_QUEUE_SCHEMA_VERSION:
+                self._migrate_existing_rows_locked()
+                self.conn.execute(f'PRAGMA user_version={UPLOAD_QUEUE_SCHEMA_VERSION}')
             if self.conn.in_transaction:
                 try:
                     self.conn.commit()
@@ -100,25 +107,33 @@ class SQLiteUploadQueue:
         return data, event_id, event_type
 
     def _migrate_existing_rows_locked(self):
-        rows = self.conn.execute(
-            'SELECT id, payload, group_key, event_type FROM queue ORDER BY id'
-        ).fetchall()
-        for job_id, payload_json, group_key, event_type in rows:
-            try:
-                payload = json.loads(payload_json)
-            except json.JSONDecodeError:
-                payload = {}
-            normalized, resolved_group, resolved_type = self._payload_metadata(payload)
-            normalized_json = json.dumps(normalized, ensure_ascii=False)
-            if (
-                normalized_json != payload_json
-                or str(group_key or '') != resolved_group
-                or event_type != resolved_type
-            ):
-                self.conn.execute(
-                    'UPDATE queue SET payload=?, group_key=?, event_type=? WHERE id=?',
-                    (normalized_json, resolved_group, resolved_type, job_id),
-                )
+        last_id = 0
+        while True:
+            rows = self.conn.execute(
+                'SELECT id, payload, group_key, event_type FROM queue '
+                'WHERE id>? ORDER BY id LIMIT ?',
+                (last_id, MIGRATION_BATCH_SIZE),
+            ).fetchall()
+            if not rows:
+                break
+            for job_id, payload_json, group_key, event_type in rows:
+                try:
+                    payload = json.loads(payload_json)
+                except json.JSONDecodeError:
+                    payload = {}
+                normalized, resolved_group, resolved_type = self._payload_metadata(payload)
+                normalized_json = json.dumps(normalized, ensure_ascii=False)
+                if (
+                    normalized_json != payload_json
+                    or str(group_key or '') != resolved_group
+                    or event_type != resolved_type
+                ):
+                    self.conn.execute(
+                        'UPDATE queue SET payload=?, group_key=?, event_type=? WHERE id=?',
+                        (normalized_json, resolved_group, resolved_type, job_id),
+                    )
+                last_id = int(job_id)
+            self.conn.commit()
 
     def enqueue(self, payload: dict):
         normalized, group_key, event_type = self._payload_metadata(payload)

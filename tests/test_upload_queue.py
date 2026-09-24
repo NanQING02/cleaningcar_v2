@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from utils.upload_queue import (
     PLATFORM_EVENT_ID_MAX_LENGTH,
@@ -114,6 +115,20 @@ class UploadQueueOrderingTests(unittest.TestCase):
             finally:
                 queue.close()
 
+            conn = sqlite3.connect(str(db_path))
+            try:
+                self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 1)
+            finally:
+                conn.close()
+
+            with patch.object(
+                SQLiteUploadQueue,
+                '_migrate_existing_rows_locked',
+                side_effect=AssertionError('migration must not run twice'),
+            ):
+                reopened = SQLiteUploadQueue(db_path)
+                reopened.close()
+
     def test_failed_stage_moves_same_event_tail_to_dead_letter_with_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             queue = SQLiteUploadQueue(Path(tmpdir) / 'queue.db')
@@ -207,6 +222,7 @@ class UploadQueueOrderingTests(unittest.TestCase):
                 self.assertEqual(retries, 0)
             finally:
                 queue.close()
+
 
 
 if __name__ == '__main__':

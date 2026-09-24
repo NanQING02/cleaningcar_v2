@@ -1,11 +1,13 @@
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-from cleaningcar.events import EventManager
+from cleaningcar.events import EventManager, EventUploader
 
 
 class _DummyZoneManager:
@@ -84,6 +86,42 @@ class EventCaptureAsyncTests(unittest.TestCase):
 
         self.assertEqual(path, '')
         mgr.close()
+
+    def test_path_payload_is_preserved_while_async_file_is_pending(self):
+        mgr = self._manager(capture_async=True)
+        started = threading.Event()
+        release = threading.Event()
+        original = mgr._encode_event_capture
+
+        def delayed_encode(**kwargs):
+            started.set()
+            release.wait(timeout=2.0)
+            return original(**kwargs)
+
+        mgr._encode_event_capture = delayed_encode
+        path = mgr._save_event_capture(1, 7, 300, self._frame())
+        self.assertTrue(started.wait(timeout=1.0))
+        self.assertFalse(Path(path).exists())
+        self.assertEqual(mgr._prepare_capture_image(path), path)
+        self.assertFalse(mgr.wait_for_event_captures(timeout=0.05))
+        release.set()
+        self.assertTrue(mgr.wait_for_event_captures(timeout=2.0))
+        mgr.close()
+
+    def test_event_uploader_retries_until_capture_path_exists(self):
+        uploader = EventUploader()
+        uploader.url = 'http://127.0.0.1/event'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            capture = Path(tmpdir) / 'pending.jpg'
+            with self.assertRaises(FileNotFoundError):
+                uploader._send({'captureImage': str(capture)})
+
+            capture.write_bytes(b'jpeg')
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'ok'
+            with patch('cleaningcar.events.urllib.request.urlopen', return_value=response) as mocked:
+                uploader._send({'captureImage': str(capture)})
+            mocked.assert_called_once()
 
 
 if __name__ == '__main__':

@@ -23,23 +23,26 @@ class PerfLockTests(unittest.TestCase):
             self.assertTrue(perf_lock.perf_lock_restore_enabled(config))
 
     def test_build_command_uses_sudo_for_non_root_when_available(self):
-        with patch.object(perf_lock.os, "geteuid", return_value=1000), \
+        script_path = Path("/tmp/freq.sh").resolve()
+        with patch.object(perf_lock.os, "geteuid", return_value=1000, create=True), \
                 patch.object(perf_lock.shutil, "which", return_value="/usr/bin/sudo"), \
                 patch.dict("os.environ", {}, clear=True):
-            cmd = perf_lock.build_perf_lock_command(Path("/tmp/freq.sh"), "apply")
-        self.assertEqual(cmd, ["sudo", "-n", "bash", "/tmp/freq.sh", "apply"])
+            cmd = perf_lock.build_perf_lock_command(script_path, "apply")
+        self.assertEqual(cmd, ["sudo", "-n", "bash", str(script_path), "apply"])
 
     def test_build_command_skips_sudo_when_env_explicitly_disables_it(self):
-        with patch.object(perf_lock.os, "geteuid", return_value=1000), \
+        script_path = Path("/tmp/freq.sh").resolve()
+        with patch.object(perf_lock.os, "geteuid", return_value=1000, create=True), \
                 patch.object(perf_lock.shutil, "which", return_value="/usr/bin/sudo"), \
                 patch.dict("os.environ", {"CLEANINGCAR_PERF_LOCK_USE_SUDO": "0"}, clear=True):
-            cmd = perf_lock.build_perf_lock_command(Path("/tmp/freq.sh"), "apply")
-        self.assertEqual(cmd, ["bash", "/tmp/freq.sh", "apply"])
+            cmd = perf_lock.build_perf_lock_command(script_path, "apply")
+        self.assertEqual(cmd, ["bash", str(script_path), "apply"])
 
     def test_build_command_skips_sudo_when_root(self):
-        with patch.object(perf_lock.os, "geteuid", return_value=0):
-            cmd = perf_lock.build_perf_lock_command(Path("/tmp/freq.sh"), "status")
-        self.assertEqual(cmd, ["bash", "/tmp/freq.sh", "status"])
+        script_path = Path("/tmp/freq.sh").resolve()
+        with patch.object(perf_lock.os, "geteuid", return_value=0, create=True):
+            cmd = perf_lock.build_perf_lock_command(script_path, "status")
+        self.assertEqual(cmd, ["bash", str(script_path), "status"])
 
     def test_maybe_apply_perf_lock_noop_when_disabled(self):
         config = {"system": {"performance_lock_enabled": False}}
@@ -66,7 +69,7 @@ class PerfLockTests(unittest.TestCase):
                 }
             }
             with patch.dict("os.environ", {}, clear=True), \
-                    patch.object(perf_lock.os, "geteuid", return_value=0), \
+                    patch.object(perf_lock.os, "geteuid", return_value=0, create=True), \
                     patch.object(
                         perf_lock.subprocess,
                         "run",

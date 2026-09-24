@@ -1,6 +1,8 @@
 import argparse
 import csv
+import io
 import json
+import threading
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -35,6 +37,94 @@ class SafeJSONResponse(StarletteJSONResponse):
 
     def render(self, content: Any) -> bytes:
         return super().render(_sanitize_surrogates(content))
+
+
+class EvidenceCsvCache:
+    """Incrementally cache append-only evidence CSV rows for Web queries."""
+
+    def __init__(self):
+        self._entries = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _build_entry(path: Path):
+        with path.open('r', encoding='utf-8-sig', newline='') as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            fieldnames = list(reader.fieldnames or [])
+        stat = path.stat()
+        manifest_by_event = {}
+        for row in rows:
+            event_id = str(row.get('event_id') or '')
+            manifest = str(row.get('manifest') or '')
+            if event_id and manifest:
+                manifest_by_event[event_id] = manifest
+        return {
+            'size': int(stat.st_size),
+            'mtime_ns': int(stat.st_mtime_ns),
+            'fieldnames': fieldnames,
+            'rows': rows,
+            'manifest_by_event': manifest_by_event,
+        }
+
+    def _refresh_locked(self, path: Path):
+        path = Path(path).resolve()
+        stat = path.stat()
+        key = str(path)
+        entry = self._entries.get(key)
+        if entry is None or int(stat.st_size) < int(entry['size']):
+            entry = self._build_entry(path)
+            self._entries[key] = entry
+            return entry
+        if int(stat.st_size) > int(entry['size']):
+            with path.open('rb') as handle:
+                handle.seek(int(entry['size']))
+                chunk = handle.read()
+            text = chunk.decode('utf-8', errors='replace')
+            if text:
+                reader = csv.DictReader(io.StringIO(text), fieldnames=entry['fieldnames'])
+                new_rows = [dict(row) for row in reader]
+                entry['rows'].extend(new_rows)
+                for row in new_rows:
+                    event_id = str(row.get('event_id') or '')
+                    manifest = str(row.get('manifest') or '')
+                    if event_id and manifest:
+                        entry['manifest_by_event'][event_id] = manifest
+            entry['size'] = int(stat.st_size)
+            entry['mtime_ns'] = int(stat.st_mtime_ns)
+        elif int(stat.st_mtime_ns) != int(entry['mtime_ns']):
+            entry = self._build_entry(path)
+            self._entries[key] = entry
+        return entry
+
+    def rows(self, path: Path):
+        with self._lock:
+            entry = self._refresh_locked(path)
+            return list(entry['rows'])
+
+    def search(self, path: Path, needle: str, limit: int):
+        needle = str(needle or '').strip().casefold()
+        limit = max(1, min(500, int(limit or 100)))
+        matches = []
+        with self._lock:
+            entry = self._refresh_locked(path)
+            for row in reversed(entry['rows']):
+                if needle:
+                    searchable = ' '.join(str(value or '') for value in row.values()).casefold()
+                    if needle not in searchable:
+                        continue
+                matches.append(dict(row))
+                if len(matches) >= limit:
+                    break
+        return matches
+
+    def manifest_for(self, path: Path, event_id: str):
+        with self._lock:
+            entry = self._refresh_locked(path)
+            return str(entry['manifest_by_event'].get(str(event_id), '') or '')
+
+
+_evidence_csv_cache = EvidenceCsvCache()
 
 from cleaningcar.runtime_signals import resolve_runtime_settings, write_snapshot_command
 
@@ -463,19 +553,11 @@ def search_event_evidence(
     path = _event_output_dir(cfg) / 'event_index.csv'
     if not path.exists():
         return {'available': False, 'path': str(path), 'rows': []}
-    needle = str(query or '').strip().casefold()
-    rows = deque(maxlen=max(1, min(500, int(limit or 100))))
     try:
-        with path.open('r', encoding='utf-8-sig', newline='') as handle:
-            for row in csv.DictReader(handle):
-                if needle:
-                    searchable = ' '.join(str(value or '') for value in row.values()).casefold()
-                    if needle not in searchable:
-                        continue
-                rows.append(row)
+        rows = _evidence_csv_cache.search(path, query, limit)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'读取事件证据索引失败: {exc}') from exc
-    return {'available': True, 'path': str(path), 'rows': list(reversed(rows))}
+    return {'available': True, 'path': str(path), 'rows': rows}
 
 
 @app.get("/evidence/manifest")
@@ -490,10 +572,7 @@ def get_event_evidence_manifest(event_id: str, key: Optional[str] = None):
         raise HTTPException(status_code=404, detail='事件证据索引不存在')
     manifest_value = ''
     try:
-        with index_path.open('r', encoding='utf-8-sig', newline='') as handle:
-            for row in csv.DictReader(handle):
-                if str(row.get('event_id') or '') == event_id:
-                    manifest_value = str(row.get('manifest') or '')
+        manifest_value = _evidence_csv_cache.manifest_for(index_path, event_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'读取事件证据索引失败: {exc}') from exc
     if not manifest_value:

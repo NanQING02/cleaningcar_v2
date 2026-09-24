@@ -274,7 +274,7 @@ class WheelPhotoTests(unittest.TestCase):
         )
         rep = list(st['wheel_photo_history']['left'].values())[0]['representative']
         self.assertTrue(Path(rep['photoUrl']).is_absolute())
-        self.assertTrue(rep['photoUrl'].startswith(str(mgr.wheel_photo_base_dir)))
+        Path(rep['photoUrl']).resolve().relative_to(mgr.wheel_photo_base_dir.resolve())
         self.assertIn('/143025_1_left_1.jpg', rep['photoUrl'])
         self.assertTrue(Path(rep['photoUrl']).exists())
         with Path(rep['photoUrl']).open('rb') as f:

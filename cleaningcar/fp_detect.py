@@ -153,12 +153,27 @@ class FpModelPostprocessor:
         nms_thresh: float = 0.45,
         output_mode: str = "6",
         num_classes: int = 9,
+        class_thresholds=None,
     ):
         self.img_size = tuple(img_size)
         self.obj_thresh = float(obj_thresh)
         self.nms_thresh = float(nms_thresh)
         self.num_classes = int(num_classes)
+        self.class_thresholds = {
+            int(key): float(value)
+            for key, value in dict(class_thresholds or {}).items()
+            if 0 <= int(key) < self.num_classes
+        }
         self.output_mode = self._normalize_output_mode(output_mode)
+
+    def candidate_keep_mask(self, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
+        """Apply per-class confidence thresholds before class-wise NMS."""
+        if not self.class_thresholds:
+            return scores >= self.obj_thresh
+        thresholds = np.full(scores.shape, self.obj_thresh, dtype=np.float32)
+        for class_id, threshold in self.class_thresholds.items():
+            thresholds[classes == class_id] = max(self.obj_thresh, float(threshold))
+        return scores >= thresholds
 
     @staticmethod
     def _normalize_output_mode(output_mode: str) -> str:
@@ -269,7 +284,7 @@ class FpModelPostprocessor:
         scores = np.max(class_confidences, axis=-1)
         classes = np.argmax(class_confidences, axis=-1)
 
-        keep = np.where(scores >= self.obj_thresh)[0]
+        keep = np.where(self.candidate_keep_mask(scores, classes))[0]
         if keep.size == 0:
             return None, None, None
 

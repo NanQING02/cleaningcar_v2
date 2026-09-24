@@ -54,6 +54,7 @@ class DetectWorker(threading.Thread):
                 nms_thresh=float(args.iou),
                 output_mode=str(getattr(args, "fp_output_mode", "6")),
                 num_classes=len(CLASS_NAMES),
+                class_thresholds=CLASS_THRESH,
             )
             print(f"Worker {self.idx}: fp_postprocess_mode={self.detector_postprocessor.describe_mode()}")
             self.dual_lpr = DualPlateRecognizer(
