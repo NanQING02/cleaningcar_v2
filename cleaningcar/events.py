@@ -346,7 +346,8 @@ class EventManager:
             if not self.event_log_path.exists():
                 with self.event_log_path.open('w', encoding='utf-8') as f:
                     f.write('camera_id,track_id,type,capture_time,frame_idx,stationary_frames,'
-                            'wash_duration,plate,vehicle,direction_code,direction_label,plate_is_guess,anchor_dwell_frames\n')
+                            'wash_duration,manual_wash_duration,cleaning_table_wash_duration,'
+                            'plate,vehicle,direction_code,direction_label,plate_is_guess,anchor_dwell_frames\n')
         self.uploader = uploader
         self.capture_mode = capture_mode
         self.capture_quality = int(config.get('event_capture_quality', 85) or 85)
@@ -1012,7 +1013,7 @@ class EventManager:
                      plate_conf, confirmed, cleaning_label='', anchor_point=None, plate_is_guess=False,
                      plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None,
                      anchor_direction=None, plate_text_conf=None, plate_mutual_verified=False,
-                     plate_motion_consistent=True):
+                     plate_motion_consistent=True, manual_detected=None, table_detected=None):
         if track_id <= 0:
             return
         if self.disable_plate_only_events and is_plate and vehicle_box is None:
@@ -1061,6 +1062,8 @@ class EventManager:
             'water_consecutive_frames': 0,
             'last_water_observation_frame': -1,
             'effective_wash_frames': 0,
+            'manual_wash_frames': 0,
+            'table_wash_frames': 0,
             'last_frame_idx': frame_idx,
             'last_frame': None,
             'plate_text_latest': '',
@@ -1228,6 +1231,13 @@ class EventManager:
             st['plate_conf_history'] = history
         if cleaning_label:
             st['last_cleaning'] = cleaning_label
+        # 分清洗方式计数：未显式传manual/table时从cleaning_label推导（兼容旧调用）
+        if manual_detected is None:
+            manual_detected = str(cleaning_label or '').strip().lower() == 'manual'
+        if table_detected is None:
+            table_detected = str(cleaning_label or '').strip().lower() == 'cleaning table'
+        manual_detected = bool(manual_detected)
+        table_detected = bool(table_detected)
         if anchor_point is None:
             anchor_point = get_anchor_point(vehicle_box or plate_box or st.get('last_vehicle_box') or st.get('last_plate_box'),
                                             self.anchor_offset_ratio)
@@ -1337,6 +1347,8 @@ class EventManager:
             st['wash_duration'] = 0.0
             st['water_consecutive_frames'] = 0
             st['effective_wash_frames'] = 0
+            st['manual_wash_frames'] = 0
+            st['table_wash_frames'] = 0
         enter_frame = st.get('zone_b_enter_frame', -1)
         anchor_elapsed = 0
         if inside_b:
@@ -1389,6 +1401,12 @@ class EventManager:
             if water_in_b:
                 st['water_consecutive_frames'] = int(st.get('water_consecutive_frames', 0) or 0) + 1
                 st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
+                # 分方式计数与effective_wash_frames同条件：同帧两类并存各计一次，
+                # 分时长之和可能大于总时长（总时长为两类并集口径，保持不变）
+                if manual_detected:
+                    st['manual_wash_frames'] = st.get('manual_wash_frames', 0) + 1
+                if table_detected:
+                    st['table_wash_frames'] = st.get('table_wash_frames', 0) + 1
             else:
                 st['water_consecutive_frames'] = 0
         washing_now = bool(water_in_b)
@@ -1827,6 +1845,8 @@ class EventManager:
             event['washEndTime'] = track_state.get('wash_end_time') or event['captureTime']
             event['videoEndTime'] = self.frame_timestamp(track_state.get('last_frame_idx', frame_idx))
             event['totalWashDuration'] = round(track_state.get('wash_duration', 0.0), 2)
+            event['manualWashDuration'] = round(self._wash_frames_seconds(track_state.get('manual_wash_frames', 0)), 2)
+            event['cleaningTableWashDuration'] = round(self._wash_frames_seconds(track_state.get('table_wash_frames', 0)), 2)
             video_duration = 0.0
             type1_time = track_state.get('type1_capture_time')
             if type1_time:
@@ -1906,6 +1926,8 @@ class EventManager:
                 with self.event_log_path.open('a', encoding='utf-8') as f:
                     f.write(f"{self.camera_id},{track_id},{event_type},{event['captureTime']},{frame_idx},"
                             f"0,{round(track_state.get('wash_duration',0.0),2)},"
+                            f"{self._wash_frames_seconds(track_state.get('manual_wash_frames', 0)):.2f},"
+                            f"{self._wash_frames_seconds(track_state.get('table_wash_frames', 0)):.2f},"
                             f"{event['plateNumber']},{event['vehicleType']},{dir_code},{dir_label},"
                             f"{int(event['plateIsGuess'])},{anchor_dwell}\n")
             except Exception:
@@ -2462,6 +2484,16 @@ class EventManager:
         seconds = frames / max(self.fps, 1e-6)
         return max(0.0, seconds)
 
+    def _wash_frames_seconds(self, frames):
+        """按帧数换算秒（与总冲洗时长同一口径，丢帧时等比偏短）。"""
+        try:
+            frames = int(frames)
+        except (TypeError, ValueError):
+            return 0.0
+        if frames <= 0:
+            return 0.0
+        return max(0.0, frames / max(self.fps, 1e-6))
+
     def _record_tail_frames(self):
         if not bool(getattr(self, 'per_id_video_enabled', False)):
             return 0
@@ -2935,6 +2967,8 @@ class EventManager:
             wash_end_time = track_state.get('wash_end_time') or capture_time
             video_end_time = self.frame_timestamp(track_state.get('last_frame_idx', frame_idx))
             total_wash_duration = round(track_state.get('wash_duration', 0.0), 2)
+            manual_wash_duration = round(self._wash_frames_seconds(track_state.get('manual_wash_frames', 0)), 2)
+            table_wash_duration = round(self._wash_frames_seconds(track_state.get('table_wash_frames', 0)), 2)
             cleanliness = self.default_cleanliness
             video_duration = event.get('videoDuration')
         payload = {}
@@ -2970,6 +3004,9 @@ class EventManager:
             payload['washEndTime'] = wash_end_time
             payload['videoEndTime'] = video_end_time
             payload['totalWashDuration'] = total_wash_duration
+            # 分清洗方式时长：同帧两类并存各计一次，两者之和可能大于totalWashDuration（并集口径）
+            payload['manualWashDuration'] = manual_wash_duration
+            payload['cleaningTableWashDuration'] = table_wash_duration
             payload['cleanliness'] = cleanliness
             payload['videoDuration'] = video_duration
             payload['plateNumber'] = plate_number

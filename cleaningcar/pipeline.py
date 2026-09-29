@@ -2032,6 +2032,8 @@ def process_video(path, args):
                 car_labels = {}
                 water_boxes = []
                 cleaning_label = ''
+                manual_wash_detected = False
+                table_wash_detected = False
                 if det_payload:
                     for det in det_payload:
                         if det.get('cls') in VEHICLE_CLASS_IDS:
@@ -2044,6 +2046,11 @@ def process_video(path, args):
                                 cleaning_label = 'manual'
                             elif not cleaning_label:
                                 cleaning_label = name
+                            # 分清洗方式检测标记（同帧两类并存时都为True）
+                            if name == 'manual':
+                                manual_wash_detected = True
+                            else:
+                                table_wash_detected = True
                 if debug_water_boxes and per_id_debug_enabled and water_boxes and frame_out is not None:
                     for wb in water_boxes:
                         wx1, wy1, wx2, wy2 = wb
@@ -2264,6 +2271,8 @@ def process_video(path, args):
                         plate_type=info.get('plate_type', ''),
                         plate_candidate_history=info.get('plate_candidate_history'),
                         anchor_direction=anchor_direction,
+                        manual_detected=manual_wash_detected,
+                        table_detected=table_wash_detected,
                     )
                     det_ref = info.get('det_ref')
                     if det_ref is not None:
@@ -2315,6 +2324,8 @@ def process_video(path, args):
                                 anchor_point=anchor_pt,
                                 plate_candidate_history=plate_candidate_history,
                                 anchor_direction=anchor_direction,
+                                manual_detected=manual_wash_detected,
+                                table_detected=table_wash_detected,
                             )
                         annotate_locked_label(car_id, det_ref, rows, frame_out)
                         alias_seen.add(car_id)
@@ -2359,6 +2370,8 @@ def process_video(path, args):
                             anchor_point=anchor_pt,
                             plate_candidate_history=plate_candidate_history,
                             anchor_direction=anchor_direction,
+                            manual_detected=manual_wash_detected,
+                            table_detected=table_wash_detected,
                         )
                         alias_seen.add(car_id)
                         continue
@@ -2389,6 +2402,8 @@ def process_video(path, args):
                         cleaning_label=cleaning_label,
                         anchor_point=anchor_pt,
                         anchor_direction=anchor_direction,
+                        manual_detected=manual_wash_detected,
+                        table_detected=table_wash_detected,
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)
