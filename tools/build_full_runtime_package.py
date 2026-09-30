@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import subprocess
 import tarfile
 import zipfile
@@ -88,6 +89,20 @@ def _tar_info(src: Path, arcname: str) -> tarfile.TarInfo:
     return info
 
 
+def _read_normalized(rel: str) -> bytes:
+    """读取文件内容；.sh 统一转为 LF 行尾。
+
+    Windows 工作区可能因 core.autocrlf 被检出为 CRLF，直接打包会让
+    脚本在 Linux 上报 "/usr/bin/env: bash\\r" 而无法执行；在打包源头
+    归一化，保证无论在哪个平台构建交付包都是 LF。
+    """
+    src = ROOT / rel
+    data = src.read_bytes()
+    if rel.endswith(".sh"):
+        data = data.replace(b"\r\n", b"\n")
+    return data
+
+
 def build_tar_gz(package_name: str, files: list[str]) -> Path:
     out_path = PACKAGE_DIR / f"{package_name}.tar.gz"
     if out_path.exists():
@@ -98,8 +113,9 @@ def build_tar_gz(package_name: str, files: list[str]) -> Path:
             archive_rel = rel.replace("\\", "/")
             arcname = f"{package_name}/{archive_rel}"
             info = _tar_info(src, arcname)
-            with src.open("rb") as f:
-                tf.addfile(info, f)
+            data = _read_normalized(rel)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
     return out_path
 
 
@@ -109,10 +125,14 @@ def build_zip(package_name: str, files: list[str]) -> Path:
         out_path.unlink()
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for rel in files:
-            src = ROOT / rel
             archive_rel = rel.replace("\\", "/")
             arcname = f"{package_name}/{archive_rel}"
-            zf.write(src, arcname)
+            data = _read_normalized(rel)
+            info = zipfile.ZipInfo(arcname)
+            mode = 0o755 if rel.endswith((".sh", ".py")) else 0o644
+            info.external_attr = mode << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, data)
     return out_path
 
 
@@ -124,6 +144,12 @@ def validate_tar_gz(path: Path, package_name: str) -> None:
     }
     with tarfile.open(path, "r:gz") as tf:
         names = set(tf.getnames())
+        # .sh必须是LF行尾：CRLF会让脚本在Linux上直接无法执行
+        for member in tf.getmembers():
+            if member.name.endswith(".sh"):
+                data = tf.extractfile(member).read()
+                if b"\r" in data:
+                    raise RuntimeError(f"CRLF found in packaged script: {member.name}")
     missing = sorted(required - names)
     if missing:
         raise RuntimeError(f"archive missing required UTF-8 paths: {missing}")

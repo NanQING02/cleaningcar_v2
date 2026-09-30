@@ -1,0 +1,3 @@
+# 脚本类文件强制LF行尾：Windows检出（core.autocrlf）不得引入CRLF，
+# 否则打包交付后在Linux上执行报 "/usr/bin/env: bash\r"
+*.sh text eol=lf
