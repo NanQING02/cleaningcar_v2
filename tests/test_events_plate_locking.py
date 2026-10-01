@@ -533,7 +533,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             vehicle_type="yellow truck",
         )
 
-        self.assertEqual(uploader.payloads[-1]["plateColor"], "黄绿色")
+        self.assertEqual(uploader.payloads[-1]["plateColor"], "黄绿")
         self.assertAlmostEqual(uploader.payloads[-1]["plateColorConfidence"], 0.62, places=6)
 
     def test_single_opposite_color_does_not_promote_normal_plate_to_mixed(self):

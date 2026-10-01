@@ -203,7 +203,7 @@
 | `$.lane` | string | 车道名称：`冲洗` 或 `绕行` |
 | `$.plateNumber` | string | 锁定的车牌号，未能锁定时为空字符串 `""` |
 | `$.plateConfidence` | number | 车牌平均置信度 0~1；无车牌时为 `0.0` |
-| `$.plateColor` | string | 车牌颜色：`蓝色`/`黄色`/`绿色`/`黄绿色`/`""`（黄绿色为**新增取值**） |
+| `$.plateColor` | string | 车牌颜色：`蓝色`/`黄色`/`绿色`/`黄绿`/`""`（黄绿为融合颜色值） |
 | `$.plateColorConfidence` | number | 颜色置信度 0~1 |
 | `$.vehicleType` | string | 车型：`小汽车`/`蓝色卡车`/`黄色卡车`/`渣土车`/`五小工程车` |
 | `$.vehicleTypeConfidence` | number | 车型置信度 0~1 |

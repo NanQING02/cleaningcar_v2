@@ -29,6 +29,20 @@ from .vision import box_iou, get_anchor_point
 PLATE_RECOGNITION_ABNORMAL_REASONS = frozenset({"PLATE_MISSING", "PLATE_NOT_LOCKED", "PLATE_NOT_DETECTED"})
 
 
+def _platform_plate_color(value):
+    color = str(value or '').strip()
+    if color in {'黄绿色', '黄绿', '黄绿牌', 'yellow_green', 'yellow-green'}:
+        return '黄绿'
+    return color
+
+
+def _normalize_platform_event_payload(payload):
+    normalized = dict(payload or {})
+    if 'plateColor' in normalized:
+        normalized['plateColor'] = _platform_plate_color(normalized.get('plateColor'))
+    return normalized
+
+
 def _format_track_debug_text(car_id, info):
     info = info or {}
     return (
@@ -66,6 +80,7 @@ class EventUploader:
     def enqueue(self, payload):
         if not self.db or payload is None:
             return
+        payload = _normalize_platform_event_payload(payload)
         result = self.db.enqueue(payload) or {}
         status = str(result.get('status') or 'queued')
         self._append_audit(
@@ -165,8 +180,9 @@ class EventUploader:
                 self._wake.clear()
                 continue
             job_id, payload, retries = job
+            send_payload = _normalize_platform_event_payload(payload)
             try:
-                result = self._send(payload) or {}
+                result = self._send(send_payload) or {}
             except Exception as exc:
                 error_text, http_status, response_text = self._describe_upload_error(exc)
                 delay = min(self.base_delay * (2 ** retries), self.max_delay)
@@ -184,7 +200,7 @@ class EventUploader:
                     )
                     self._append_audit(
                         'dead_letter',
-                        payload,
+                        send_payload,
                         job_id=job_id,
                         retries=retries + 1,
                         http_status=http_status,
@@ -198,7 +214,7 @@ class EventUploader:
                         self.db.mark_failure(job_id, retries + 1, delay)
                     self._append_audit(
                         'retry',
-                        payload,
+                        send_payload,
                         job_id=job_id,
                         retries=retries + 1,
                         http_status=http_status,
@@ -210,7 +226,7 @@ class EventUploader:
                 self.db.mark_success(job_id)
             self._append_audit(
                 'sent',
-                payload,
+                result.get('payload') or send_payload,
                 job_id=job_id,
                 retries=retries,
                 http_status=result.get('http_status'),
@@ -218,6 +234,7 @@ class EventUploader:
             )
 
     def _send(self, data):
+        data = _normalize_platform_event_payload(data)
         capture_image = str((data or {}).get('captureImage') or '').strip()
         if capture_image:
             candidate = Path(capture_image)
@@ -235,7 +252,11 @@ class EventUploader:
             if status < 200 or status >= 300:
                 raise RuntimeError(f'unexpected HTTP status {status}')
             response_text = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw or '')
-            return {'http_status': status, 'response': response_text[:4000]}
+            return {
+                'http_status': status,
+                'response': response_text[:4000],
+                'payload': data,
+            }
 
     def close(self):
         if not self.thread:
@@ -2055,7 +2076,7 @@ class EventManager:
             event['directionLabel'] = dir_label
             event['directionSource'] = track_state.get('direction_source', 'unknown')
         plate_color, plate_color_conf = self._infer_plate_color(track_state)
-        event['plateColor'] = plate_color
+        event['plateColor'] = _platform_plate_color(plate_color)
         event['plateColorConfidence'] = plate_color_conf
         event['plateColorSource'] = track_state.get('plate_color_source', 'unknown')
         if plate_color == '黄绿色':
@@ -3160,7 +3181,9 @@ class EventManager:
         lane = self.lane_name
         track_id = event.get('trackId')
         plate_number = event.get('plateNumber', '')
-        plate_color = event.get('plateColor', self.default_plate_color)
+        plate_color = _platform_plate_color(
+            event.get('plateColor', self.default_plate_color)
+        )
         plate_color_conf = event.get('plateColorConfidence', self.default_plate_color_conf)
         plate_is_guess = event.get('plateIsGuess', False)
         plate_recognition_abnormal = bool(event.get('plateRecognitionAbnormal', False))

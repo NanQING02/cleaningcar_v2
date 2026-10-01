@@ -168,7 +168,7 @@ class EventCaptureAsyncTests(unittest.TestCase):
             self.assertEqual(sent['httpStatus'], 201)
             self.assertEqual(sent['eventId'], 'event-a')
             self.assertEqual(sent['eventType'], 5)
-            self.assertEqual(sent['payload']['plateColor'], '黄绿色')
+            self.assertEqual(sent['payload']['plateColor'], '黄绿')
 
     def test_event_uploader_dead_letter_audit_keeps_http_error_response(self):
         error = RuntimeError('HTTP 500')
@@ -196,8 +196,24 @@ class EventCaptureAsyncTests(unittest.TestCase):
             failed = rows[-1]
             self.assertEqual(failed['httpStatus'], 500)
             self.assertIsInstance(failed['deadLetterId'], int)
+            self.assertEqual(failed['payload']['plateColor'], '黄绿')
             self.assertIn('Data too long', failed['error'])
             self.assertIn('Data too long', failed['response'])
+
+    def test_event_uploader_send_normalizes_legacy_yellow_green_payload(self):
+        uploader = EventUploader()
+        uploader.url = 'http://127.0.0.1/event'
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'ok'
+        response.__enter__.return_value.getcode.return_value = 200
+
+        with patch('cleaningcar.events.urllib.request.urlopen', return_value=response) as mocked:
+            result = uploader._send({'id': 'legacy', 'type': 5, 'plateColor': '黄绿色'})
+
+        request = mocked.call_args.args[0]
+        body = json.loads(request.data.decode('utf-8'))
+        self.assertEqual(body['plateColor'], '黄绿')
+        self.assertEqual(result['payload']['plateColor'], '黄绿')
 
 
 if __name__ == '__main__':
