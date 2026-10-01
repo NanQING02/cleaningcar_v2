@@ -1,4 +1,5 @@
 import csv
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,5 +42,25 @@ class EvidenceCsvCacheTests(unittest.TestCase):
             cache = EvidenceCsvCache()
             self.assertEqual(len(cache.rows(path)), 1)
 
+            original_stat = path.stat()
+
             path.write_text('event_id,manifest\nc,c.json\n', encoding='utf-8')
+            os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
             self.assertEqual([row['event_id'] for row in cache.rows(path)], ['c'])
+
+    def test_larger_replacement_is_not_treated_as_append(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / 'event_index.csv'
+            path.write_text('event_id,manifest\na,a.json\n', encoding='utf-8')
+            cache = EvidenceCsvCache()
+            self.assertEqual([row['event_id'] for row in cache.rows(path)], ['a'])
+
+            path.write_text(
+                'event_id,manifest\nreplacement,replacement.json\nsecond,second.json\n',
+                encoding='utf-8',
+            )
+
+            self.assertEqual(
+                [row['event_id'] for row in cache.rows(path)],
+                ['replacement', 'second'],
+            )

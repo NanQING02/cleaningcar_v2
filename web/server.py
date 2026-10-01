@@ -1,5 +1,6 @@
 import argparse
 import csv
+import hashlib
 import io
 import json
 import threading
@@ -47,6 +48,24 @@ class EvidenceCsvCache:
         self._lock = threading.RLock()
 
     @staticmethod
+    def _file_signature(path: Path, size=None):
+        size = int(path.stat().st_size) if size is None else int(size)
+        digest = hashlib.sha1()
+        digest.update(str(size).encode('ascii'))
+        with path.open('rb') as handle:
+            head = handle.read(4096)
+            digest.update(head)
+            if size > 4096:
+                handle.seek(max(0, size - 4096))
+                digest.update(handle.read(4096))
+        return digest.hexdigest()
+
+    @staticmethod
+    def _prefix_signature(path: Path, length=4096):
+        with path.open('rb') as handle:
+            return hashlib.sha1(handle.read(max(0, int(length)))).hexdigest()
+
+    @staticmethod
     def _build_entry(path: Path):
         with path.open('r', encoding='utf-8-sig', newline='') as handle:
             reader = csv.DictReader(handle)
@@ -62,6 +81,11 @@ class EvidenceCsvCache:
         return {
             'size': int(stat.st_size),
             'mtime_ns': int(stat.st_mtime_ns),
+            'signature': EvidenceCsvCache._file_signature(path, stat.st_size),
+            'prefix_size': min(int(stat.st_size), 4096),
+            'prefix_signature': EvidenceCsvCache._prefix_signature(
+                path, min(int(stat.st_size), 4096)
+            ),
             'fieldnames': fieldnames,
             'rows': rows,
             'manifest_by_event': manifest_by_event,
@@ -77,6 +101,12 @@ class EvidenceCsvCache:
             self._entries[key] = entry
             return entry
         if int(stat.st_size) > int(entry['size']):
+            if self._prefix_signature(
+                path, entry.get('prefix_size', 4096)
+            ) != entry.get('prefix_signature'):
+                entry = self._build_entry(path)
+                self._entries[key] = entry
+                return entry
             with path.open('rb') as handle:
                 handle.seek(int(entry['size']))
                 chunk = handle.read()
@@ -92,7 +122,15 @@ class EvidenceCsvCache:
                         entry['manifest_by_event'][event_id] = manifest
             entry['size'] = int(stat.st_size)
             entry['mtime_ns'] = int(stat.st_mtime_ns)
-        elif int(stat.st_mtime_ns) != int(entry['mtime_ns']):
+            entry['signature'] = self._file_signature(path, stat.st_size)
+            entry['prefix_size'] = min(int(stat.st_size), 4096)
+            entry['prefix_signature'] = self._prefix_signature(
+                path, entry['prefix_size']
+            )
+        elif (
+            int(stat.st_mtime_ns) != int(entry['mtime_ns'])
+            or self._file_signature(path, stat.st_size) != entry.get('signature')
+        ):
             entry = self._build_entry(path)
             self._entries[key] = entry
         return entry
