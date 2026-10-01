@@ -42,7 +42,7 @@ def _format_track_debug_text(car_id, info):
 
 class EventUploader:
     def __init__(self, url=None, token=None, timeout=8.0, queue_path=None,
-                 max_retries=10, base_delay=1.0, max_delay=60.0):
+                 max_retries=10, base_delay=1.0, max_delay=60.0, audit_path=None):
         self.url = (url or '').strip()
         self.token = token
         self.timeout = timeout
@@ -53,6 +53,10 @@ class EventUploader:
         self.thread = None
         self._stop = threading.Event()
         self._wake = threading.Event()
+        self.audit_path = Path(audit_path) if audit_path else None
+        self._audit_lock = threading.Lock()
+        if self.audit_path:
+            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
         if self.url:
             db_path = Path(queue_path) if queue_path else (Path('./events') / 'upload_queue.db')
             self.db = SQLiteUploadQueue(db_path)
@@ -62,8 +66,96 @@ class EventUploader:
     def enqueue(self, payload):
         if not self.db or payload is None:
             return
-        self.db.enqueue(payload)
-        self._wake.set()
+        result = self.db.enqueue(payload) or {}
+        status = str(result.get('status') or 'queued')
+        self._append_audit(
+            status,
+            payload,
+            job_id=result.get('job_id'),
+            dead_letter_id=result.get('dead_letter_id'),
+            error=result.get('reason'),
+        )
+        if status == 'queued':
+            self._wake.set()
+        return result
+
+    @staticmethod
+    def _audit_payload(payload):
+        normalized = dict(payload or {})
+        for key, value in list(normalized.items()):
+            if not isinstance(value, str):
+                continue
+            if len(value) <= 2048 and not value.startswith('data:'):
+                continue
+            normalized[key] = {
+                'omitted': True,
+                'length': len(value),
+                'sha256': hashlib.sha256(value.encode('utf-8')).hexdigest(),
+            }
+        return normalized
+
+    @staticmethod
+    def _payload_sha256(payload):
+        serialized = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _describe_upload_error(exc):
+        http_status = getattr(exc, 'code', None)
+        response_text = ''
+        read_fn = getattr(exc, 'read', None)
+        if callable(read_fn):
+            try:
+                raw = read_fn(4096)
+            except TypeError:
+                raw = read_fn()
+            except Exception:
+                raw = b''
+            if isinstance(raw, bytes):
+                response_text = raw.decode('utf-8', errors='replace')
+            elif raw:
+                response_text = str(raw)
+        error_text = f'{type(exc).__name__}: {exc}'
+        if response_text.strip():
+            error_text = f'{error_text}; response={response_text.strip()}'
+        return error_text[:4000], http_status, response_text[:4000]
+
+    def _append_audit(
+        self,
+        status,
+        payload,
+        *,
+        job_id=None,
+        retries=0,
+        http_status=None,
+        error=None,
+        response=None,
+        dead_letter_id=None,
+    ):
+        if not self.audit_path:
+            return
+        entry = {
+            'timestamp': datetime.now().astimezone().isoformat(timespec='milliseconds'),
+            'status': str(status),
+            'jobId': job_id,
+            'retryCount': int(retries or 0),
+            'eventId': str((payload or {}).get('id') or ''),
+            'eventType': (payload or {}).get('type'),
+            'captureTime': str((payload or {}).get('captureTime') or ''),
+            'httpStatus': http_status,
+            'deadLetterId': dead_letter_id,
+            'error': str(error or ''),
+            'response': str(response or ''),
+            'payloadSha256': self._payload_sha256(payload),
+            'payload': self._audit_payload(payload),
+        }
+        try:
+            line = json.dumps(entry, ensure_ascii=False, separators=(',', ':'))
+            with self._audit_lock:
+                with self.audit_path.open('a', encoding='utf-8', newline='\n') as handle:
+                    handle.write(line + '\n')
+        except Exception as exc:
+            print(f'[uploader] failed to append audit log {self.audit_path}: {exc}')
 
     def _worker(self):
         while not self._stop.is_set():
@@ -74,11 +166,11 @@ class EventUploader:
                 continue
             job_id, payload, retries = job
             try:
-                self._send(payload)
+                result = self._send(payload) or {}
             except Exception as exc:
+                error_text, http_status, response_text = self._describe_upload_error(exc)
                 delay = min(self.base_delay * (2 ** retries), self.max_delay)
                 if retries + 1 >= self.max_retries:
-                    error_text = f'{type(exc).__name__}: {exc}'
                     dead_letter_id = None
                     if self.db:
                         dead_letter_id = self.db.move_to_dead_letter(
@@ -90,13 +182,40 @@ class EventUploader:
                         f'[uploader] moved event to dead-letter after {retries + 1} attempts '
                         f'dead_letter_id={dead_letter_id}: {error_text}'
                     )
+                    self._append_audit(
+                        'dead_letter',
+                        payload,
+                        job_id=job_id,
+                        retries=retries + 1,
+                        http_status=http_status,
+                        error=error_text,
+                        response=response_text,
+                        dead_letter_id=dead_letter_id,
+                    )
                 else:
                     print(f'[uploader] failed to send event (retry in {delay:.1f}s): {exc}')
                     if self.db:
                         self.db.mark_failure(job_id, retries + 1, delay)
+                    self._append_audit(
+                        'retry',
+                        payload,
+                        job_id=job_id,
+                        retries=retries + 1,
+                        http_status=http_status,
+                        error=error_text,
+                        response=response_text,
+                    )
                 continue
             if self.db:
                 self.db.mark_success(job_id)
+            self._append_audit(
+                'sent',
+                payload,
+                job_id=job_id,
+                retries=retries,
+                http_status=result.get('http_status'),
+                response=result.get('response'),
+            )
 
     def _send(self, data):
         capture_image = str((data or {}).get('captureImage') or '').strip()
@@ -111,7 +230,12 @@ class EventUploader:
         if self.token:
             req.add_header('Authorization', f'Bearer {self.token}')
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            resp.read()
+            raw = resp.read(4096)
+            status = int(resp.getcode() or 0)
+            if status < 200 or status >= 300:
+                raise RuntimeError(f'unexpected HTTP status {status}')
+            response_text = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw or '')
+            return {'http_status': status, 'response': response_text[:4000]}
 
     def close(self):
         if not self.thread:
@@ -446,17 +570,6 @@ class EventManager:
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
         self.upload_buffer = {}
         self.upload_qualified = set()
-        self.upload_log_full = None
-        self.upload_log_sent = None
-        if self.uploader:
-            self.upload_log_full = self.events_dir / 'upload_log_full.csv'
-            self.upload_log_sent = self.events_dir / 'upload_log_sent.csv'
-            if not self.upload_log_full.exists():
-                with self.upload_log_full.open('w', encoding='utf-8') as f:
-                    f.write('capture_time,id,type,sent,payload\n')
-            if not self.upload_log_sent.exists():
-                with self.upload_log_sent.open('w', encoding='utf-8') as f:
-                    f.write('capture_time,id,type,payload\n')
         self.frame_timing_max_entries = max(
             128,
             min(10000, int(self.logic.get('frame_timing_max_entries', 4096) or 4096)),
@@ -2052,7 +2165,6 @@ class EventManager:
             api_payload = self._build_api_payload(event, track_state, frame_idx)
             if api_payload:
                 track_key = event['id']
-                sent_now = False
                 if event_type == 1:
                     buffer = self.upload_buffer.setdefault(track_key, [])
                     buffer.append(api_payload)
@@ -2066,37 +2178,14 @@ class EventManager:
                             self.uploader.enqueue(p)
                         except Exception:
                             continue
-                        sent_now = True
-                        if self.upload_log_sent:
-                            try:
-                                text = json.dumps(p, ensure_ascii=False)
-                                with self.upload_log_sent.open('a', encoding='utf-8') as f:
-                                    f.write(f"{event['captureTime']},{track_key},{event_type},{text}\n")
-                            except Exception:
-                                pass
                 elif track_key in self.upload_qualified:
                     try:
                         self.uploader.enqueue(api_payload)
-                        sent_now = True
-                        if self.upload_log_sent:
-                            try:
-                                text = json.dumps(api_payload, ensure_ascii=False)
-                                with self.upload_log_sent.open('a', encoding='utf-8') as f:
-                                    f.write(f"{event['captureTime']},{track_key},{event_type},{text}\n")
-                            except Exception:
-                                pass
                     except Exception:
-                        sent_now = False
+                        pass
                 else:
                     buffer = self.upload_buffer.setdefault(track_key, [])
                     buffer.append(api_payload)
-                if self.upload_log_full:
-                    try:
-                        text = json.dumps(api_payload, ensure_ascii=False)
-                        with self.upload_log_full.open('a', encoding='utf-8') as f:
-                            f.write(f"{event['captureTime']},{track_key},{event_type},{int(sent_now)},{text}\n")
-                    except Exception:
-                        pass
         t_upload = time.perf_counter()
         if event_type == 3:
             track_state['last_type3_frame'] = frame_idx

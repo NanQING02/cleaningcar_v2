@@ -53,6 +53,7 @@ run_zone_detect.py
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存
 - 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
+- 平台事件上传状态写入各路`event_output_dir/upload_audit.jsonl`；只有HTTP 2xx并从SQLite队列删除后才记录`sent`，失败记录保留状态码、响应摘要和死信ID
 - 运行产物清理当前不进入主链路，实现暂存于 `future_modules/storage_cleanup.py`
 
 ## 当前默认配置快照

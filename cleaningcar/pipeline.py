@@ -673,11 +673,13 @@ def process_video(path, args):
     event_log_path = default_event_log if (not event_log_arg or event_log_arg == 'auto') else event_log_arg
     uploader = None
     if getattr(args, 'api_url', None):
-        queue_db = Path(config.get('event_output_dir', './events')) / 'upload_queue.db'
+        upload_dir = Path(config.get('event_output_dir', './events'))
+        queue_db = upload_dir / 'upload_queue.db'
         uploader = EventUploader(
             args.api_url,
             getattr(args, 'api_token', None),
             queue_path=queue_db,
+            audit_path=upload_dir / 'upload_audit.jsonl',
         )
     wheel_photo_uploader = None
     wheel_photo_url = config.get('wheel_photo_url') or getattr(args, 'wheel_photo_url', '')

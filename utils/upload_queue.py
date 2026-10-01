@@ -149,7 +149,7 @@ class SQLiteUploadQueue:
                 ).fetchone()
             if blocked:
                 blocker_type, blocker_error = blocked
-                self.conn.execute(
+                cursor = self.conn.execute(
                     'INSERT INTO dead_letter '
                     '(original_job_id, payload, retries, created, failed_at, last_error, group_key, event_type) '
                     'VALUES (NULL, ?, 0, ?, ?, ?, ?, ?)',
@@ -166,8 +166,12 @@ class SQLiteUploadQueue:
                     ),
                 )
                 self.conn.commit()
-                return
-            self.conn.execute(
+                return {
+                    'status': 'dead_letter',
+                    'dead_letter_id': int(cursor.lastrowid),
+                    'reason': str(blocked[1] or 'blocked by existing dead-letter'),
+                }
+            cursor = self.conn.execute(
                 'INSERT INTO queue '
                 '(payload, retries, next_retry, created, group_key, event_type) '
                 'VALUES (?, 0, 0, ?, ?, ?)',
@@ -178,6 +182,7 @@ class SQLiteUploadQueue:
                     self.conn.commit()
                 except sqlite3.OperationalError:
                     pass
+            return {'status': 'queued', 'job_id': int(cursor.lastrowid)}
 
     def next_job(self) -> Optional[Tuple[int, dict, int]]:
         now = time.time()

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import time
@@ -119,9 +120,84 @@ class EventCaptureAsyncTests(unittest.TestCase):
             capture.write_bytes(b'jpeg')
             response = unittest.mock.MagicMock()
             response.__enter__.return_value.read.return_value = b'ok'
+            response.__enter__.return_value.getcode.return_value = 200
             with patch('cleaningcar.events.urllib.request.urlopen', return_value=response) as mocked:
-                uploader._send({'captureImage': str(capture)})
+                result = uploader._send({'captureImage': str(capture)})
             mocked.assert_called_once()
+            self.assertEqual(result['http_status'], 200)
+
+    @staticmethod
+    def _wait_for_audit_status(path, status, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if path.exists():
+                rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+                if any(row.get('status') == status for row in rows):
+                    return rows
+            time.sleep(0.02)
+        return []
+
+    def test_event_uploader_audit_marks_sent_only_after_http_success(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audit_path = root / 'upload_audit.jsonl'
+            with patch.object(
+                EventUploader,
+                '_send',
+                return_value={'http_status': 201, 'response': '{"ok":true}'},
+            ):
+                uploader = EventUploader(
+                    'http://127.0.0.1/event',
+                    queue_path=root / 'queue.db',
+                    audit_path=audit_path,
+                )
+                try:
+                    result = uploader.enqueue({
+                        'id': 'event-a',
+                        'type': 5,
+                        'captureTime': '2026-10-01 09:50:11',
+                        'plateColor': '黄绿色',
+                    })
+                    self.assertEqual(result['status'], 'queued')
+                    rows = self._wait_for_audit_status(audit_path, 'sent')
+                finally:
+                    uploader.close()
+
+            self.assertEqual([row['status'] for row in rows], ['queued', 'sent'])
+            sent = rows[-1]
+            self.assertEqual(sent['httpStatus'], 201)
+            self.assertEqual(sent['eventId'], 'event-a')
+            self.assertEqual(sent['eventType'], 5)
+            self.assertEqual(sent['payload']['plateColor'], '黄绿色')
+
+    def test_event_uploader_dead_letter_audit_keeps_http_error_response(self):
+        error = RuntimeError('HTTP 500')
+        error.code = 500
+        error.read = lambda _size=4096: (
+            b"MysqlDataTruncation: Data too long for column 'color' at row 1"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audit_path = root / 'upload_audit.jsonl'
+            with patch.object(EventUploader, '_send', side_effect=error):
+                uploader = EventUploader(
+                    'http://127.0.0.1/event',
+                    queue_path=root / 'queue.db',
+                    audit_path=audit_path,
+                    max_retries=1,
+                )
+                try:
+                    uploader.enqueue({'id': 'event-b', 'type': 5, 'plateColor': '黄绿色'})
+                    rows = self._wait_for_audit_status(audit_path, 'dead_letter')
+                finally:
+                    uploader.close()
+
+            self.assertEqual([row['status'] for row in rows], ['queued', 'dead_letter'])
+            failed = rows[-1]
+            self.assertEqual(failed['httpStatus'], 500)
+            self.assertIsInstance(failed['deadLetterId'], int)
+            self.assertIn('Data too long', failed['error'])
+            self.assertIn('Data too long', failed['response'])
 
 
 if __name__ == '__main__':
