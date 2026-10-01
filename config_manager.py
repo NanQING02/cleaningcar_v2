@@ -281,6 +281,12 @@ class ConfigManager:
         except (TypeError, ValueError):
             photo_min_score = 0.3
         wheel['photo_min_score'] = max(0.0, min(photo_min_score, 1.0))
+        photo_persistence_mode = str(
+            wheel.get('photo_persistence_mode', 'final_locked') or 'final_locked'
+        ).strip().lower()
+        if photo_persistence_mode not in {'final_locked', 'bucket_stream'}:
+            photo_persistence_mode = 'final_locked'
+        wheel['photo_persistence_mode'] = photo_persistence_mode
         try:
             reader_stale_seconds = float(wheel.get('reader_stale_seconds', 5.0))
         except (TypeError, ValueError):

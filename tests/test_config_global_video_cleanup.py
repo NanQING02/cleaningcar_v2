@@ -249,6 +249,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertNotIn("event_plate_fast_lock_frames", manager.logic)
             self.assertNotIn("event_plate_fast_speed_threshold", manager.logic)
             self.assertEqual(manager.logic["allowed_plate_colors"], ["蓝色", "黄色", "绿色", "黄绿色"])
+            self.assertEqual(manager.data["wheel"]["photo_persistence_mode"], "final_locked")
             self.assertTrue(manager.logic["plate_yellow_green_fusion_enabled"])
             self.assertEqual(manager.logic["plate_yellow_green_min_confidence"], 0.55)
             self.assertEqual(manager.logic["plate_yellow_green_window_frames"], 50)
