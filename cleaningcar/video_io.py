@@ -668,6 +668,7 @@ class FfmpegH264Writer:
         self.finalized_duration = float(desired_duration)
         if encoded_duration <= 0.0 or abs(desired_duration - encoded_duration) <= 0.02:
             os.replace(self._output_path, self.path)
+            self.finalized_duration = self._probe_finalized_duration(desired_duration)
             return True
 
         scale = desired_duration / encoded_duration
@@ -693,7 +694,7 @@ class FfmpegH264Writer:
             except FileNotFoundError:
                 pass
             os.replace(self._output_path, self.path)
-            self.finalized_duration = float(encoded_duration)
+            self.finalized_duration = self._probe_finalized_duration(encoded_duration)
             return True
 
         os.replace(retimed_path, self.path)
@@ -701,7 +702,28 @@ class FfmpegH264Writer:
             os.remove(self._output_path)
         except FileNotFoundError:
             pass
+        self.finalized_duration = self._probe_finalized_duration(desired_duration)
         return True
+
+    def _probe_finalized_duration(self, fallback):
+        """读取最终容器时长；ffprobe不可用时退回已知目标值。"""
+        try:
+            result = subprocess.run(
+                [
+                    'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                    '-of', 'default=noprint_wrappers=1:nokey=1', self.path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5.0,
+            )
+            duration = float(str(result.stdout or '').strip())
+            if result.returncode == 0 and math.isfinite(duration) and duration > 0.0:
+                return duration
+        except Exception:
+            pass
+        return float(fallback or 0.0)
 
     def release(self):
         finalized = False

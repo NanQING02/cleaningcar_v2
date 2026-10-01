@@ -76,19 +76,21 @@ class VideoIoWriterFallbackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             writer = self._make_finalized_writer(tmpdir)
 
-            def _create_retimed_file(cmd, **_kwargs):
+            def _run_media_tool(cmd, **_kwargs):
+                if cmd[0] == 'ffprobe':
+                    return SimpleNamespace(returncode=0, stdout='50.040000\n')
                 Path(cmd[-1]).write_bytes(b"retimed-video")
-                return SimpleNamespace(returncode=0)
+                return SimpleNamespace(returncode=0, stdout='')
 
-            run.side_effect = _create_retimed_file
+            run.side_effect = _run_media_tool
 
             result = writer._retime_finalized_file()
 
             self.assertTrue(result)
-            self.assertAlmostEqual(writer.finalized_duration, 50.0, places=2)
+            self.assertAlmostEqual(writer.finalized_duration, 50.04, places=2)
             self.assertEqual(Path(writer.path).read_bytes(), b"retimed-video")
             self.assertFalse(Path(writer._output_path).exists())
-            cmd = run.call_args.args[0]
+            cmd = run.call_args_list[0].args[0]
             self.assertIn("-itsscale", cmd)
             self.assertAlmostEqual(float(cmd[cmd.index("-itsscale") + 1]), 5.0, places=6)
             self.assertEqual(cmd[cmd.index("-c") + 1], "copy")
@@ -104,6 +106,17 @@ class VideoIoWriterFallbackTests(unittest.TestCase):
             self.assertAlmostEqual(writer.finalized_duration, 10.0, places=2)
             self.assertEqual(Path(writer.path).read_bytes(), b"encoded-video")
             self.assertFalse(Path(writer._output_path).exists())
+
+    @patch("cleaningcar.video_io.subprocess.run")
+    def test_probe_duration_falls_back_when_ffprobe_output_is_invalid(self, run):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            writer = self._make_finalized_writer(tmpdir)
+            Path(writer.path).write_bytes(b"video")
+            run.return_value = SimpleNamespace(returncode=0, stdout='N/A\n')
+
+            duration = writer._probe_finalized_duration(12.5)
+
+            self.assertEqual(duration, 12.5)
 
 
 if __name__ == "__main__":
