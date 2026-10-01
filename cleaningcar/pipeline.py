@@ -2030,6 +2030,7 @@ def process_video(path, args):
                 vehicle_payload_refs = []
                 car_boxes = {}
                 car_labels = {}
+                car_event_qualified = {}
                 water_boxes = []
                 cleaning_label = ''
                 manual_wash_detected = False
@@ -2076,6 +2077,7 @@ def process_video(path, args):
                     det_ref['track_id'] = track_id
                     car_boxes[track_id] = det_ref['box']
                     car_labels[track_id] = det_ref.get('label', '')
+                    car_event_qualified[track_id] = bool(det_ref.get('business_qualified', True))
                     row_idx = det_ref.get('row_idx', -1)
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = track_id
@@ -2273,6 +2275,7 @@ def process_video(path, args):
                         anchor_direction=anchor_direction,
                         manual_detected=manual_wash_detected,
                         table_detected=table_wash_detected,
+                        vehicle_event_qualified=car_event_qualified.get(track_key, True),
                     )
                     det_ref = info.get('det_ref')
                     if det_ref is not None:
@@ -2326,6 +2329,7 @@ def process_video(path, args):
                                 anchor_direction=anchor_direction,
                                 manual_detected=manual_wash_detected,
                                 table_detected=table_wash_detected,
+                                vehicle_event_qualified=bool(det_ref.get('business_qualified', True)),
                             )
                         annotate_locked_label(car_id, det_ref, rows, frame_out)
                         alias_seen.add(car_id)
@@ -2372,6 +2376,7 @@ def process_video(path, args):
                             anchor_direction=anchor_direction,
                             manual_detected=manual_wash_detected,
                             table_detected=table_wash_detected,
+                            vehicle_event_qualified=bool(det_ref.get('business_qualified', True)),
                         )
                         alias_seen.add(car_id)
                         continue
@@ -2404,6 +2409,7 @@ def process_video(path, args):
                         anchor_direction=anchor_direction,
                         manual_detected=manual_wash_detected,
                         table_detected=table_wash_detected,
+                        vehicle_event_qualified=bool(det_ref.get('business_qualified', True)),
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)

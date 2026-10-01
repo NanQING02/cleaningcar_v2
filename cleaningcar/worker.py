@@ -36,6 +36,20 @@ class DetectWorker(threading.Thread):
         logic_cfg = ((getattr(args, "_config", {}) or {}).get("logic", {}) or {})
         self.copy_draw_frame = should_copy_draw_frame(logic_cfg)
         plate_output_shape_log_once = bool(logic_cfg.get("plate_output_shape_log_once", True))
+        try:
+            self.vehicle_tracking_min_confidence = float(
+                logic_cfg.get("vehicle_tracking_min_confidence", 0.4)
+            )
+        except (TypeError, ValueError):
+            self.vehicle_tracking_min_confidence = 0.4
+        self.vehicle_tracking_min_confidence = max(
+            0.05,
+            min(1.0, self.vehicle_tracking_min_confidence),
+        )
+        self.vehicle_business_thresholds = {
+            class_id: float(CLASS_THRESH.get(class_id, args.conf))
+            for class_id in VEHICLE_CLASS_IDS
+        }
 
         try:
             self.rk = RKNNLite()
@@ -47,14 +61,21 @@ class DetectWorker(threading.Thread):
             if self.rk.init_runtime(**init_kwargs) != 0:
                 raise RuntimeError("init_runtime failed")
 
-            min_conf = min([float(args.conf)] + [float(v) for v in CLASS_THRESH.values()])
+            postprocess_thresholds = dict(CLASS_THRESH)
+            for class_id in VEHICLE_CLASS_IDS:
+                postprocess_thresholds[class_id] = min(
+                    float(postprocess_thresholds.get(class_id, args.conf)),
+                    self.vehicle_tracking_min_confidence,
+                )
+            min_conf = min([float(args.conf)] + [float(v) for v in postprocess_thresholds.values()])
             self.detector_postprocessor = FpModelPostprocessor(
                 img_size=(int(args.imgsz), int(args.imgsz)),
                 obj_thresh=min_conf,
                 nms_thresh=float(args.iou),
                 output_mode=str(getattr(args, "fp_output_mode", "6")),
                 num_classes=len(CLASS_NAMES),
-                class_thresholds=CLASS_THRESH,
+                class_thresholds=postprocess_thresholds,
+                class_agnostic_groups=[VEHICLE_CLASS_IDS],
             )
             print(f"Worker {self.idx}: fp_postprocess_mode={self.detector_postprocessor.describe_mode()}")
             self.dual_lpr = DualPlateRecognizer(
@@ -153,10 +174,15 @@ class DetectWorker(threading.Thread):
                     boxes, classes, scores = self.detector_postprocessor.postprocess(outputs)
                     if boxes is not None and classes is not None and scores is not None:
                         boxes = self.detector_postprocessor.map_boxes_to_original(boxes, lb_info)
-                        per_class_conf = np.array(
-                            [CLASS_THRESH.get(int(c), self.args.conf) for c in classes],
-                            dtype=np.float32,
-                        )
+                        per_class_conf = np.array([
+                            min(
+                                CLASS_THRESH.get(int(c), self.args.conf),
+                                self.vehicle_tracking_min_confidence,
+                            )
+                            if int(c) in VEHICLE_CLASS_IDS
+                            else CLASS_THRESH.get(int(c), self.args.conf)
+                            for c in classes
+                        ], dtype=np.float32)
                         keep = scores >= per_class_conf
                         if np.any(keep):
                             boxes = boxes[keep]
@@ -187,6 +213,12 @@ class DetectWorker(threading.Thread):
                             "plate_type": "",
                             "row_idx": len(csv_rows) - 1,
                             "label": label_name,
+                            "business_qualified": bool(
+                                int(cls_id) not in VEHICLE_CLASS_IDS
+                                or float(score) >= self.vehicle_business_thresholds.get(
+                                    int(cls_id), float(self.args.conf)
+                                )
+                            ),
                         }
                     )
 

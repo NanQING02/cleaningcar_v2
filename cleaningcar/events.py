@@ -1014,7 +1014,8 @@ class EventManager:
                      plate_conf, confirmed, cleaning_label='', anchor_point=None, plate_is_guess=False,
                      plate_color='', plate_color_conf=None, plate_type='', plate_candidate_history=None,
                      anchor_direction=None, plate_text_conf=None, plate_mutual_verified=False,
-                     plate_motion_consistent=True, manual_detected=None, table_detected=None):
+                     plate_motion_consistent=True, manual_detected=None, table_detected=None,
+                     vehicle_event_qualified=True):
         if track_id <= 0:
             return
         if self.disable_plate_only_events and is_plate and vehicle_box is None:
@@ -1101,6 +1102,7 @@ class EventManager:
             'plate_conf_history': [],
             'vehicle_conf_history': [],
             'vehicle_hit_frames': 0,
+            'vehicle_business_confirmed': False,
             'anchor_history': deque(maxlen=10),
             'wash_start_time': None,
             'wash_end_time': None,
@@ -1155,6 +1157,8 @@ class EventManager:
             self._update_wheel_track_activity(track_id, st, frame_ts=time.time(), active=False)
             return
         st['track_id'] = track_id
+        if vehicle_event_qualified:
+            st['vehicle_business_confirmed'] = True
         st['track_frame_count'] = st.get('track_frame_count', 0) + 1
         st['last_frame_idx'] = frame_idx
         if isinstance(anchor_direction, dict):
@@ -1372,7 +1376,11 @@ class EventManager:
             or zone_flags.get('exit_a')
         )
         st['washing_candidate'] = stable_inside_b
-        type2_ready = bool(event_enabled and zone_flags.get('enter_b'))
+        type2_ready = bool(
+            event_enabled
+            and zone_flags.get('enter_b')
+            and st.get('vehicle_business_confirmed')
+        )
         if type2_ready and st.get('lifecycle_handoff_pending'):
             st['deferred_type2'] = True
             type2_ready = False
@@ -2510,6 +2518,8 @@ class EventManager:
         return self._record_tail_frames()
 
     def _can_emit_type1(self, track_state):
+        if not bool(track_state.get('vehicle_business_confirmed', False)):
+            return False
         if self.min_type1_track_frames <= 1:
             return True
         stable_zone_a_frames = int(track_state.get('zone_a_dwell_frames', 0) or 0) + 1

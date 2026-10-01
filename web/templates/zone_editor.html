@@ -429,6 +429,10 @@
           <label>车辆中心门控比例 (0-1, 0关闭)
             <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_center_gate_ratio" />
           </label>
+          <label>车辆续轨最低置信度
+            <input type="number" min="0.05" max="1" step="0.05" v-model.number="form.logic.vehicle_tracking_min_confidence" />
+          </label>
+          <p class="hint">低置信车辆框只续接已有track；新业务事件仍需达到具体车型业务阈值。</p>
           <label>Type1 Zone A 连续稳定帧数
             <input type="number" min="0" v-model.number="form.logic.min_track_frames_for_type1" />
           </label>
@@ -632,6 +636,7 @@
               event_trace_queue_size: 4096,
               vehicle_iou_threshold: 0.3,
               vehicle_center_gate_ratio: 0.0,
+              vehicle_tracking_min_confidence: 0.4,
               enable_per_id_video: false,
               per_id_video_source: 'auto',
               lane_name: '冲洗',
@@ -1205,6 +1210,7 @@
               event_trace_queue_size: this.form.logic.event_trace_queue_size,
               vehicle_iou_threshold: this.form.logic.vehicle_iou_threshold,
               vehicle_center_gate_ratio: this.form.logic.vehicle_center_gate_ratio,
+              vehicle_tracking_min_confidence: this.form.logic.vehicle_tracking_min_confidence,
               per_id_video_source: this.form.logic.per_id_video_source,
               plate_track_lock_frames: this.form.logic.plate_track_lock_frames,
               event_plate_lock_frames: this.form.logic.event_plate_lock_frames,

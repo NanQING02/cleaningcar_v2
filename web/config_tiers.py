@@ -98,6 +98,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.event_capture_shutdown_timeout_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "截图收尾超时"},
     {"path": "logic.vehicle_iou_threshold", "tier": TIER_DEVELOPER, "group": "logic", "label": "车辆 IoU 阈值"},
     {"path": "logic.vehicle_center_gate_ratio", "tier": TIER_DEVELOPER, "group": "logic", "label": "车辆中心门控"},
+    {"path": "logic.vehicle_tracking_min_confidence", "tier": TIER_DEVELOPER, "group": "logic", "label": "车辆续轨最低置信度"},
     {"path": "logic.plate_requires_vehicle", "tier": TIER_DEVELOPER, "group": "logic", "label": "车牌识别车辆依赖"},
     {"path": "logic.pending_plate_cache_ttl_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "待绑定车牌 TTL"},
     {"path": "logic.pending_plate_cache_max_entries", "tier": TIER_DEVELOPER, "group": "logic", "label": "待绑定车牌容量"},

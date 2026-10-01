@@ -200,6 +200,7 @@
     "wash_duration_offset_seconds": 0,
     "vehicle_iou_threshold": 0.1,
     "vehicle_center_gate_ratio": 0.8,
+    "vehicle_tracking_min_confidence": 0.4,
     "disable_plate_only_events": true,
     "single_lifecycle_events": true,
     "min_track_frames_for_type1": 5,

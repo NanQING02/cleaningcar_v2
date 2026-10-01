@@ -200,6 +200,7 @@
     "wash_duration_offset_seconds": 0,
     "vehicle_iou_threshold": 0.1,
     "vehicle_center_gate_ratio": 0.8,
+    "vehicle_tracking_min_confidence": 0.4,
     "plate_requires_vehicle": false,
     "pending_plate_cache_ttl_frames": 40,
     "pending_plate_cache_max_entries": 30,

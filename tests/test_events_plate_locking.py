@@ -94,6 +94,16 @@ class _CollectingUploader:
 
 
 class EventManagerPlateLockingTests(unittest.TestCase):
+    def test_tracking_only_vehicle_observation_cannot_open_business_event(self):
+        manager = self._manager()
+        state = {
+            'zone_a_dwell_frames': 100,
+            'vehicle_business_confirmed': False,
+        }
+        self.assertFalse(manager._can_emit_type1(state))
+        state['vehicle_business_confirmed'] = True
+        self.assertTrue(manager._can_emit_type1(state))
+
     def test_initial_plate_lock_always_uses_six_hits(self):
         manager = self._manager(plate_lock_frames=6)
         manager.event_plate_lock_frames = 6

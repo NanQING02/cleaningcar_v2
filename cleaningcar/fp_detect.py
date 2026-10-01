@@ -154,6 +154,7 @@ class FpModelPostprocessor:
         output_mode: str = "6",
         num_classes: int = 9,
         class_thresholds=None,
+        class_agnostic_groups=None,
     ):
         self.img_size = tuple(img_size)
         self.obj_thresh = float(obj_thresh)
@@ -164,6 +165,12 @@ class FpModelPostprocessor:
             for key, value in dict(class_thresholds or {}).items()
             if 0 <= int(key) < self.num_classes
         }
+        self.class_agnostic_group_by_class = {}
+        for group_index, group in enumerate(class_agnostic_groups or ()):
+            for class_id in group:
+                class_id = int(class_id)
+                if 0 <= class_id < self.num_classes:
+                    self.class_agnostic_group_by_class[class_id] = group_index
         self.output_mode = self._normalize_output_mode(output_mode)
 
     def candidate_keep_mask(self, scores: np.ndarray, classes: np.ndarray) -> np.ndarray:
@@ -292,11 +299,26 @@ class FpModelPostprocessor:
         classes = classes[keep]
         scores = scores[keep]
 
+        return self.apply_nms(boxes, classes, scores)
+
+    def apply_nms(self, boxes, classes, scores):
+        """Apply NMS, optionally sharing suppression across configured classes."""
+        boxes = np.asarray(boxes)
+        classes = np.asarray(classes)
+        scores = np.asarray(scores)
         kept_boxes = []
         kept_classes = []
         kept_scores = []
-        for class_id in sorted(set(classes.tolist())):
-            inds = np.where(classes == class_id)[0]
+        grouped_indices = {}
+        for index, class_id in enumerate(classes.tolist()):
+            class_id = int(class_id)
+            if class_id in self.class_agnostic_group_by_class:
+                key = ('group', int(self.class_agnostic_group_by_class[class_id]))
+            else:
+                key = ('class', class_id)
+            grouped_indices.setdefault(key, []).append(index)
+        for key in sorted(grouped_indices):
+            inds = np.asarray(grouped_indices[key], dtype=np.int64)
             class_boxes = boxes[inds]
             class_scores = scores[inds]
             keep_inds = _nms_boxes(class_boxes, class_scores, self.nms_thresh)

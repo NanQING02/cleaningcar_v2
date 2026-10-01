@@ -407,6 +407,16 @@ class ConfigManager:
         logic.setdefault('vehicle_iou_threshold', 0.3)
         logic.setdefault('vehicle_center_gate_ratio', 0.0)
         logic.setdefault('vehicle_tracker_impl', 'bytetrack')
+        try:
+            vehicle_tracking_min_confidence = float(
+                logic.get('vehicle_tracking_min_confidence', 0.4)
+            )
+        except (TypeError, ValueError):
+            vehicle_tracking_min_confidence = 0.4
+        logic['vehicle_tracking_min_confidence'] = max(
+            0.05,
+            min(1.0, vehicle_tracking_min_confidence),
+        )
         logic.setdefault('plate_requires_vehicle', None)
         logic.setdefault('pending_plate_cache_ttl_frames', 40)
         logic.setdefault('pending_plate_cache_max_entries', 30)
