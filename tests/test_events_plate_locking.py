@@ -769,6 +769,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
                 "trackId": 1,
                 "type": 6,
                 "perIdVideoEnabled": False,
+                "videoFileDuration": 49.96,
             },
             {},
             frame_idx=2,
@@ -778,6 +779,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(payload["type"], 6)
         self.assertEqual(payload["lane"], "lane-a")
         self.assertFalse(payload["perIdVideoEnabled"])
+        self.assertNotIn("videoFileDuration", payload)
 
     def test_event_evidence_manifest_and_index_are_ordered_by_event_id(self):
         uploader = _CollectingUploader()

@@ -1971,6 +1971,13 @@ class EventManager:
             self._attach_wheel_results(event, track_state=track_state, track_id=track_id)
         if event_type == 6:
             event['perIdVideoEnabled'] = bool(payload.get('perIdVideoEnabled', False))
+            try:
+                video_file_duration = float(payload.get('videoFileDuration') or 0.0)
+            except (TypeError, ValueError):
+                video_file_duration = 0.0
+            if video_file_duration > 0.0:
+                # 仅写入板端事件证据；平台type6接口保持原字段集合。
+                event['videoFileDuration'] = round(video_file_duration, 2)
         self.lifecycle_manager.mark_stage(track_id, event_type)
         if event_type >= 5:
             self.lifecycle_manager.finalize(track_id)

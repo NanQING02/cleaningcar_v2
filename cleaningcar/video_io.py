@@ -1,3 +1,4 @@
+import math
 import os
 import select
 import subprocess
@@ -528,6 +529,9 @@ class FfmpegH264Writer:
         self._encoders = tuple(encoders or FFMPEG_HW_ENCODERS)
         self._opened = False
         self._frames_total = 0
+        self._first_capture_ts = None
+        self._last_capture_ts = None
+        self.finalized_duration = 0.0
         self._frames_since_log = 0
         self._start_time = time.time()
         self._last_log_time = self._start_time
@@ -614,7 +618,7 @@ class FfmpegH264Writer:
             return False
         return True
 
-    def write(self, frame):
+    def write(self, frame, capture_ts=None):
         if not self.is_opened():
             return False
         if frame is None:
@@ -622,6 +626,14 @@ class FfmpegH264Writer:
         try:
             self.stdin.write(frame.tobytes())
             self._frames_total += 1
+            if capture_ts is not None:
+                try:
+                    normalized_ts = float(capture_ts)
+                    if self._first_capture_ts is None:
+                        self._first_capture_ts = normalized_ts
+                    self._last_capture_ts = normalized_ts
+                except (TypeError, ValueError):
+                    pass
             self._frames_since_log += 1
             now = time.time()
             if self._log_interval > 0 and now - self._last_log_time >= self._log_interval:
@@ -635,6 +647,61 @@ class FfmpegH264Writer:
             print(f'[per-id-video] write failed for {self.path}: {exc}')
             self.release()
             return False
+
+    def _retime_finalized_file(self):
+        """按实际采集时间修正容器时间戳，失败时保留原始可播放文件。"""
+        encoded_duration = self._frames_total / max(self.fps, 1e-6)
+        desired_duration = encoded_duration
+        if self._first_capture_ts is not None and self._last_capture_ts is not None:
+            try:
+                first_ts = float(self._first_capture_ts)
+                last_ts = float(self._last_capture_ts)
+                capture_span = last_ts - first_ts
+                if math.isfinite(capture_span) and capture_span >= 0.0:
+                    desired_duration = max(
+                        1.0 / max(self.fps, 1e-6),
+                        capture_span + 1.0 / max(self.fps, 1e-6),
+                    )
+            except (TypeError, ValueError):
+                desired_duration = encoded_duration
+
+        self.finalized_duration = float(desired_duration)
+        if encoded_duration <= 0.0 or abs(desired_duration - encoded_duration) <= 0.02:
+            os.replace(self._output_path, self.path)
+            return True
+
+        scale = desired_duration / encoded_duration
+        output = Path(self._output_path)
+        retimed_path = str(output.with_name(output.stem + '_retimed' + output.suffix))
+        try:
+            result = subprocess.run(
+                [
+                    'ffmpeg', '-y', '-itsscale', f'{scale:.9f}', '-i', self._output_path,
+                    '-map', '0:v:0', '-an', '-c', 'copy', '-movflags', '+faststart', retimed_path,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15.0,
+            )
+            retimed_ok = result.returncode == 0 and os.path.exists(retimed_path)
+        except Exception:
+            retimed_ok = False
+
+        if not retimed_ok:
+            try:
+                os.remove(retimed_path)
+            except FileNotFoundError:
+                pass
+            os.replace(self._output_path, self.path)
+            self.finalized_duration = float(encoded_duration)
+            return True
+
+        os.replace(retimed_path, self.path)
+        try:
+            os.remove(self._output_path)
+        except FileNotFoundError:
+            pass
+        return True
 
     def release(self):
         finalized = False
@@ -663,9 +730,12 @@ class FfmpegH264Writer:
                     if exit_code is None or exit_code != 0:
                         print(f'[per-id-video] ffmpeg exit code {exit_code} for {self._output_path}, not renaming')
                     else:
-                        os.replace(self._output_path, self.path)
-                        print(f'[per-id-video] finalized video: {self.path}')
-                        finalized = True
+                        finalized = bool(self._retime_finalized_file())
+                        if finalized:
+                            print(
+                                f'[per-id-video] finalized video: {self.path} '
+                                f'duration={self.finalized_duration:.2f}s'
+                            )
             except Exception as exc:
                 print(f'[per-id-video] rename failed {self._output_path} -> {self.path}: {exc}')
         return finalized
@@ -724,16 +794,17 @@ class AsyncPerIdVideoWriter:
         self.path = getattr(writer, 'path', '')
         self.backend = getattr(writer, 'backend', '')
         self.encoder = getattr(writer, 'encoder', '')
+        self.finalized_duration = 0.0
         self._thread.start()
 
     def is_opened(self):
         return bool(self.writer is not None and self.writer.is_opened())
 
-    def write(self, frame):
+    def write(self, frame, capture_ts=None):
         if frame is None or self._released or not self.is_opened():
             return
         try:
-            self._queue.put_nowait(frame)
+            self._queue.put_nowait((frame, capture_ts))
             with self._lock:
                 self._enqueued += 1
             return
@@ -749,7 +820,7 @@ class AsyncPerIdVideoWriter:
             pass
 
         try:
-            self._queue.put_nowait(frame)
+            self._queue.put_nowait((frame, capture_ts))
             with self._lock:
                 self._enqueued += 1
         except Full:
@@ -759,13 +830,19 @@ class AsyncPerIdVideoWriter:
     def _run(self):
         while not self._stop.is_set() or not self._queue.empty():
             try:
-                frame = self._queue.get(timeout=0.2)
+                frame, capture_ts = self._queue.get(timeout=0.2)
             except Empty:
                 continue
             try:
                 frame_to_write = self.resize_fn(frame) if self.resize_fn is not None else frame
                 if frame_to_write is not None and self.writer is not None:
-                    write_result = self.writer.write(frame_to_write)
+                    try:
+                        write_result = self.writer.write(
+                            frame_to_write,
+                            capture_ts=capture_ts,
+                        )
+                    except TypeError:
+                        write_result = self.writer.write(frame_to_write)
                     with self._lock:
                         if write_result is False:
                             self._write_errors += 1
@@ -817,6 +894,9 @@ class AsyncPerIdVideoWriter:
         if self.writer is not None:
             try:
                 finalized = bool(self.writer.release())
+                self.finalized_duration = float(
+                    getattr(self.writer, 'finalized_duration', 0.0) or 0.0
+                )
             except Exception:
                 finalized = False
             self.writer = None
@@ -1298,7 +1378,13 @@ def create_video_reader(path, args):
     return None, decode_meta
 
 
-def emit_per_id_video_type6(track_id, track_state, event_manager, per_id_video_enabled):
+def emit_per_id_video_type6(
+    track_id,
+    track_state,
+    event_manager,
+    per_id_video_enabled,
+    video_file_duration=None,
+):
     state = track_state or {}
     if state.get('per_id_type6_emitted'):
         return False
@@ -1309,13 +1395,20 @@ def emit_per_id_video_type6(track_id, track_state, event_manager, per_id_video_e
     if frame_idx is None:
         frame_idx = state.get('last_frame_idx', 0)
     frame = state.get('last_frame')
+    event_payload = {'perIdVideoEnabled': bool(per_id_video_enabled)}
+    try:
+        duration = float(video_file_duration or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration > 0.0:
+        event_payload['videoFileDuration'] = round(duration, 2)
     try:
         event_manager.emit_event(
             track_id,
             6,
             frame_idx,
             frame,
-            {'perIdVideoEnabled': bool(per_id_video_enabled)},
+            event_payload,
             state,
         )
     except Exception:
@@ -1385,7 +1478,13 @@ def finalize_per_id_recording(writer, track_id, track_state, event_manager, per_
 
     if output_path and not output_path.exists():
         return False
-    return emit_per_id_video_type6(track_id, state, event_manager, per_id_video_enabled)
+    return emit_per_id_video_type6(
+        track_id,
+        state,
+        event_manager,
+        per_id_video_enabled,
+        video_file_duration=getattr(writer, 'finalized_duration', 0.0),
+    )
 
 
 def detect_source_mode(path, override='auto', base_dir=None):

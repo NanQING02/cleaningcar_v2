@@ -181,6 +181,7 @@ class CleanupDisabledTests(unittest.TestCase):
             output_path = Path(tmpdir) / "session.mp4"
             output_path.write_text("video", encoding="utf-8")
             writer = _DummyWriter(output_path)
+            writer.finalized_duration = 49.96
             event_manager = _DummyEventManager()
 
             result = video_io.finalize_per_id_recording(
@@ -196,7 +197,10 @@ class CleanupDisabledTests(unittest.TestCase):
             self.assertEqual(event_manager.calls[0][0][0], 7)
             self.assertEqual(event_manager.calls[0][0][1], 6)
             self.assertEqual(event_manager.calls[0][0][2], 30)
-            self.assertEqual(event_manager.calls[0][0][4], {"perIdVideoEnabled": True})
+            self.assertEqual(
+                event_manager.calls[0][0][4],
+                {"perIdVideoEnabled": True, "videoFileDuration": 49.96},
+            )
 
     def test_emit_per_id_video_type6_reports_disabled_recording(self):
         event_manager = _DummyEventManager()

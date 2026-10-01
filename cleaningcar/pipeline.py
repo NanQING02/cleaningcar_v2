@@ -2519,7 +2519,7 @@ def process_video(path, args):
                             else:
                                 frame_to_write = frame_out
                             if frame_to_write is not None:
-                                writer.write(frame_to_write)
+                                writer.write(frame_to_write, capture_ts=capture_ts)
                 else:
                     for tid, st in list(event_manager.tracks.items()):
                         stop_f = st.get('record_stop_frame')
