@@ -373,6 +373,7 @@ class EventManager:
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
         self.wheel_photo_history_max_buckets = max(1, int(wheel_photo_history_max_buckets))
+        self._wheel_photo_history_lock = threading.RLock()
         # 事件截图异步编码：默认关闭（保持同步语义）；开启后主线程只算路径，
         # resize/JPEG编码/写盘交给后台单线程队列，队满回退同步
         self.event_capture_async = bool(self.logic.get('event_capture_async', False))
@@ -3725,23 +3726,72 @@ class EventManager:
             raw_candidates = list(fallback_candidates or [])
         using_fallback = raw_candidates is fallback_candidates
         seen = set()
-        for raw in raw_candidates:
-            candidate = self._normalize_wheel_photo_candidate(raw, ref_ts)
-            if not candidate:
-                continue
-            entry_id = int(candidate.get('entryId', 0) or 0)
-            key = (candidate.get('side'), entry_id)
-            if entry_id > 0 and key in seen:
-                continue
-            if entry_id > 0:
-                seen.add(key)
-            self._update_wheel_photo_history(
-                track_id,
-                track_state,
-                candidate['side'],
-                candidate,
-                claimer=claimer if using_fallback else None,
-            )
+        # type5 prewait线程与主线程都可能更新同一track_state；整段串行化，避免
+        # 两边同时通过processed检查后重复保存同一个entry。
+        with self._wheel_photo_history_lock:
+            for raw in raw_candidates:
+                candidate = self._normalize_wheel_photo_candidate(raw, ref_ts)
+                if not candidate:
+                    continue
+                entry_id = int(candidate.get('entryId', 0) or 0)
+                key = (candidate.get('side'), entry_id)
+                if entry_id > 0 and key in seen:
+                    continue
+                if entry_id > 0:
+                    seen.add(key)
+                    if self._wheel_photo_entry_processed(track_state, candidate['side'], entry_id):
+                        continue
+                self._update_wheel_photo_history(
+                    track_id,
+                    track_state,
+                    candidate['side'],
+                    candidate,
+                    claimer=claimer if using_fallback else None,
+                )
+                if entry_id > 0:
+                    self._mark_wheel_photo_entry_processed(track_state, candidate['side'], entry_id)
+
+    @staticmethod
+    def _wheel_photo_entry_processed(track_state, side, entry_id):
+        if not isinstance(track_state, dict):
+            return False
+        state = track_state.get('_wheel_photo_processed_entries')
+        if not isinstance(state, dict):
+            return False
+        values = state.get(str(side or '').strip().lower())
+        return isinstance(values, set) and int(entry_id or 0) in values
+
+    @staticmethod
+    def _mark_wheel_photo_entry_processed(track_state, side, entry_id, limit=4096):
+        """记住provider entry，避免历史窗口与桶裁剪组合后反复落盘。
+
+        provider会在30秒绑定窗口内重复返回claimed entries。history只保留有限桶时，
+        已裁剪桶不能再作为去重依据，因此单独保留有界entryId集合。4096/侧远大于
+        20FPS×30s窗口，同时避免长停留车辆无限增长。
+        """
+        if not isinstance(track_state, dict):
+            return
+        side = str(side or '').strip().lower()
+        entry_id = int(entry_id or 0)
+        if side not in ('left', 'right') or entry_id <= 0:
+            return
+        state = track_state.setdefault('_wheel_photo_processed_entries', {})
+        order_state = track_state.setdefault('_wheel_photo_processed_entry_order', {})
+        values = state.get(side)
+        if not isinstance(values, set):
+            values = set(values or ())
+            state[side] = values
+        order = order_state.get(side)
+        if not isinstance(order, deque):
+            order = deque(int(item) for item in (order or ()) if int(item or 0) > 0)
+            order_state[side] = order
+        if entry_id in values:
+            return
+        values.add(entry_id)
+        order.append(entry_id)
+        limit = max(128, int(limit or 4096))
+        while len(order) > limit:
+            values.discard(order.popleft())
 
     def _update_wheel_photo_history(self, track_id, track_state, side, candidate, claimer=None):
         if self.wheel_photo_uploader is None:
@@ -3978,12 +4028,13 @@ class EventManager:
         if not self.wheel_photo_uploader or not isinstance(track_state, dict):
             return
         uploaded_urls = self._wheel_photo_uploaded_urls(track_state)
-        photos = self._collect_wheel_photo_entries(
-            track_state,
-            now_ts=now_ts,
-            force=force,
-            track_id=track_id,
-        )
+        with self._wheel_photo_history_lock:
+            photos = self._collect_wheel_photo_entries(
+                track_state,
+                now_ts=now_ts,
+                force=force,
+                track_id=track_id,
+            )
         for _, entry in photos:
             photo_url = self._absolute_wheel_photo_url(entry.get('photoUrl'))
             if not photo_url or photo_url in uploaded_urls:

@@ -75,6 +75,23 @@ class _SingleEntryWheelProvider:
         return True
 
 
+class _ReplayClaimedWheelProvider:
+    """模拟provider每帧重放30秒窗口内全部claimed entries。"""
+
+    def __init__(self, items):
+        self.items = [dict(item) for item in items]
+
+    def get_photo_candidate_entries(self, track_id, now_ts=None, reference_ts=None):
+        return [dict(item) for item in self.items]
+
+    def get_claimed_result_entries(self, track_id, now_ts=None, reference_ts=None):
+        return [dict(item) for item in self.items]
+
+    @staticmethod
+    def claim_result_entry(track_id, entry_id):
+        return int(track_id or 0) > 0 and int(entry_id or 0) > 0
+
+
 class ConstantMapTests(unittest.TestCase):
     def test_class_and_side_maps(self):
         self.assertEqual(WHEEL_CLASS_NAME_TO_CLEAN_VALUE['0-25'], 1)
@@ -566,6 +583,48 @@ class WheelPhotoTests(unittest.TestCase):
         side_history = st['wheel_photo_history']['left']
         self.assertEqual(len(side_history), 3)
         self.assertEqual(sorted(side_history.keys()), [4002, 4003, 4004])
+
+    def test_pruned_provider_entries_are_not_rehydrated_and_resaved(self):
+        uploader = _FakeWheelPhotoUploader()
+        items = [
+            self._candidate(
+                capture_ts=1000.0 + 0.5 * idx,
+                entry_id=idx + 1,
+                center_distance=100.0,
+                image_bytes=f'jpg-{idx + 1}'.encode('ascii'),
+            )
+            for idx in range(60)
+        ]
+        provider = _ReplayClaimedWheelProvider(items)
+        mgr = self._manager(
+            uploader=uploader,
+            wheel_provider=provider,
+            bucket_seconds=0.5,
+            history_max_buckets=3,
+        )
+        st = self._new_track(mgr)
+
+        with unittest.mock.patch.object(
+                mgr, '_save_wheel_photo', wraps=mgr._save_wheel_photo) as save_mock:
+            mgr._update_track_wheel_photo_history_from_provider(
+                track_id=1,
+                track_state=st,
+                ref_ts=1030.0,
+            )
+            first_save_count = save_mock.call_count
+            for _ in range(20):
+                mgr._update_track_wheel_photo_history_from_provider(
+                    track_id=1,
+                    track_state=st,
+                    ref_ts=1030.0,
+                )
+
+        # 60个entry只处理一次；history裁到3桶后，provider重放不会让旧桶复活。
+        self.assertEqual(first_save_count, 60)
+        self.assertEqual(save_mock.call_count, first_save_count)
+        self.assertEqual(len(st['wheel_photo_history']['left']), 3)
+        self.assertEqual(len(st['_wheel_photo_processed_entries']['left']), 60)
+        self.assertEqual(st['wheel_photo_seq']['left'], 60)
 
     def test_failed_photo_save_keeps_best_candidate_bytes_for_retry(self):
         uploader = _FakeWheelPhotoUploader()
