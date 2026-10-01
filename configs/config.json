@@ -158,6 +158,7 @@
     "zone_a_exit_outside_hits": 5,
     "water_confirm_frames": 3,
     "track_lost_grace_seconds": 4.0,
+    "lifecycle_reacquire_seconds": 30.0,
     "event_trace_enabled": false,
     "event_trace_dir": "event_traces",
     "event_trace_queue_size": 4096,

@@ -356,9 +356,14 @@ class EventManager:
         self.wheel_photo_uploader = wheel_photo_uploader
         self.wheel_photo_base_dir = Path(wheel_photo_base_dir) if wheel_photo_base_dir else Path('/data/ftp')
         self.session_id = str(session_id or '').strip()
+        track_lost_grace = float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0)
+        self.lifecycle_reacquire_seconds = max(
+            track_lost_grace,
+            float(self.logic.get('lifecycle_reacquire_seconds', track_lost_grace) or track_lost_grace),
+        )
         self.lifecycle_manager = BusinessLifecycleManager(
             self.camera_id,
-            grace_seconds=float(self.logic.get('track_lost_grace_seconds', 4.0) or 4.0),
+            grace_seconds=self.lifecycle_reacquire_seconds,
         )
         self.lifecycle_closed_retention_seconds = max(
             60.0,
@@ -755,6 +760,70 @@ class EventManager:
         )
         return hypot(relative[0] - previous_relative[0], relative[1] - previous_relative[1]) <= 0.25
 
+    def _adopt_lifecycle_handoff(self, lifecycle, track_id, track_state,
+                                 capture_ts, frame_idx, reason):
+        if lifecycle is None:
+            return None
+        from_track_id = int(lifecycle.last_tracker_id or 0)
+        previous_state = self.tracks.get(from_track_id) or {}
+        lifecycle = self.lifecycle_manager.handoff(lifecycle, track_id, capture_ts)
+        if lifecycle is None:
+            return None
+        track_state['lifecycle_handoff_pending'] = False
+        track_state['session_id'] = lifecycle.event_id
+        track_state['_lifecycle_handoff_from'] = int(from_track_id)
+        track_state['events'] = set(lifecycle.stages)
+        track_state['event_stage_max'] = max(lifecycle.stages) if lifecycle.stages else 0
+        for field in ('record_start_frame', 'record_stop_frame', 'type1_capture_time'):
+            if field in previous_state:
+                track_state[field] = previous_state[field]
+        for field in (
+            'record_first_start_frame', 'record_segment_start_frame',
+            'pre_type2_rotate_requested', 'pre_type2_rotation_count',
+            'recording_committed', 'per_id_recording_ready', 'per_id_video_path',
+            'vehicle_business_confirmed',
+        ):
+            if field in previous_state:
+                track_state[field] = previous_state[field]
+        for field in ('class_counts', 'wash_stage_class_counts'):
+            if isinstance(previous_state.get(field), dict):
+                track_state[field] = dict(previous_state[field])
+        for field in (
+            'vehicle_cls', 'vehicle_cls_locked', 'vehicle_cls_frozen',
+            'vehicle_cls_at_type2', 'vehicle_cls_lock_reason',
+        ):
+            if field in previous_state:
+                track_state[field] = previous_state[field]
+        if lifecycle.last_plate_text:
+            track_state['plate_text_locked'] = lifecycle.last_plate_text
+            track_state['plate_text_locked_is_guess'] = False
+            track_state['plate_text'] = lifecycle.last_plate_text
+            track_state['plate_is_guess'] = False
+            track_state['plate_color_locked'] = lifecycle.last_plate_color
+            track_state['plate_color_locked_conf'] = lifecycle.last_plate_color_conf
+            track_state['plate_color_locked_text'] = (
+                lifecycle.last_plate_text if lifecycle.last_plate_color else ''
+            )
+            track_state['plate_color'] = lifecycle.last_plate_color
+            track_state['plate_color_conf'] = lifecycle.last_plate_color_conf
+            track_state['plate_type'] = lifecycle.last_plate_type
+            for field in (
+                'plate_color_evidence_by_text', 'plate_color_fusion_evidence_by_text',
+                'plate_color_votes_by_text',
+            ):
+                if isinstance(previous_state.get(field), dict):
+                    track_state[field] = deepcopy(previous_state[field])
+        track_state['type2_qualified'] = 2 in lifecycle.stages
+        previous_state['_lifecycle_superseded'] = True
+        self.trace_record('lifecycle_handoff', {
+            'frameIdx': int(frame_idx),
+            'trackId': int(track_id),
+            'eventId': lifecycle.event_id,
+            'fromTrackId': int(from_track_id),
+            'reason': str(reason),
+        })
+        return lifecycle
+
     def _observe_lifecycle(self, track_id, track_state, frame_idx, vehicle_label,
                            plate_box, anchor_point, plate_is_guess, anchor_direction):
         capture_ts = self._capture_timestamp(frame_idx)
@@ -767,6 +836,7 @@ class EventManager:
         locked_color_conf = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
         plate_type = str(track_state.get('plate_type') or '')
         motion_direction = str((anchor_direction or {}).get('motion_direction', 'unknown') or 'unknown')
+        handoff_vehicle_box = track_state.get('last_vehicle_box')
         handoff_plate_box = plate_box or track_state.get('last_plate_box')
         plate_edge = self._lifecycle_zone_edge(anchor_point, handoff_plate_box)
         lifecycle = self.lifecycle_manager.get(track_id)
@@ -867,6 +937,31 @@ class EventManager:
                         'plateText': locked_plate,
                         'candidateCount': len(waiting_lifecycles),
                     })
+        if lifecycle is None and not has_valid_plate and vehicle_class:
+            candidates = self.lifecycle_manager.find_unplated_handoff_candidates(
+                vehicle_class,
+                capture_ts,
+                handoff_vehicle_box,
+                anchor_point=anchor_point,
+                motion_direction=motion_direction,
+            )
+            if len(candidates) == 1:
+                lifecycle = self._adopt_lifecycle_handoff(
+                    candidates[0],
+                    track_id,
+                    track_state,
+                    capture_ts,
+                    frame_idx,
+                    reason='unique_unplated_vehicle_candidate',
+                )
+            elif len(candidates) > 1:
+                track_state['lifecycle_handoff_pending'] = True
+                self.trace_record('lifecycle_handoff_rejected', {
+                    'frameIdx': int(frame_idx),
+                    'trackId': int(track_id),
+                    'reason': 'ambiguous_unplated_candidates',
+                    'candidateCount': len(candidates),
+                })
         if lifecycle is not None:
             track_state['lifecycle_handoff_pending'] = False
             self.lifecycle_manager.touch(
@@ -880,6 +975,8 @@ class EventManager:
                 plate_color=locked_color if has_valid_plate else '',
                 plate_color_conf=locked_color_conf if has_valid_plate else 0.0,
                 plate_type=plate_type if has_valid_plate else '',
+                vehicle_box=handoff_vehicle_box,
+                anchor_point=anchor_point,
             )
         return lifecycle
 
@@ -1752,6 +1849,8 @@ class EventManager:
             plate_color=track_state.get('plate_color_locked', '') if locked_plate_valid else '',
             plate_color_conf=track_state.get('plate_color_locked_conf', 0.0) if locked_plate_valid else 0.0,
             plate_type=track_state.get('plate_type', '') if locked_plate_valid else '',
+            vehicle_box=track_state.get('last_vehicle_box'),
+            anchor_point=track_state.get('last_anchor'),
         )
         if event_type == 1:
             prev_type1_time = track_state.get('type1_capture_time')

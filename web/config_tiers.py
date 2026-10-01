@@ -91,6 +91,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.zone_b_exit_hysteresis", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 离开迟滞"},
     {"path": "logic.water_confirm_frames", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type3 连续水目标帧数"},
     {"path": "logic.track_lost_grace_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "锚点消失确认秒数"},
+    {"path": "logic.lifecycle_reacquire_seconds", "tier": TIER_DEVELOPER, "group": "logic", "label": "业务生命周期再捕获秒数"},
     {"path": "logic.event_trace_enabled", "tier": TIER_DEVELOPER, "group": "logic", "label": "事件输入追踪"},
     {"path": "logic.event_trace_dir", "tier": TIER_DEVELOPER, "group": "logic", "label": "事件追踪目录"},
     {"path": "logic.event_trace_queue_size", "tier": TIER_DEVELOPER, "group": "logic", "label": "事件追踪队列"},

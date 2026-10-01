@@ -127,6 +127,7 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - `logic.plate_infer_stride=2`、`logic.per_id_video_source`、`logic.enable_per_id_video`
 - `logic.vehicle_tracking_min_confidence`：机动车续轨最低置信度，默认0.4；低于具体车型业务阈值的框只续已有track，不直接触发type1/type2
 - `logic.zone_a_margin_*`、`logic.zone_a_*_hits`、`logic.track_lost_grace_seconds` 等已验证的空间和生命周期参数
+- `logic.lifecycle_reacquire_seconds`：tracker短时断裂后的业务event ID再捕获窗口，默认30秒；仅唯一且空间/方向/机动车超类兼容时接续
 
 以下旧能力已经删除，不应重新加入配置：`video.save_video`、`logic.enable_global_video`、显式 RGA 后端，以及远程车轮检测服务字段。
 

@@ -123,6 +123,72 @@ class BusinessLifecycleManagerTests(unittest.TestCase):
         self.assertEqual(manager.find_waiting_lifecycles('car', 110), [])
         self.assertNotIn(truck, manager.find_waiting_lifecycles('car', 108))
 
+    def test_heavy_vehicle_subclasses_are_handoff_compatible(self):
+        manager = BusinessLifecycleManager('cam', grace_seconds=30)
+        lifecycle = manager.create(1, 'dump truck', capture_ts=100)
+        manager.touch(
+            1,
+            100,
+            plate_text='苏C12345',
+            plate_box=[10, 10, 30, 30],
+            plate_edge='flow_start',
+            vehicle_box=[0, 0, 100, 100],
+            anchor_point=[50, 100],
+        )
+        manager.mark_lost(1, capture_ts=101)
+
+        self.assertTrue(manager.can_handoff(
+            lifecycle,
+            'yellow truck',
+            105,
+            '苏C12345',
+            'flow_start',
+            [12, 12, 32, 32],
+            True,
+        ))
+
+    def test_unique_unplated_spatial_candidate_can_handoff(self):
+        manager = BusinessLifecycleManager('cam', grace_seconds=30)
+        lifecycle = manager.create(1, 'dump truck', capture_ts=100)
+        manager.touch(
+            1,
+            100,
+            vehicle_box=[100, 100, 300, 300],
+            anchor_point=[200, 300],
+            motion_direction='forward',
+        )
+        manager.mark_lost(1, capture_ts=101)
+
+        candidates = manager.find_unplated_handoff_candidates(
+            'yellow truck',
+            120,
+            [120, 110, 320, 310],
+            anchor_point=[220, 310],
+            motion_direction='forward',
+        )
+
+        self.assertEqual(candidates, [lifecycle])
+        self.assertEqual(
+            manager.find_unplated_handoff_candidates(
+                'yellow truck',
+                120,
+                [1000, 1000, 1200, 1200],
+                anchor_point=[1100, 1200],
+                motion_direction='forward',
+            ),
+            [],
+        )
+        self.assertEqual(
+            manager.find_unplated_handoff_candidates(
+                'yellow truck',
+                120,
+                [120, 110, 320, 310],
+                anchor_point=[220, 310],
+                motion_direction='reverse',
+            ),
+            [],
+        )
+
     def test_closed_lifecycles_are_pruned_after_retention_window(self):
         manager = BusinessLifecycleManager('cam', grace_seconds=8)
         lifecycle = manager.create(1, 'car', capture_ts=100)

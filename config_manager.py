@@ -373,6 +373,16 @@ class ConfigManager:
         except (TypeError, ValueError):
             track_lost_grace_seconds = 4.0
         logic['track_lost_grace_seconds'] = max(0.0, min(track_lost_grace_seconds, 60.0))
+        try:
+            lifecycle_reacquire_seconds = float(
+                logic.get('lifecycle_reacquire_seconds', 30.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            lifecycle_reacquire_seconds = 30.0
+        logic['lifecycle_reacquire_seconds'] = max(
+            logic['track_lost_grace_seconds'],
+            min(lifecycle_reacquire_seconds, 120.0),
+        )
         logic['event_trace_enabled'] = bool(logic.get('event_trace_enabled', False))
         logic['event_trace_dir'] = str(logic.get('event_trace_dir', 'event_traces') or 'event_traces').strip()
         try:

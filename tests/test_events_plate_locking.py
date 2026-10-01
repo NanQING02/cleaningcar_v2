@@ -104,6 +104,49 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         state['vehicle_business_confirmed'] = True
         self.assertTrue(manager._can_emit_type1(state))
 
+    def test_unplated_handoff_inherits_event_and_vehicle_votes(self):
+        manager = self._manager()
+        old_state = {
+            'events': {1, 2},
+            'event_stage_max': 2,
+            'class_counts': {'dump truck': 12, 'yellow truck': 3},
+            'wash_stage_class_counts': {'dump truck': 4},
+            'vehicle_cls': 'dump truck',
+            'vehicle_cls_locked': 'dump truck',
+            'vehicle_business_confirmed': True,
+            'record_start_frame': 10,
+            'type1_capture_time': '2026-10-01 09:49:19',
+        }
+        manager.tracks[1] = old_state
+        lifecycle = manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100)
+        manager.lifecycle_manager.mark_stage(1, 1)
+        manager.lifecycle_manager.mark_stage(1, 2)
+        manager.lifecycle_manager.touch(
+            1,
+            100,
+            vehicle_box=[100, 100, 300, 300],
+            anchor_point=[200, 300],
+        )
+        manager.lifecycle_manager.mark_lost(1, capture_ts=101)
+        new_state = {'events': set(), 'class_counts': {}}
+
+        adopted = manager._adopt_lifecycle_handoff(
+            lifecycle,
+            2,
+            new_state,
+            capture_ts=110,
+            frame_idx=1000,
+            reason='test_unplated',
+        )
+
+        self.assertIs(adopted, lifecycle)
+        self.assertEqual(new_state['session_id'], lifecycle.event_id)
+        self.assertEqual(new_state['events'], {1, 2})
+        self.assertEqual(new_state['class_counts'], old_state['class_counts'])
+        self.assertEqual(new_state['vehicle_cls_locked'], 'dump truck')
+        self.assertTrue(new_state['vehicle_business_confirmed'])
+        self.assertTrue(old_state['_lifecycle_superseded'])
+
     def test_initial_plate_lock_always_uses_six_hits(self):
         manager = self._manager(plate_lock_frames=6)
         manager.event_plate_lock_frames = 6

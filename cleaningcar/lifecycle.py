@@ -6,6 +6,19 @@ from uuid import uuid4
 from utils.upload_queue import PLATFORM_EVENT_ID_MAX_LENGTH, normalize_event_id
 
 
+HEAVY_VEHICLE_CLASSES = frozenset({'blue truck', 'yellow truck', 'dump truck', 'wuxiao'})
+
+
+def vehicle_classes_compatible(previous, current):
+    previous = str(previous or '').strip()
+    current = str(current or '').strip()
+    if not previous or not current:
+        return False
+    if previous == current:
+        return True
+    return previous in HEAVY_VEHICLE_CLASSES and current in HEAVY_VEHICLE_CLASSES
+
+
 @dataclass
 class BusinessLifecycle:
     event_id: str
@@ -22,6 +35,8 @@ class BusinessLifecycle:
     last_plate_color_conf: float = 0.0
     last_plate_type: str = ''
     last_plate_edge: str = ''
+    last_vehicle_box: tuple | None = None
+    last_anchor: tuple | None = None
     last_motion_direction: str = 'unknown'
     lost_ts: float = 0.0
     closed: bool = False
@@ -69,7 +84,7 @@ class BusinessLifecycleManager:
 
     def touch(self, tracker_id, capture_ts=None, vehicle_class='', plate_text='', plate_box=None,
               plate_edge='', motion_direction='unknown', plate_color='',
-              plate_color_conf=0.0, plate_type=''):
+              plate_color_conf=0.0, plate_type='', vehicle_box=None, anchor_point=None):
         lifecycle = self.get(tracker_id)
         if lifecycle is None:
             return None
@@ -80,6 +95,10 @@ class BusinessLifecycleManager:
         lifecycle.lost_ts = 0.0
         if vehicle_class and not lifecycle.vehicle_class:
             lifecycle.vehicle_class = str(vehicle_class)
+        if vehicle_box is not None:
+            lifecycle.last_vehicle_box = tuple(float(value) for value in vehicle_box)
+        if anchor_point is not None:
+            lifecycle.last_anchor = tuple(float(value) for value in anchor_point)
         if plate_box is not None:
             lifecycle.last_plate_box = tuple(float(value) for value in plate_box)
             lifecycle.last_plate_ts = now
@@ -187,7 +206,7 @@ class BusinessLifecycleManager:
             return False
         if not plate_text or str(plate_text) != lifecycle.last_plate_text:
             return False
-        if lifecycle.vehicle_class != str(vehicle_class or ''):
+        if not vehicle_classes_compatible(lifecycle.vehicle_class, vehicle_class):
             return False
         if lifecycle.last_plate_edge != str(plate_edge or ''):
             return False
@@ -219,10 +238,54 @@ class BusinessLifecycleManager:
                 not lifecycle.closed
                 and not lifecycle.active_tracker_id
                 and 0.0 <= now - lifecycle.lost_ts <= self.grace_seconds
-                and lifecycle.vehicle_class == vehicle_class
-                and bool(lifecycle.last_plate_text)
-                and bool(lifecycle.last_plate_edge)
-                and lifecycle.last_plate_box is not None
+                and vehicle_classes_compatible(lifecycle.vehicle_class, vehicle_class)
+            )
+        ]
+
+    def can_handoff_without_plate(self, lifecycle, vehicle_class, capture_ts,
+                                  vehicle_box, anchor_point=None,
+                                  motion_direction='unknown'):
+        if lifecycle is None or lifecycle.closed or lifecycle.active_tracker_id:
+            return False
+        now = float(capture_ts)
+        if now - lifecycle.lost_ts > self.grace_seconds:
+            return False
+        if not vehicle_classes_compatible(lifecycle.vehicle_class, vehicle_class):
+            return False
+        if (
+            motion_direction in {'forward', 'reverse'}
+            and lifecycle.last_motion_direction in {'forward', 'reverse'}
+            and motion_direction != lifecycle.last_motion_direction
+        ):
+            return False
+        if self._boxes_continuous(lifecycle.last_vehicle_box, vehicle_box):
+            return True
+        if lifecycle.last_anchor is None or anchor_point is None:
+            return False
+        previous_size = 96.0
+        if lifecycle.last_vehicle_box is not None:
+            previous_size = max(
+                lifecycle.last_vehicle_box[2] - lifecycle.last_vehicle_box[0],
+                lifecycle.last_vehicle_box[3] - lifecycle.last_vehicle_box[1],
+                previous_size,
+            )
+        return hypot(
+            float(anchor_point[0]) - float(lifecycle.last_anchor[0]),
+            float(anchor_point[1]) - float(lifecycle.last_anchor[1]),
+        ) <= max(96.0, 2.5 * previous_size)
+
+    def find_unplated_handoff_candidates(self, vehicle_class, capture_ts,
+                                         vehicle_box, anchor_point=None,
+                                         motion_direction='unknown'):
+        return [
+            lifecycle for lifecycle in self.by_event_id.values()
+            if self.can_handoff_without_plate(
+                lifecycle,
+                vehicle_class,
+                capture_ts,
+                vehicle_box,
+                anchor_point=anchor_point,
+                motion_direction=motion_direction,
             )
         ]
 

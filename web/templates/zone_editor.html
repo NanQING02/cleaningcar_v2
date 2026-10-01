@@ -412,6 +412,9 @@
           <label>锚点消失确认 (秒，按源FPS换算)
             <input type="number" min="0" max="60" step="0.5" v-model.number="form.logic.track_lost_grace_seconds" />
           </label>
+          <label>业务生命周期再捕获（秒）
+            <input type="number" min="1" max="120" step="1" v-model.number="form.logic.lifecycle_reacquire_seconds" />
+          </label>
           <label>
             <input type="checkbox" v-model="form.logic.event_trace_enabled" />
             记录事件层输入（手测时开启）
@@ -631,6 +634,7 @@
               zone_b_exit_hysteresis: 5,
               water_confirm_frames: 3,
               track_lost_grace_seconds: 4.0,
+              lifecycle_reacquire_seconds: 30.0,
               event_trace_enabled: false,
               event_trace_dir: 'event_traces',
               event_trace_queue_size: 4096,
@@ -1205,6 +1209,7 @@
               zone_b_exit_hysteresis: this.form.logic.zone_b_exit_hysteresis,
               water_confirm_frames: this.form.logic.water_confirm_frames,
               track_lost_grace_seconds: this.form.logic.track_lost_grace_seconds,
+              lifecycle_reacquire_seconds: this.form.logic.lifecycle_reacquire_seconds,
               event_trace_enabled: this.form.logic.event_trace_enabled,
               event_trace_dir: this.form.logic.event_trace_dir,
               event_trace_queue_size: this.form.logic.event_trace_queue_size,
