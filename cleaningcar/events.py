@@ -351,6 +351,7 @@ class EventManager:
         wheel_photo_bucket_seconds=0.5,
         wheel_photo_min_score=0.3,
         wheel_photo_history_max_buckets=20,
+        wheel_photo_persistence_mode='final_locked',
     ):
         self.config = config
         self.logic = config.get('logic', {})
@@ -502,6 +503,10 @@ class EventManager:
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
         self.wheel_photo_history_max_buckets = max(1, int(wheel_photo_history_max_buckets))
+        persistence_mode = str(wheel_photo_persistence_mode or 'final_locked').strip().lower()
+        if persistence_mode not in {'final_locked', 'bucket_stream'}:
+            persistence_mode = 'final_locked'
+        self.wheel_photo_persistence_mode = persistence_mode
         self._wheel_photo_history_lock = threading.RLock()
         # 事件截图异步编码：默认关闭（保持同步语义）；开启后主线程只算路径，
         # resize/JPEG编码/写盘交给后台单线程队列，队满回退同步
@@ -3796,13 +3801,14 @@ class EventManager:
                 photo_seed_candidates.append(candidate)
             elif self._is_candidate_claimed_by_track(provider, track_id, candidate.get('entryId')):
                 photo_seed_candidates.append(candidate)
-        self._update_track_wheel_photo_history_from_provider(
-            track_id=track_id,
-            track_state=track_state,
-            ref_ts=ref_ts,
-            fallback_candidates=photo_seed_candidates,
-        )
-        self._enqueue_wheel_photos(track_state, now_ts=ref_ts, track_id=track_id, force=False)
+        if self.wheel_photo_persistence_mode == 'bucket_stream':
+            self._update_track_wheel_photo_history_from_provider(
+                track_id=track_id,
+                track_state=track_state,
+                ref_ts=ref_ts,
+                fallback_candidates=photo_seed_candidates,
+            )
+            self._enqueue_wheel_photos(track_state, now_ts=ref_ts, track_id=track_id, force=False)
 
     @staticmethod
     def _is_candidate_claimed_by_track(provider, track_id, entry_id):
@@ -4175,6 +4181,39 @@ class EventManager:
             return []
         if not self.wheel_photo_uploader:
             return []
+        if self.wheel_photo_persistence_mode == 'final_locked':
+            if not force:
+                return []
+            photos = []
+            locked = track_state.get('wheel_results_locked')
+            if not isinstance(locked, dict):
+                return photos
+            for side in ('left', 'right'):
+                entry = locked.get(side)
+                if not isinstance(entry, dict):
+                    continue
+                photo_url = self._ensure_locked_wheel_photo_url(
+                    side=side,
+                    entry=entry,
+                    track_state=track_state,
+                    track_id=track_id,
+                )
+                class_name = str(entry.get('className') or '').strip()
+                clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(class_name, 0)
+                if not photo_url or not clean_value:
+                    continue
+                photos.append((
+                    float(entry.get('capture_ts', 0.0) or 0.0),
+                    {
+                        'photoUrl': photo_url,
+                        'type': WHEEL_SIDE_TO_PHOTO_TYPE.get(side, ''),
+                        'cleanValue': clean_value,
+                        'capture_ts': float(entry.get('capture_ts', 0.0) or 0.0),
+                        '_sourceEntry': entry,
+                    },
+                ))
+            photos.sort(key=lambda item: item[0])
+            return photos
         now_ref = time.time() if now_ts is None else float(now_ts)
         history = track_state.get('wheel_photo_history')
         photos = []

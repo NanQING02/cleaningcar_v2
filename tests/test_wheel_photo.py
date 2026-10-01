@@ -102,7 +102,8 @@ class ConstantMapTests(unittest.TestCase):
 
 class WheelPhotoTests(unittest.TestCase):
     def _manager(self, uploader=None, base_dir=None, bucket_seconds=0.5,
-                 min_score=0.3, wheel_provider=None, history_max_buckets=20):
+                 min_score=0.3, wheel_provider=None, history_max_buckets=20,
+                 persistence_mode='bucket_stream'):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         if base_dir is None:
@@ -135,6 +136,7 @@ class WheelPhotoTests(unittest.TestCase):
             wheel_photo_bucket_seconds=bucket_seconds,
             wheel_photo_min_score=min_score,
             wheel_photo_history_max_buckets=history_max_buckets,
+            wheel_photo_persistence_mode=persistence_mode,
         )
 
     @staticmethod
@@ -705,6 +707,40 @@ class WheelPhotoTests(unittest.TestCase):
         self.assertEqual(uploader.enqueued[0]['cleanValue'], 4)
         self.assertTrue(Path(uploader.enqueued[0]['photoUrl']).exists())
 
+    def test_final_locked_mode_only_persists_one_photo_at_type5(self):
+        uploader = _FakeWheelPhotoUploader()
+        candidate = self._candidate(
+            side='left',
+            capture_ts=1718835001.0,
+            class_name='75-100',
+            entry_id=9,
+            image_bytes=b'lockedjpg',
+        )
+        provider = _SingleEntryWheelProvider(candidate)
+        mgr = self._manager(
+            uploader=uploader,
+            wheel_provider=provider,
+            persistence_mode='final_locked',
+        )
+        st = self._new_track(mgr)
+        st['wheel_active'] = True
+        st['wheel_activity_start_ts'] = 1718835000.0
+
+        for _ in range(20):
+            mgr._update_track_wheel_results(1, st, frame_ts=1718835001.0)
+
+        self.assertIn('left', st['wheel_results_locked'])
+        self.assertEqual(st['wheel_photo_history']['left'], {})
+        self.assertEqual(uploader.enqueued, [])
+        self.assertEqual(list(Path(mgr.wheel_photo_base_dir).rglob('*.jpg')), [])
+
+        mgr._enqueue_wheel_photos(st, now_ts=1718835002.0, force=True, track_id=1)
+        mgr._enqueue_wheel_photos(st, now_ts=1718835003.0, force=True, track_id=1)
+
+        self.assertEqual(len(uploader.enqueued), 1)
+        self.assertEqual(uploader.enqueued[0]['cleanValue'], 4)
+        self.assertEqual(len(list(Path(mgr.wheel_photo_base_dir).rglob('*.jpg'))), 1)
+
     def test_event_manager_default_photo_bucket_seconds_is_half_second(self):
         mgr = EventManager(
             {
@@ -720,6 +756,7 @@ class WheelPhotoTests(unittest.TestCase):
         )
 
         self.assertEqual(mgr.wheel_photo_bucket_seconds, 0.5)
+        self.assertEqual(mgr.wheel_photo_persistence_mode, 'final_locked')
 
     def test_representative_uses_nearest_box_to_frame_center_across_bucket(self):
         candidates = [

@@ -160,15 +160,15 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - `wheel.bind_wait_seconds` / `wheel.bind_wait_poll_seconds`
   - `type=5` 事件生成前短暂等待车轮旁支补齐结果，默认最多 `2.0s`
   - 只在最终事件触发时等待，不影响常规帧处理
-- `wheel.photo_bucket_seconds` / `wheel.photo_min_score`
-  - 车轮照片批量上报（`POST /api/vehicle/wheel-photo`）的桶式参数
-  - 照片在车辆生命周期内缓存和落盘，稳定桶会实时加入上传队列，最终 `type=5` 事件生成前会强制 flush 未上传照片
+- `wheel.photo_persistence_mode` / `wheel.photo_bucket_seconds` / `wheel.photo_min_score`
+  - 默认`photo_persistence_mode=final_locked`：检测过程只在内存更新左右轮最佳结果，`type=5`收尾时每侧最多落盘和上传一张最终锁定代表图
+  - 兼容值`bucket_stream`恢复历史桶式过程图：稳定桶实时加入上传队列，最终`type=5`前强制flush未上传照片
   - `photo_bucket_seconds` 当前配置为 `0.5`：每 0.5 秒为一个桶，每桶一张代表
   - `photo_min_score` 默认 `0.3`：低于此分数的检测不入桶
-  - 桶内结果：`cleanValue` 按类型多数投票（同票倾向类型最低），代表图按检测框中心离画面中心最近选择
+  - `photo_bucket_seconds`和桶内多数投票只对`bucket_stream`生效；`final_locked`代表图按整个车辆生命周期内检测框中心最接近画面中心、分数更高的顺序择优
 - `wheel.photo_crop_margin_ratio` / `wheel.photo_history_max_buckets`
   - `photo_crop_margin_ratio` 默认 `0.5`：车轮照片按检测框四周扩边裁剪成特写（像素仍为原图、无标注），大幅降低激活期 JPEG 编码 CPU 与缓存内存；`0` 表示只裁框内，负值表示保留整帧
-  - `photo_history_max_buckets` 默认 `20`：每侧照片历史桶数量上限（0.5s/桶时约 10 秒），防止长停留轨迹的历史无界增长；桶内候选在代表照片落盘后只保留元数据
+  - `photo_history_max_buckets`只对`bucket_stream`生效，默认 `20`：每侧照片历史桶数量上限（0.5s/桶时约 10 秒），防止长停留轨迹的历史无界增长；桶内候选在代表照片落盘后只保留元数据
 
 ### `system.startup_capture_dir` / `system.manual_capture_dir`
 

@@ -75,7 +75,7 @@ run_zone_detect.py
 - 单车视频目录：`logic.per_id_video_dir=/data/ftp/per_id`，不可写时回退到 `video_result/per_id/`
 - 单车视频帧源：建议明确设置 `logic.per_id_video_source=raw` 或 `annotated`
 - 车轮旁路：`wheel.enabled=true`，`wheel.event_driven=true`，平常 reader 保持连接并以 `wheel.reader_idle_fps`（默认5fps）低频保留新鲜帧（跳过其余整帧拷贝）、不做推理；Zone A 活跃轨迹触发后恢复全帧率拉流并按 `wheel.active_target_fps` 推理
-- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`，桶式去重默认 `wheel.photo_bucket_seconds=0.5`，稳定桶实时入上传队列，最终 `type=5` 前强制 flush 未上传照片
+- 车轮照片批量上报：`system.api.wheel_photo_url`，落盘到 `system.wheel_photo_base_dir=/data/ftp`；默认`wheel.photo_persistence_mode=final_locked`，只在`type=5`时每侧落盘/上传一张最终代表图，显式切到`bucket_stream`才按0.5秒桶连续保存
 - 检测 CSV：`video.csv=./video_result/test.csv`
 - 事件截图上报格式：`system.api.capture_mode=path`
 - 事件目录：`event_output_dir=events/config`

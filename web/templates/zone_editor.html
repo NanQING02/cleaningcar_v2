@@ -320,6 +320,12 @@
             <label>车轮照片最低分数
               <input type="number" min="0" max="1" step="0.01" v-model.number="form.wheel.photo_min_score" />
             </label>
+            <label>车轮照片落盘策略
+              <select v-model="form.wheel.photo_persistence_mode">
+                <option value="final_locked">Type5最终代表图</option>
+                <option value="bucket_stream">0.5秒桶式连续图</option>
+              </select>
+            </label>
           </div>
           <div class="subsection">
             <h4>调试与心跳</h4>
@@ -622,7 +628,8 @@
               bind_wait_seconds: 2.0,
               bind_wait_poll_seconds: 0.08,
               photo_bucket_seconds: 0.5,
-              photo_min_score: 0.3
+              photo_min_score: 0.3,
+              photo_persistence_mode: 'final_locked'
             },
             logic: {
               detection_anchor: 'bottom_center',
@@ -1028,6 +1035,12 @@
           this.form.wheel.bind_wait_poll_seconds = Number(wheelValueOr(this.form.wheel.bind_wait_poll_seconds, 0.08));
           this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 0.5);
           this.form.wheel.photo_min_score = Number(wheelValueOr(this.form.wheel.photo_min_score, 0.3));
+          const photoPersistenceMode = String(
+            this.form.wheel.photo_persistence_mode || 'final_locked'
+          ).trim().toLowerCase();
+          this.form.wheel.photo_persistence_mode = ['final_locked', 'bucket_stream'].includes(photoPersistenceMode)
+            ? photoPersistenceMode
+            : 'final_locked';
           if (typeof this.form.logic.enable_per_id_video === 'undefined') {
             this.form.logic.enable_per_id_video = false;
           }
@@ -1197,7 +1210,8 @@
               bind_wait_seconds: this.form.wheel.bind_wait_seconds,
               bind_wait_poll_seconds: this.form.wheel.bind_wait_poll_seconds,
               photo_bucket_seconds: this.form.wheel.photo_bucket_seconds,
-              photo_min_score: this.form.wheel.photo_min_score
+              photo_min_score: this.form.wheel.photo_min_score,
+              photo_persistence_mode: this.form.wheel.photo_persistence_mode
             },
             logic: {
               detection_anchor: this.form.logic.detection_anchor,

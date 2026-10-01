@@ -701,7 +701,10 @@ def process_video(path, args):
                                  session_id=session_id,
                                  wheel_photo_bucket_seconds=float(wheel_cfg.get('photo_bucket_seconds', 0.5)),
                                  wheel_photo_min_score=float(wheel_cfg.get('photo_min_score', 0.3)),
-                                 wheel_photo_history_max_buckets=int(wheel_cfg.get('photo_history_max_buckets', 20)))
+                                 wheel_photo_history_max_buckets=int(wheel_cfg.get('photo_history_max_buckets', 20)),
+                                 wheel_photo_persistence_mode=str(
+                                     wheel_cfg.get('photo_persistence_mode', 'final_locked')
+                                 ))
     wheel_service = None
     candidate_wheel_service = None
     try:
