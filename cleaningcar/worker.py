@@ -136,6 +136,15 @@ class DetectWorker(threading.Thread):
         self.result_q.put((frame_idx, capture_ts, frame, [], []))
 
     def run(self):
+        # 兼容测试桩及历史调用方通过__new__恢复worker的场景；正式构造路径
+        # 会在__init__中按配置设置这两个值。
+        if not hasattr(self, 'vehicle_tracking_min_confidence'):
+            self.vehicle_tracking_min_confidence = 0.4
+        if not hasattr(self, 'vehicle_business_thresholds'):
+            self.vehicle_business_thresholds = {
+                class_id: float(CLASS_THRESH.get(class_id, self.args.conf))
+                for class_id in VEHICLE_CLASS_IDS
+            }
         while True:
             item = self.task_q.get()
             if item is None:
