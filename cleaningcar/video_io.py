@@ -1400,6 +1400,10 @@ def create_video_reader(path, args):
     return None, decode_meta
 
 
+def should_write_per_id_frame(track_state):
+    return not bool((track_state or {}).get('record_write_suspended', False))
+
+
 def emit_per_id_video_type6(
     track_id,
     track_state,

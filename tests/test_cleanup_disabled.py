@@ -40,6 +40,10 @@ class _DummyEventManager:
 
 
 class CleanupDisabledTests(unittest.TestCase):
+    def test_suspended_lost_track_stops_accepting_video_frames(self):
+        self.assertTrue(video_io.should_write_per_id_frame({}))
+        self.assertFalse(video_io.should_write_per_id_frame({"record_write_suspended": True}))
+
     def test_runtime_storage_cleaner_keeps_expired_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

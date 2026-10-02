@@ -95,6 +95,7 @@
 - 车型在 `type=2` 前持续累计基础票，`type=2` 到 `type=4` 阶段的车型票额外加权；在 `type=4` 正式冻结，没有 `type=4` 时在 `type=5` 前冻结。冻结后不允许短串识别覆盖，多 tracker 生命周期交接会继承车型票和锁定状态
 - `logic.pre_type2_video_segment_seconds=600`：`type=1` 后、`type=2` 前的录像属于临时段；每10分钟关闭并删除旧段，立即从当前帧开启新段，type1时间和事件ID保持不变
 - `logic.post_type2_force_finalize_seconds=900`：从 `type=2` 开始计时，车辆连续保留超过15分钟时标记 `OVER_15_MINUTES_AFTER_TYPE2`，补齐缺失type4并强制发送type5、立即停录，录像落盘后发送type6
+- `logic.per_id_video_lost_tail_seconds=10`：tracker丢失后录像最多继续写10秒；业务生命周期仍按`lifecycle_reacquire_seconds`等待handoff。10秒内接回会继续同一录像，超过10秒后本event保持停写直到type5收尾
 - `type=2` 表示当前临时录像转为必须保留；文件是否真实完成落盘以 `type=6` 为准，录像I/O失败不阻塞type1/type2业务事件上传
 - 单车录像只写入实际处理到的帧；编码收尾时按首末帧采集时间修正MP4时间戳，避免处理速率低于配置25 FPS时录像被加速。板端type6事件证据增加`videoFileDuration`记录实际MP4时长，平台type6协议仍只发送既有字段。
 - RTSP/camera模式下实时任务队列最多保留8帧，配置更大时运行时自动收紧；离线文件仍保留配置队列大小。结果队列会在超过一半实时队列容量时主动排空，降低1080p BGR帧长期堆积
@@ -128,7 +129,7 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
 - `logic.plate_infer_stride=2`、`logic.per_id_video_source`、`logic.enable_per_id_video`
 - `logic.vehicle_tracking_min_confidence`：机动车续轨最低置信度，默认0.4；低于具体车型业务阈值的框只续已有track，不直接触发type1/type2
 - `logic.zone_a_margin_*`、`logic.zone_a_*_hits`、`logic.track_lost_grace_seconds` 等已验证的空间和生命周期参数
-- `logic.lifecycle_reacquire_seconds`：tracker短时断裂后的业务event ID再捕获窗口，默认30秒；仅唯一且空间/方向/机动车超类兼容时接续
+- `logic.lifecycle_reacquire_seconds`：tracker短时断裂后的业务event ID再捕获窗口，默认10秒；仅唯一且空间/方向/机动车超类兼容时接续。与默认10秒录像丢失尾段一致，避免平台闭环继续等待而视频已经停写
 
 以下旧能力已经删除，不应重新加入配置：`video.save_video`、`logic.enable_global_video`、显式 RGA 后端，以及远程车轮检测服务字段。
 

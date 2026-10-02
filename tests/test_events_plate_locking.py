@@ -116,6 +116,9 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             'vehicle_business_confirmed': True,
             'record_start_frame': 10,
             'type1_capture_time': '2026-10-01 09:49:19',
+            'record_lost_started_ts': 101.0,
+            'record_write_until_ts': 111.0,
+            'record_write_suspended': True,
         }
         manager.tracks[1] = old_state
         lifecycle = manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100)
@@ -145,7 +148,65 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(new_state['class_counts'], old_state['class_counts'])
         self.assertEqual(new_state['vehicle_cls_locked'], 'dump truck')
         self.assertTrue(new_state['vehicle_business_confirmed'])
+        self.assertEqual(new_state['record_lost_started_ts'], 101.0)
+        self.assertEqual(new_state['record_write_until_ts'], 111.0)
+        self.assertTrue(new_state['record_write_suspended'])
         self.assertTrue(old_state['_lifecycle_superseded'])
+
+    def test_superseded_track_keeps_shared_event_upload_qualification(self):
+        manager = self._manager()
+        old_state = {'_lifecycle_superseded': True}
+        new_state = {}
+        manager.tracks[1] = old_state
+        manager.tracks[2] = new_state
+        lifecycle = manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100.0)
+        manager.lifecycle_manager.mark_lost(1, capture_ts=101.0)
+        manager.lifecycle_manager.handoff(lifecycle, 2, capture_ts=102.0)
+        manager.upload_qualified.add(lifecycle.event_id)
+        manager.upload_buffer[lifecycle.event_id] = [{'type': 5}]
+
+        manager.flush_inactive(active_ids={2}, frame_idx=10, capture_ts=102.0)
+
+        self.assertNotIn(1, manager.tracks)
+        self.assertIn(lifecycle.event_id, manager.upload_qualified)
+        self.assertIn(lifecycle.event_id, manager.upload_buffer)
+
+        manager.lifecycle_manager.finalize(2, capture_ts=103.0)
+        new_state['_lifecycle_superseded'] = True
+        manager.flush_inactive(active_ids=set(), frame_idx=11, capture_ts=103.0)
+
+        self.assertNotIn(lifecycle.event_id, manager.upload_qualified)
+        self.assertNotIn(lifecycle.event_id, manager.upload_buffer)
+
+    def test_lost_recording_suspends_after_independent_ten_second_tail(self):
+        manager = self._manager()
+        manager.lifecycle_manager.grace_seconds = 30.0
+        manager.per_id_video_lost_tail_seconds = 10.0
+        state = {
+            'events': {1, 2},
+            'event_stage_max': 2,
+            'type2_qualified': True,
+            'record_start_frame': 1,
+            'record_stop_frame': None,
+            'last_frame_idx': 100,
+            'zone_a_seen': True,
+            'zone_a_exited': False,
+            'abnormal_reasons': set(),
+        }
+        manager.tracks[1] = state
+        manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100.0)
+
+        manager.flush_inactive(active_ids=set(), frame_idx=101, capture_ts=101.0)
+        self.assertFalse(state.get('record_write_suspended'))
+        self.assertEqual(state.get('record_write_until_ts'), 111.0)
+        self.assertNotIn(5, state['events'])
+
+        manager.flush_inactive(active_ids=set(), frame_idx=110, capture_ts=110.9)
+        self.assertFalse(state.get('record_write_suspended'))
+
+        manager.flush_inactive(active_ids=set(), frame_idx=111, capture_ts=111.0)
+        self.assertTrue(state.get('record_write_suspended'))
+        self.assertNotIn(5, state['events'])
 
     def test_initial_plate_lock_always_uses_six_hits(self):
         manager = self._manager(plate_lock_frames=6)

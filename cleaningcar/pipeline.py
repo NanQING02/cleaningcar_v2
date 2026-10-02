@@ -55,6 +55,7 @@ from .video_io import (
     finalize_per_id_recording,
     parse_core_mask,
     reset_pre_type2_recording_state,
+    should_write_per_id_frame,
     resolve_auto_plate_core_mask,
     resolve_worker_core_masks,
 )
@@ -2483,6 +2484,8 @@ def process_video(path, args):
                             close_per_id_writer(tid, st)
                             continue
                         if next_frame_to_write < start_f:
+                            continue
+                        if not should_write_per_id_frame(st):
                             continue
                         writer = per_id_writers.get(writer_key)
                         if writer is None:

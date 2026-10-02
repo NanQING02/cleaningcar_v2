@@ -381,10 +381,10 @@ class ConfigManager:
         logic['track_lost_grace_seconds'] = max(0.0, min(track_lost_grace_seconds, 60.0))
         try:
             lifecycle_reacquire_seconds = float(
-                logic.get('lifecycle_reacquire_seconds', 30.0) or 0.0
+                logic.get('lifecycle_reacquire_seconds', 10.0) or 0.0
             )
         except (TypeError, ValueError):
-            lifecycle_reacquire_seconds = 30.0
+            lifecycle_reacquire_seconds = 10.0
         logic['lifecycle_reacquire_seconds'] = max(
             logic['track_lost_grace_seconds'],
             min(lifecycle_reacquire_seconds, 120.0),
@@ -530,6 +530,7 @@ class ConfigManager:
         for key, default in (
             ('pre_type2_video_segment_seconds', 600.0),
             ('post_type2_force_finalize_seconds', 900.0),
+            ('per_id_video_lost_tail_seconds', 10.0),
         ):
             try:
                 value = float(logic.get(key, default) or 0.0)

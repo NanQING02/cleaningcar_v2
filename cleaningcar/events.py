@@ -593,6 +593,10 @@ class EventManager:
             float(self.logic.get('post_type2_force_finalize_seconds', 900.0) or 0.0),
         )
         self.per_id_video_tail_seconds = 8.0
+        self.per_id_video_lost_tail_seconds = max(
+            0.0,
+            float(self.logic.get('per_id_video_lost_tail_seconds', 10.0) or 0.0),
+        )
         self.per_id_video_enabled = bool(self.logic.get('enable_per_id_video', False))
         self.upload_buffer = {}
         self.upload_qualified = set()
@@ -920,7 +924,8 @@ class EventManager:
             'record_first_start_frame', 'record_segment_start_frame',
             'pre_type2_rotate_requested', 'pre_type2_rotation_count',
             'recording_committed', 'per_id_recording_ready', 'per_id_video_path',
-            'vehicle_business_confirmed',
+            'vehicle_business_confirmed', 'record_lost_started_ts',
+            'record_write_until_ts', 'record_write_suspended',
         ):
             if field in previous_state:
                 track_state[field] = previous_state[field]
@@ -1017,6 +1022,9 @@ class EventManager:
                         'recording_committed',
                         'per_id_recording_ready',
                         'per_id_video_path',
+                        'record_lost_started_ts',
+                        'record_write_until_ts',
+                        'record_write_suspended',
                     ):
                         if field in previous_state:
                             track_state[field] = previous_state[field]
@@ -1387,6 +1395,9 @@ class EventManager:
             'recording_committed': False,
             'per_id_recording_ready': False,
             'per_id_video_path': '',
+            'record_lost_started_ts': None,
+            'record_write_until_ts': None,
+            'record_write_suspended': False,
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -1556,6 +1567,11 @@ class EventManager:
             plate_is_guess,
             anchor_direction,
         )
+        # 车辆在录像丢失尾段结束前重新出现时取消暂停倒计时；一旦已经
+        # 到达尾段上限，本次业务录像保持停写，直到最终type5收尾。
+        if not st.get('record_write_suspended'):
+            st['record_lost_started_ts'] = None
+            st['record_write_until_ts'] = None
 
         timestamp = self.frame_timestamp(frame_idx)
         inside_a = bool(zone_state and zone_state.inside_a)
@@ -1801,6 +1817,24 @@ class EventManager:
                 # type5发射时主线程无需再同步阻塞
                 if self._should_prewait_type5_wheel(st):
                     self._ensure_type5_wheel_prewait(tid, st, lifecycle)
+                if (
+                    st.get('record_start_frame') is not None
+                    and not st.get('record_write_suspended')
+                    and lifecycle.lost_ts > 0.0
+                ):
+                    st['record_lost_started_ts'] = float(lifecycle.lost_ts)
+                    deadline = float(lifecycle.lost_ts) + self.per_id_video_lost_tail_seconds
+                    st['record_write_until_ts'] = deadline
+                    if float(now_capture_ts) >= deadline:
+                        st['record_write_suspended'] = True
+                        self.trace_record('per_id_video_suspended', {
+                            'frameIdx': int(frame_idx),
+                            'trackId': int(tid),
+                            'eventId': lifecycle.event_id,
+                            'lostTs': float(lifecycle.lost_ts),
+                            'writeUntilTs': deadline,
+                            'tailSeconds': self.per_id_video_lost_tail_seconds,
+                        })
                 if self.lifecycle_manager.is_waiting(tid, now_capture_ts):
                     continue
             timed_out = (
@@ -1883,8 +1917,14 @@ class EventManager:
             self.zone_mgr.drop_track(tid)
             lifecycle = self.lifecycle_manager.get(tid)
             key = lifecycle.event_id if lifecycle is not None else f'{self.camera_id}_{tid}'
-            self.upload_buffer.pop(key, None)
-            self.upload_qualified.discard(key)
+            lifecycle_owned_elsewhere = bool(
+                lifecycle is not None
+                and not lifecycle.closed
+                and int(lifecycle.active_tracker_id or 0) not in (0, int(tid))
+            )
+            if not lifecycle_owned_elsewhere:
+                self.upload_buffer.pop(key, None)
+                self.upload_qualified.discard(key)
             self.tracks.pop(tid, None)
             # 轨迹最终移除时兜底清理车轮服务的活跃标记，防止inference_active永久置位
             provider = getattr(self, 'wheel_result_provider', None)
