@@ -103,7 +103,7 @@ class ConstantMapTests(unittest.TestCase):
 class WheelPhotoTests(unittest.TestCase):
     def _manager(self, uploader=None, base_dir=None, bucket_seconds=0.5,
                  min_score=0.3, wheel_provider=None, history_max_buckets=20,
-                 persistence_mode='bucket_stream'):
+                 persistence_mode='bucket_stream', max_persisted_per_side=10):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         if base_dir is None:
@@ -137,6 +137,7 @@ class WheelPhotoTests(unittest.TestCase):
             wheel_photo_min_score=min_score,
             wheel_photo_history_max_buckets=history_max_buckets,
             wheel_photo_persistence_mode=persistence_mode,
+            wheel_photo_max_persisted_per_side=max_persisted_per_side,
         )
 
     @staticmethod
@@ -603,6 +604,7 @@ class WheelPhotoTests(unittest.TestCase):
             wheel_provider=provider,
             bucket_seconds=0.5,
             history_max_buckets=3,
+            max_persisted_per_side=100,
         )
         st = self._new_track(mgr)
 
@@ -627,6 +629,34 @@ class WheelPhotoTests(unittest.TestCase):
         self.assertEqual(len(st['wheel_photo_history']['left']), 3)
         self.assertEqual(len(st['_wheel_photo_processed_entries']['left']), 60)
         self.assertEqual(st['wheel_photo_seq']['left'], 60)
+
+    def test_bucket_stream_persists_at_most_configured_photos_per_side(self):
+        uploader = _FakeWheelPhotoUploader()
+        mgr = self._manager(
+            uploader=uploader,
+            bucket_seconds=0.5,
+            history_max_buckets=20,
+            max_persisted_per_side=10,
+        )
+        st = self._new_track(mgr)
+
+        for side in ('left', 'right'):
+            for idx in range(12):
+                mgr._update_wheel_photo_history(
+                    track_id=1,
+                    track_state=st,
+                    side=side,
+                    candidate=self._candidate(
+                        side=side,
+                        capture_ts=1000.0 + idx,
+                        entry_id=idx + 1,
+                        image_bytes=f'{side}-{idx}'.encode('ascii'),
+                    ),
+                )
+
+        self.assertEqual(st['wheel_photo_seq']['left'], 10)
+        self.assertEqual(st['wheel_photo_seq']['right'], 10)
+        self.assertEqual(len(list(Path(mgr.wheel_photo_base_dir).rglob('*.jpg'))), 20)
 
     def test_failed_photo_save_keeps_best_candidate_bytes_for_retry(self):
         uploader = _FakeWheelPhotoUploader()

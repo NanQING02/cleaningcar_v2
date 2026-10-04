@@ -323,8 +323,11 @@
             <label>车轮照片落盘策略
               <select v-model="form.wheel.photo_persistence_mode">
                 <option value="final_locked">Type5最终代表图</option>
-                <option value="bucket_stream">0.5秒桶式连续图</option>
+                <option value="bucket_stream">按配置分桶连续图</option>
               </select>
+            </label>
+            <label>每侧车轮照片上限
+              <input type="number" min="1" max="100" step="1" v-model.number="form.wheel.photo_max_persisted_per_side" />
             </label>
           </div>
           <div class="subsection">
@@ -632,7 +635,8 @@
               bind_wait_poll_seconds: 0.08,
               photo_bucket_seconds: 0.5,
               photo_min_score: 0.3,
-              photo_persistence_mode: 'final_locked'
+              photo_persistence_mode: 'final_locked',
+              photo_max_persisted_per_side: 10
             },
             logic: {
               detection_anchor: 'bottom_center',
@@ -1045,6 +1049,10 @@
           this.form.wheel.photo_persistence_mode = ['final_locked', 'bucket_stream'].includes(photoPersistenceMode)
             ? photoPersistenceMode
             : 'final_locked';
+          this.form.wheel.photo_max_persisted_per_side = Math.max(
+            1,
+            Math.min(100, Number(wheelValueOr(this.form.wheel.photo_max_persisted_per_side, 10)))
+          );
           if (typeof this.form.logic.enable_per_id_video === 'undefined') {
             this.form.logic.enable_per_id_video = false;
           }
@@ -1216,7 +1224,8 @@
               bind_wait_poll_seconds: this.form.wheel.bind_wait_poll_seconds,
               photo_bucket_seconds: this.form.wheel.photo_bucket_seconds,
               photo_min_score: this.form.wheel.photo_min_score,
-              photo_persistence_mode: this.form.wheel.photo_persistence_mode
+              photo_persistence_mode: this.form.wheel.photo_persistence_mode,
+              photo_max_persisted_per_side: this.form.wheel.photo_max_persisted_per_side
             },
             logic: {
               detection_anchor: this.form.logic.detection_anchor,

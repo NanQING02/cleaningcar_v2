@@ -288,6 +288,11 @@ class ConfigManager:
             photo_persistence_mode = 'final_locked'
         wheel['photo_persistence_mode'] = photo_persistence_mode
         try:
+            photo_max_persisted_per_side = int(wheel.get('photo_max_persisted_per_side', 10))
+        except (TypeError, ValueError):
+            photo_max_persisted_per_side = 10
+        wheel['photo_max_persisted_per_side'] = max(1, min(photo_max_persisted_per_side, 100))
+        try:
             reader_stale_seconds = float(wheel.get('reader_stale_seconds', 5.0))
         except (TypeError, ValueError):
             reader_stale_seconds = 5.0

@@ -705,6 +705,9 @@ def process_video(path, args):
                                  wheel_photo_history_max_buckets=int(wheel_cfg.get('photo_history_max_buckets', 20)),
                                  wheel_photo_persistence_mode=str(
                                      wheel_cfg.get('photo_persistence_mode', 'final_locked')
+                                 ),
+                                 wheel_photo_max_persisted_per_side=int(
+                                     wheel_cfg.get('photo_max_persisted_per_side', 10)
                                  ))
     wheel_service = None
     candidate_wheel_service = None

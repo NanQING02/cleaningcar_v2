@@ -119,6 +119,9 @@ class EventManagerPlateLockingTests(unittest.TestCase):
             'record_lost_started_ts': 101.0,
             'record_write_until_ts': 111.0,
             'record_write_suspended': True,
+            'wheel_results_locked': {'left': {'entryId': 8, 'className': '25-50'}},
+            'wheel_photo_seq': {'left': 10, 'right': 4},
+            'wheel_photo_uploaded_urls': {'/data/ftp/box/left-1.jpg'},
         }
         manager.tracks[1] = old_state
         lifecycle = manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100)
@@ -151,6 +154,10 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(new_state['record_lost_started_ts'], 101.0)
         self.assertEqual(new_state['record_write_until_ts'], 111.0)
         self.assertTrue(new_state['record_write_suspended'])
+        self.assertEqual(new_state['wheel_results_locked'], old_state['wheel_results_locked'])
+        self.assertEqual(new_state['wheel_photo_seq'], {'left': 10, 'right': 4})
+        self.assertEqual(new_state['wheel_photo_uploaded_urls'], {'/data/ftp/box/left-1.jpg'})
+        self.assertIsNot(new_state['wheel_results_locked'], old_state['wheel_results_locked'])
         self.assertTrue(old_state['_lifecycle_superseded'])
 
     def test_superseded_track_keeps_shared_event_upload_qualification(self):

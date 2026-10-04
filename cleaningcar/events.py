@@ -373,6 +373,7 @@ class EventManager:
         wheel_photo_min_score=0.3,
         wheel_photo_history_max_buckets=20,
         wheel_photo_persistence_mode='final_locked',
+        wheel_photo_max_persisted_per_side=10,
     ):
         self.config = config
         self.logic = config.get('logic', {})
@@ -528,6 +529,10 @@ class EventManager:
         if persistence_mode not in {'final_locked', 'bucket_stream'}:
             persistence_mode = 'final_locked'
         self.wheel_photo_persistence_mode = persistence_mode
+        self.wheel_photo_max_persisted_per_side = max(
+            1,
+            int(wheel_photo_max_persisted_per_side),
+        )
         self._wheel_photo_history_lock = threading.RLock()
         # 事件截图异步编码：默认关闭（保持同步语义）；开启后主线程只算路径，
         # resize/JPEG编码/写盘交给后台单线程队列，队满回退同步
@@ -938,6 +943,7 @@ class EventManager:
         ):
             if field in previous_state:
                 track_state[field] = previous_state[field]
+        self._inherit_wheel_handoff_state(previous_state, track_state)
         if lifecycle.last_plate_text:
             track_state['plate_text_locked'] = lifecycle.last_plate_text
             track_state['plate_text_locked_is_guess'] = False
@@ -1040,6 +1046,7 @@ class EventManager:
                     ):
                         if field in previous_state:
                             track_state[field] = previous_state[field]
+                    self._inherit_wheel_handoff_state(previous_state, track_state)
                     track_state['plate_text_locked'] = lifecycle.last_plate_text
                     track_state['plate_text_locked_is_guess'] = False
                     track_state['plate_text'] = lifecycle.last_plate_text
@@ -1126,6 +1133,25 @@ class EventManager:
                 anchor_point=anchor_point,
             )
         return lifecycle
+
+    @staticmethod
+    def _inherit_wheel_handoff_state(previous_state, track_state):
+        """同一业务event换tracker时继承车轮投票、照片和每侧落盘计数。"""
+        if not isinstance(previous_state, dict) or not isinstance(track_state, dict):
+            return
+        for field in (
+            'wheel_results_locked',
+            'wheel_photo_history',
+            'wheel_photo_seq',
+            '_wheel_photo_processed_entries',
+            '_wheel_photo_processed_entry_order',
+            'wheel_photo_uploaded_urls',
+            'wheel_activity_start_ts',
+            'wheel_activity_last_ts',
+            'wheel_activity_end_ts',
+        ):
+            if field in previous_state:
+                track_state[field] = deepcopy(previous_state[field])
 
     def frame_timestamp(self, frame_idx):
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -3390,6 +3416,8 @@ class EventManager:
             seq_map = track_state.setdefault('wheel_photo_seq', {'left': 0, 'right': 0})
         else:
             seq_map = {'left': 0, 'right': 0}
+        if int(seq_map.get(side, 0) or 0) >= self.wheel_photo_max_persisted_per_side:
+            return ''
         seq = int(seq_map.get(side, 0) or 0) + 1
         seq_map[side] = seq
         photo_url = self._save_wheel_photo(
@@ -4141,6 +4169,9 @@ class EventManager:
         elif current_rep and current_rep.get('seq'):
             seq = int(current_rep['seq'])
         else:
+            if int(seq_map.get(side, 0) or 0) >= self.wheel_photo_max_persisted_per_side:
+                self._strip_bucket_candidate_photos(bucket)
+                return
             seq = int(seq_map.get(side, 0)) + 1
             seq_map[side] = seq
         if duplicate_photo_url:

@@ -82,7 +82,8 @@
     "bind_wait_poll_seconds": 0.08,
     "photo_bucket_seconds": 0.5,
     "photo_min_score": 0.3,
-    "photo_persistence_mode": "final_locked",
+    "photo_persistence_mode": "bucket_stream",
+    "photo_max_persisted_per_side": 10,
     "reader_stale_seconds": 5.0,
     "reader_stale_check_interval_frames": 15,
     "reader_stale_hash_size": 16
