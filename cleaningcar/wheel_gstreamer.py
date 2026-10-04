@@ -629,6 +629,38 @@ def create_wheel_gstreamer_capture(
     idle_keep_fps=0.0,
     active_event=None,
 ):
+    return create_rtp_info_gstreamer_capture(
+        source=source,
+        side=side,
+        latency_ms=latency_ms,
+        max_buffers=max_buffers,
+        open_timeout_seconds=open_timeout_seconds,
+        read_timeout_seconds=read_timeout_seconds,
+        ignore_broken_rtp_info=ignore_broken_rtp_info,
+        reconnect_count=reconnect_count,
+        state_callback=state_callback,
+        cancel_event=cancel_event,
+        idle_keep_fps=idle_keep_fps,
+        active_event=active_event,
+    )
+
+
+def create_rtp_info_gstreamer_capture(
+    source,
+    side,
+    latency_ms=200,
+    max_buffers=1,
+    open_timeout_seconds=5.0,
+    read_timeout_seconds=5.0,
+    ignore_broken_rtp_info=True,
+    reconnect_count=0,
+    state_callback=None,
+    cancel_event=None,
+    idle_keep_fps=0.0,
+    active_event=None,
+    encodings=None,
+):
+    """创建可复用于主路和车轮的RTP-Info兼容direct-BGR reader。"""
     return WheelGstCapture(
         source=source,
         side=side,
@@ -642,4 +674,5 @@ def create_wheel_gstreamer_capture(
         cancel_event=cancel_event,
         idle_keep_fps=idle_keep_fps,
         active_event=active_event,
+        encodings=encodings,
     )

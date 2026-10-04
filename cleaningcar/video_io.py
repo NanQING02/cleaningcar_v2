@@ -1169,6 +1169,7 @@ def _open_gstreamer_hardware_capture(
     rtsp_appsink_max_buffers=1,
     read_timeout_seconds=5.0,
     bgr_mode='direct',
+    ignore_broken_rtp_info=False,
 ):
     if not isinstance(src, str):
         return None
@@ -1181,9 +1182,40 @@ def _open_gstreamer_hardware_capture(
         if codec_name in ('hevc', 'h265'):
             depay = 'rtph265depay'
             parser = 'h265parse'
+            encoding = 'H265'
         else:
             depay = 'rtph264depay'
             parser = 'h264parse'
+            encoding = 'H264'
+        if ignore_broken_rtp_info:
+            from .wheel_gstreamer import create_rtp_info_gstreamer_capture
+
+            cap = create_rtp_info_gstreamer_capture(
+                source=src,
+                side='main',
+                latency_ms=rtsp_latency_ms,
+                max_buffers=rtsp_appsink_max_buffers,
+                open_timeout_seconds=max(0.1, float(read_timeout_seconds or 5.0)),
+                read_timeout_seconds=read_timeout_seconds,
+                ignore_broken_rtp_info=True,
+                encodings=(encoding,),
+            )
+            if _is_capture_opened(cap):
+                diag = cap.diagnostics()
+                print(
+                    '[reader-rtp-info] main ready '
+                    f'encoding={diag.get("encoding")} '
+                    f'first_rtp={diag.get("first_rtp_seconds", -1.0):.3f}s '
+                    f'first_bgr={diag.get("first_bgr_seconds", -1.0):.3f}s '
+                    f'first_seq={diag.get("first_rtp_seqnum")} '
+                    f'advertised_seq={diag.get("advertised_seqnum_base")} '
+                    f'advertised_clock={diag.get("advertised_clock_base")} '
+                    f'caps_sanitized={diag.get("caps_sanitized")}'
+                )
+                return cap
+            _safe_release_capture(cap)
+            print('[reader-rtp-info] main compatibility reader open failed')
+            return None
         direct_pipeline = (
             f'rtspsrc location="{src}" latency={rtsp_latency_ms} protocols=tcp ! '
             f'{depay} ! {parser} config-interval=-1 ! '
@@ -1309,6 +1341,7 @@ def create_video_reader(path, args):
     rtsp_latency_ms = _safe_int(video_cfg.get('rtsp_latency_ms', 200), 200)
     rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
     gstreamer_bgr_mode = _gstreamer_bgr_mode(video_cfg.get('gstreamer_bgr_mode', 'direct'))
+    ignore_broken_rtp_info = _as_bool(video_cfg.get('ignore_broken_rtp_info', False), False)
     try:
         reader_frame_timeout_seconds = float(video_cfg.get('reader_frame_timeout_seconds', 5.0))
     except (TypeError, ValueError):
@@ -1323,6 +1356,7 @@ def create_video_reader(path, args):
         'attempt_order': [],
         'reader_frame_timeout_seconds': reader_frame_timeout_seconds,
         'requested_backend': decode_backend,
+        'ignore_broken_rtp_info': ignore_broken_rtp_info,
     }
 
     attempt_order = decode_meta['attempt_order']
@@ -1338,6 +1372,7 @@ def create_video_reader(path, args):
             rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
             read_timeout_seconds=reader_frame_timeout_seconds,
             bgr_mode='direct',
+            ignore_broken_rtp_info=ignore_broken_rtp_info,
         )
         if _is_capture_opened(cap_hw):
             decode_meta['decode_mode'] = 'hw'
@@ -1356,6 +1391,7 @@ def create_video_reader(path, args):
                 rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
                 read_timeout_seconds=reader_frame_timeout_seconds,
                 bgr_mode=gstreamer_bgr_mode,
+                ignore_broken_rtp_info=False,
             )
             if _is_capture_opened(cap_hw):
                 decode_meta['decode_mode'] = 'hw'

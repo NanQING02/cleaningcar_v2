@@ -50,6 +50,7 @@
     "debug_frame_max_width": 960,
     "debug_frame_quality": 80,
     "reader_frame_timeout_seconds": 5.0,
+    "ignore_broken_rtp_info": true,
     "result_watchdog_seconds": 5.0,
     "result_watchdog_max_consecutive": 3
   },

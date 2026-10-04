@@ -344,6 +344,9 @@
             <label>调试帧质量
               <input type="number" min="1" max="100" v-model.number="form.video.debug_frame_quality" />
             </label>
+            <label>主路忽略异常 RTP-Info 基准
+              <input type="checkbox" v-model="form.video.ignore_broken_rtp_info" />
+            </label>
             <label>命令目录
               <input v-model="form.system.command_dir" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/cmd" />
             </label>
@@ -610,6 +613,7 @@
               debug_frame_interval: 30,
               debug_frame_max_width: 960,
               debug_frame_quality: 80,
+              ignore_broken_rtp_info: false,
               segment_minutes: 60
             },
             wheel: {
@@ -1007,6 +1011,7 @@
           this.form.video.debug_frame_interval = this.form.video.debug_frame_interval || 30;
           this.form.video.debug_frame_max_width = this.form.video.debug_frame_max_width || 960;
           this.form.video.debug_frame_quality = this.form.video.debug_frame_quality || 80;
+          this.form.video.ignore_broken_rtp_info = !!this.form.video.ignore_broken_rtp_info;
           this.form.video.segment_minutes = this.form.video.segment_minutes || 60;
           const wheelValueOr = (value, fallback) => (
             (typeof value === 'undefined' || value === null) ? fallback : value
@@ -1202,6 +1207,7 @@
               debug_frame_interval: this.form.video.debug_frame_interval,
               debug_frame_max_width: this.form.video.debug_frame_max_width,
               debug_frame_quality: this.form.video.debug_frame_quality,
+              ignore_broken_rtp_info: this.form.video.ignore_broken_rtp_info,
               segment_minutes: this.form.video.segment_minutes,
               worker_core_strategy: this.form.video.worker_core_strategy
             },

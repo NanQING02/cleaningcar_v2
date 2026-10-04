@@ -252,6 +252,7 @@ class GlobalVideoCleanupTests(unittest.TestCase):
             self.assertEqual(manager.logic["allowed_plate_colors"], ["蓝色", "黄色", "绿色", "黄绿色"])
             self.assertEqual(manager.data["wheel"]["photo_persistence_mode"], "final_locked")
             self.assertEqual(manager.data["wheel"]["photo_max_persisted_per_side"], 10)
+            self.assertFalse(manager.video["ignore_broken_rtp_info"])
             self.assertTrue(manager.logic["plate_yellow_green_fusion_enabled"])
             self.assertEqual(manager.logic["plate_yellow_green_min_confidence"], 0.55)
             self.assertEqual(manager.logic["plate_yellow_green_window_frames"], 50)

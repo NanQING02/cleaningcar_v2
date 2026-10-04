@@ -141,6 +141,13 @@ class ConfigManager:
         elif decode_backend not in {'auto', 'gstreamer', 'ffmpeg'}:
             decode_backend = 'auto'
         video['decode_backend'] = decode_backend
+        ignore_broken_rtp_info = video.get('ignore_broken_rtp_info', False)
+        if isinstance(ignore_broken_rtp_info, str):
+            video['ignore_broken_rtp_info'] = ignore_broken_rtp_info.strip().lower() in {
+                '1', 'true', 'yes', 'on',
+            }
+        else:
+            video['ignore_broken_rtp_info'] = bool(ignore_broken_rtp_info)
         # RGA 管控（2026-08-26）：ffmpeg_rga/scale_rkrga 解码后端已按死机排查结论移除，
         # 残留在配置里的 ffmpeg_rga 段直接丢弃；真实RTSP/camera强制归一到
         # GStreamer direct-BGR，实际存在的离线文件保留明确指定的安全硬解后端。

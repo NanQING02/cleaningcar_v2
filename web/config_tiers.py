@@ -65,6 +65,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "video.debug_frame_max_width", "tier": TIER_DEVELOPER, "group": "video", "label": "调试帧最大宽度"},
     {"path": "video.debug_frame_quality", "tier": TIER_DEVELOPER, "group": "video", "label": "调试帧质量"},
     {"path": "video.reader_frame_timeout_seconds", "tier": TIER_DEVELOPER, "group": "video", "label": "读流卡死超时"},
+    {"path": "video.ignore_broken_rtp_info", "tier": TIER_DEVELOPER, "group": "video", "label": "主路忽略异常 RTP-Info 基准"},
     {"path": "video.result_watchdog_seconds", "tier": TIER_DEVELOPER, "group": "video", "label": "单帧结果超时"},
     {"path": "video.result_watchdog_max_consecutive", "tier": TIER_DEVELOPER, "group": "video", "label": "结果超时熔断帧数"},
     {"path": "video.segment_minutes", "tier": TIER_DEVELOPER, "group": "video", "label": "切片分钟数"},

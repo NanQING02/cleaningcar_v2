@@ -66,6 +66,12 @@
 - RGA 管控（2026-08-26）：原 `ffmpeg_rga` 后端已移除，配置段会被丢弃；RTSP/camera 强制归一到 `gstreamer + direct-BGR`，离线文件的无效后端归一到 `auto`
 - 若两级硬解都不可用，不再切软件解码；主链路会按读流失败处理并重连或退出
 
+### `video.ignore_broken_rtp_info`
+
+- 模板默认`true`：主路RTSP使用与车轮相同的RTP-Info兼容reader，只从目标视频RTP CAPS移除错误的`seqnum-base`和`clock-base`
+- H264/H265仍按探测到的真实codec选择对应depay/parser，其余payload、clock-rate、encoding、SSRC和codec参数保持不变
+- 设为`false`时回到既有OpenCV/GStreamer direct-BGR主路reader，用于现场回退和A/B
+
 ### `video.fp_output_mode`
 
 `FP` 指主检测模型输出的历史后处理名称，不是车牌模型的量化精度开关。

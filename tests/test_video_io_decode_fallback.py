@@ -78,7 +78,21 @@ class VideoIoDecodeFallbackTests(unittest.TestCase):
         self.assertEqual(meta["reader_frame_timeout_seconds"], 7.5)
         self.assertEqual(gstreamer_hw_open.call_args.kwargs["read_timeout_seconds"], 7.5)
         self.assertEqual(gstreamer_hw_open.call_args.kwargs["bgr_mode"], "direct")
+        self.assertFalse(gstreamer_hw_open.call_args.kwargs["ignore_broken_rtp_info"])
         ffmpeg_hw_open.assert_not_called()
+
+    @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
+    def test_rtsp_reader_enables_rtp_info_compatibility_from_video_config(self, gstreamer_hw_open):
+        gstreamer_hw_open.return_value = _DummyCapture(True)
+
+        cap, meta = video_io.create_video_reader(
+            "rtsp://camera",
+            self._args(hw_decode=True, ignore_broken_rtp_info=True),
+        )
+
+        self.assertIsNotNone(cap)
+        self.assertTrue(meta["ignore_broken_rtp_info"])
+        self.assertTrue(gstreamer_hw_open.call_args.kwargs["ignore_broken_rtp_info"])
 
     @patch("cleaningcar.video_io._open_gstreamer_hardware_capture")
     @patch("cleaningcar.video_io._open_ffmpeg_hardware_capture")
