@@ -704,10 +704,10 @@ def process_video(path, args):
                                  wheel_photo_min_score=float(wheel_cfg.get('photo_min_score', 0.3)),
                                  wheel_photo_history_max_buckets=int(wheel_cfg.get('photo_history_max_buckets', 20)),
                                  wheel_photo_persistence_mode=str(
-                                     wheel_cfg.get('photo_persistence_mode', 'final_locked')
+                                     wheel_cfg.get('photo_persistence_mode', 'bucket_stream')
                                  ),
                                  wheel_photo_max_persisted_per_side=int(
-                                     wheel_cfg.get('photo_max_persisted_per_side', 10)
+                                     wheel_cfg.get('photo_max_persisted_per_side', 50)
                                  ))
     wheel_service = None
     candidate_wheel_service = None

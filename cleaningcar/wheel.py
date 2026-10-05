@@ -542,6 +542,20 @@ class WheelResultCache:
                     return True
         return False
 
+    def release_entry_photo(self, entry_id):
+        """事件层接管照片后释放provider JPEG，保留分类、时间和claim元数据。"""
+        entry_id = int(entry_id or 0)
+        if entry_id <= 0:
+            return False
+        with self._lock:
+            for side in WHEEL_SIDES:
+                for entry in self._entries.get(side) or ():
+                    if int(entry.get("entryId", 0) or 0) != entry_id:
+                        continue
+                    entry["imageJpegBytes"] = b""
+                    return True
+        return False
+
     def get_recent_results(self, now_ts=None, reference_ts=None):
         results = []
         for entry in self.get_recent_result_entries(now_ts=now_ts, reference_ts=reference_ts):
@@ -1260,6 +1274,9 @@ class WheelDetectionService:
 
     def claim_result_entry(self, track_id, entry_id):
         return self.result_cache.claim_result_entry(track_id, entry_id)
+
+    def release_result_entry_photo(self, entry_id):
+        return self.result_cache.release_entry_photo(entry_id)
 
     def get_claimed_result_entries(self, track_id, now_ts=None, reference_ts=None):
         return self.result_cache.get_claimed_result_entries(

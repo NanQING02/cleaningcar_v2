@@ -372,8 +372,8 @@ class EventManager:
         wheel_photo_bucket_seconds=0.5,
         wheel_photo_min_score=0.3,
         wheel_photo_history_max_buckets=20,
-        wheel_photo_persistence_mode='final_locked',
-        wheel_photo_max_persisted_per_side=10,
+        wheel_photo_persistence_mode='bucket_stream',
+        wheel_photo_max_persisted_per_side=50,
     ):
         self.config = config
         self.logic = config.get('logic', {})
@@ -525,9 +525,9 @@ class EventManager:
         self.wheel_photo_bucket_seconds = max(0.05, float(wheel_photo_bucket_seconds))
         self.wheel_photo_min_score = float(wheel_photo_min_score)
         self.wheel_photo_history_max_buckets = max(1, int(wheel_photo_history_max_buckets))
-        persistence_mode = str(wheel_photo_persistence_mode or 'final_locked').strip().lower()
+        persistence_mode = str(wheel_photo_persistence_mode or 'bucket_stream').strip().lower()
         if persistence_mode not in {'final_locked', 'bucket_stream'}:
-            persistence_mode = 'final_locked'
+            persistence_mode = 'bucket_stream'
         self.wheel_photo_persistence_mode = persistence_mode
         self.wheel_photo_max_persisted_per_side = max(
             1,
@@ -4018,6 +4018,7 @@ class EventManager:
             return
         provider = getattr(self, 'wheel_result_provider', None)
         claimer = getattr(provider, 'claim_result_entry', None) if provider is not None else None
+        photo_releaser = getattr(provider, 'release_result_entry_photo', None) if provider is not None else None
         photo_candidates = (
             self._get_photo_candidate_wheel_entries(provider, track_id, ref_ts)
             if provider is not None else []
@@ -4052,6 +4053,11 @@ class EventManager:
                 )
                 if entry_id > 0:
                     self._mark_wheel_photo_entry_processed(track_state, candidate['side'], entry_id)
+                    if callable(photo_releaser):
+                        try:
+                            photo_releaser(entry_id)
+                        except Exception:
+                            pass
 
     @staticmethod
     def _wheel_photo_entry_processed(track_state, side, entry_id):

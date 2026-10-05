@@ -56,6 +56,7 @@ class _SingleEntryWheelProvider:
     def __init__(self, item):
         self.item = dict(item)
         self.claims = {}
+        self.released_photo_entries = []
 
     def get_recent_result_entries(self, now_ts=None, reference_ts=None, track_id=None):
         owner = int(self.claims.get(int(self.item.get('entryId', 0) or 0), 0) or 0)
@@ -72,6 +73,14 @@ class _SingleEntryWheelProvider:
         if owner > 0 and owner != track_id:
             return False
         self.claims[entry_id] = track_id
+        return True
+
+    def release_result_entry_photo(self, entry_id):
+        entry_id = int(entry_id or 0)
+        if entry_id != int(self.item.get('entryId', 0) or 0):
+            return False
+        self.item['imageJpegBytes'] = b''
+        self.released_photo_entries.append(entry_id)
         return True
 
 
@@ -402,6 +411,8 @@ class WheelPhotoTests(unittest.TestCase):
         self.assertEqual(len(uploader.enqueued), 1)
         self.assertEqual(uploader.enqueued[0]['type'], '4')
         self.assertEqual(uploader.enqueued[0]['cleanValue'], 2)
+        self.assertEqual(provider.released_photo_entries, [10])
+        self.assertEqual(provider.item['imageJpegBytes'], b'')
 
     def test_real_cache_claimed_cluster_uses_bucket_majority(self):
         uploader = _FakeWheelPhotoUploader()
@@ -480,6 +491,27 @@ class WheelPhotoTests(unittest.TestCase):
         mgr._enqueue_wheel_photos(track_state)
 
         self.assertEqual([item['cleanValue'] for item in uploader.enqueued], [1, 4])
+
+    def test_provider_can_release_photo_bytes_without_losing_result_metadata(self):
+        cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
+        frame = np.full((96, 96, 3), 127, dtype=np.uint8)
+        self.assertTrue(cache.update_from_detections(
+            side='left',
+            frame=frame,
+            capture_ts=1000.0,
+            boxes=np.array([[10, 10, 70, 70]], dtype=np.float32),
+            classes=np.array([1], dtype=np.int64),
+            scores=np.array([0.9], dtype=np.float32),
+        ))
+        entry = cache._entries['left'][0]
+        self.assertTrue(entry['imageJpegBytes'])
+
+        self.assertTrue(cache.release_entry_photo(entry['entryId']))
+
+        self.assertEqual(entry['imageJpegBytes'], b'')
+        self.assertEqual(entry['className'], '25-50')
+        self.assertEqual(entry['capture_ts'], 1000.0)
+        self.assertEqual(entry['claimedTrackId'], 0)
 
     def test_default_photo_bucket_seconds_is_half_second(self):
         uploader = _FakeWheelPhotoUploader()
@@ -806,7 +838,8 @@ class WheelPhotoTests(unittest.TestCase):
         )
 
         self.assertEqual(mgr.wheel_photo_bucket_seconds, 0.5)
-        self.assertEqual(mgr.wheel_photo_persistence_mode, 'final_locked')
+        self.assertEqual(mgr.wheel_photo_persistence_mode, 'bucket_stream')
+        self.assertEqual(mgr.wheel_photo_max_persisted_per_side, 50)
 
     def test_representative_uses_nearest_box_to_frame_center_across_bucket(self):
         candidates = [

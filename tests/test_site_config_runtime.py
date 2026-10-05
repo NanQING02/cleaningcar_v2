@@ -21,6 +21,12 @@ class SiteConfigRuntimeTests(unittest.TestCase):
                 self.assertNotIn("run_mode", data["wheel"])
                 self.assertNotIn("service_url", data["wheel"])
                 self.assertNotIn("service_timeout_seconds", data["wheel"])
+                self.assertEqual(data["wheel"]["photo_persistence_mode"], "bucket_stream")
+                self.assertEqual(data["wheel"]["photo_bucket_seconds"], 0.5)
+                self.assertEqual(data["wheel"]["photo_max_persisted_per_side"], 50)
+                self.assertEqual(data["wheel"]["photo_crop_margin_ratio"], -1.0)
+                self.assertEqual(data["wheel"]["photo_history_max_buckets"], 20)
+                self.assertEqual(data["logic"]["per_id_video_source"], "raw")
 
     def test_site_npu_core_assignment_is_fixed(self):
         main = json.loads((PROJECT_ROOT / "configs/config.json").read_text(encoding="utf-8"))

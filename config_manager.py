@@ -289,15 +289,25 @@ class ConfigManager:
             photo_min_score = 0.3
         wheel['photo_min_score'] = max(0.0, min(photo_min_score, 1.0))
         photo_persistence_mode = str(
-            wheel.get('photo_persistence_mode', 'final_locked') or 'final_locked'
+            wheel.get('photo_persistence_mode', 'bucket_stream') or 'bucket_stream'
         ).strip().lower()
         if photo_persistence_mode not in {'final_locked', 'bucket_stream'}:
-            photo_persistence_mode = 'final_locked'
+            photo_persistence_mode = 'bucket_stream'
         wheel['photo_persistence_mode'] = photo_persistence_mode
         try:
-            photo_max_persisted_per_side = int(wheel.get('photo_max_persisted_per_side', 10))
+            photo_crop_margin_ratio = float(wheel.get('photo_crop_margin_ratio', 0.5))
         except (TypeError, ValueError):
-            photo_max_persisted_per_side = 10
+            photo_crop_margin_ratio = 0.5
+        wheel['photo_crop_margin_ratio'] = max(-1.0, min(photo_crop_margin_ratio, 5.0))
+        try:
+            photo_history_max_buckets = int(wheel.get('photo_history_max_buckets', 20))
+        except (TypeError, ValueError):
+            photo_history_max_buckets = 20
+        wheel['photo_history_max_buckets'] = max(1, min(photo_history_max_buckets, 1000))
+        try:
+            photo_max_persisted_per_side = int(wheel.get('photo_max_persisted_per_side', 50))
+        except (TypeError, ValueError):
+            photo_max_persisted_per_side = 50
         wheel['photo_max_persisted_per_side'] = max(1, min(photo_max_persisted_per_side, 100))
         try:
             reader_stale_seconds = float(wheel.get('reader_stale_seconds', 5.0))

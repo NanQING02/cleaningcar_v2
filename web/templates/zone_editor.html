@@ -329,6 +329,12 @@
             <label>每侧车轮照片上限
               <input type="number" min="1" max="100" step="1" v-model.number="form.wheel.photo_max_persisted_per_side" />
             </label>
+            <label>车轮照片裁剪扩边比例（负值为整帧）
+              <input type="number" min="-1" max="5" step="0.1" v-model.number="form.wheel.photo_crop_margin_ratio" />
+            </label>
+            <label>车轮照片内存桶上限
+              <input type="number" min="1" max="1000" step="1" v-model.number="form.wheel.photo_history_max_buckets" />
+            </label>
           </div>
           <div class="subsection">
             <h4>调试与心跳</h4>
@@ -639,8 +645,10 @@
               bind_wait_poll_seconds: 0.08,
               photo_bucket_seconds: 0.5,
               photo_min_score: 0.3,
-              photo_persistence_mode: 'final_locked',
-              photo_max_persisted_per_side: 10
+              photo_persistence_mode: 'bucket_stream',
+              photo_max_persisted_per_side: 50,
+              photo_crop_margin_ratio: -1,
+              photo_history_max_buckets: 20
             },
             logic: {
               detection_anchor: 'bottom_center',
@@ -1049,14 +1057,22 @@
           this.form.wheel.photo_bucket_seconds = Number(this.form.wheel.photo_bucket_seconds || 0.5);
           this.form.wheel.photo_min_score = Number(wheelValueOr(this.form.wheel.photo_min_score, 0.3));
           const photoPersistenceMode = String(
-            this.form.wheel.photo_persistence_mode || 'final_locked'
+            this.form.wheel.photo_persistence_mode || 'bucket_stream'
           ).trim().toLowerCase();
           this.form.wheel.photo_persistence_mode = ['final_locked', 'bucket_stream'].includes(photoPersistenceMode)
             ? photoPersistenceMode
-            : 'final_locked';
+            : 'bucket_stream';
           this.form.wheel.photo_max_persisted_per_side = Math.max(
             1,
-            Math.min(100, Number(wheelValueOr(this.form.wheel.photo_max_persisted_per_side, 10)))
+            Math.min(100, Number(wheelValueOr(this.form.wheel.photo_max_persisted_per_side, 50)))
+          );
+          this.form.wheel.photo_crop_margin_ratio = Math.max(
+            -1,
+            Math.min(5, Number(wheelValueOr(this.form.wheel.photo_crop_margin_ratio, -1)))
+          );
+          this.form.wheel.photo_history_max_buckets = Math.max(
+            1,
+            Math.min(1000, Number(wheelValueOr(this.form.wheel.photo_history_max_buckets, 20)))
           );
           if (typeof this.form.logic.enable_per_id_video === 'undefined') {
             this.form.logic.enable_per_id_video = false;
@@ -1231,7 +1247,9 @@
               photo_bucket_seconds: this.form.wheel.photo_bucket_seconds,
               photo_min_score: this.form.wheel.photo_min_score,
               photo_persistence_mode: this.form.wheel.photo_persistence_mode,
-              photo_max_persisted_per_side: this.form.wheel.photo_max_persisted_per_side
+              photo_max_persisted_per_side: this.form.wheel.photo_max_persisted_per_side,
+              photo_crop_margin_ratio: this.form.wheel.photo_crop_margin_ratio,
+              photo_history_max_buckets: this.form.wheel.photo_history_max_buckets
             },
             logic: {
               detection_anchor: this.form.logic.detection_anchor,

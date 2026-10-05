@@ -84,7 +84,9 @@
     "photo_bucket_seconds": 0.5,
     "photo_min_score": 0.3,
     "photo_persistence_mode": "bucket_stream",
-    "photo_max_persisted_per_side": 10,
+    "photo_max_persisted_per_side": 50,
+    "photo_crop_margin_ratio": -1.0,
+    "photo_history_max_buckets": 20,
     "reader_stale_seconds": 5.0,
     "reader_stale_check_interval_frames": 15,
     "reader_stale_hash_size": 16

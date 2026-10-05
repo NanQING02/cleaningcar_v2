@@ -229,7 +229,7 @@
 | `$.wheelResults` | array | 车轮结果列表，仅在该车已锁定车轮结果时出现；未锁定则整个数组缺失 |
 | `$.wheelResults[0].side` | string | `left`（左轮）或 `right`（右轮） |
 | `$.wheelResults[0].captureTime` | string | 该车轮照片的拍摄时刻 |
-| `$.wheelResults[0].photoUrl` | string | 车轮照片**绝对路径**（当前为车轮特写图，无标注原图） |
+| `$.wheelResults[0].photoUrl` | string | 车轮照片**绝对路径**（当前模板保存车轮相机无标注整帧原图） |
 | `$.wheelResults[0].className` | string | 车轮清洁度区间：`0-25`/`25-50`/`50-75`/`75-100` |
 | `$.forceVideoStop` | boolean | **条件字段**：仅超时强制闭环时出现 |
 | `$.forcedCompletionReason` | string | **条件字段**：仅超时强制闭环时出现，如 `type2_dwell_timeout_15m` |

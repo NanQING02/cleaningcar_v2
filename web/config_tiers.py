@@ -89,6 +89,8 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "wheel.photo_min_score", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮照片最低分数"},
     {"path": "wheel.photo_persistence_mode", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮照片落盘策略"},
     {"path": "wheel.photo_max_persisted_per_side", "tier": TIER_DEVELOPER, "group": "wheel", "label": "每侧车轮照片上限"},
+    {"path": "wheel.photo_crop_margin_ratio", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮照片裁剪扩边比例"},
+    {"path": "wheel.photo_history_max_buckets", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮照片内存桶上限"},
     {"path": "logic.detection_anchor", "tier": TIER_DEVELOPER, "group": "logic", "label": "检测锚点"},
     {"path": "logic.zone_b_entry_hysteresis", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 进入迟滞"},
     {"path": "logic.zone_b_exit_hysteresis", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 离开迟滞"},
