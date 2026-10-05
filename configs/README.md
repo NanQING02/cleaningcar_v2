@@ -173,7 +173,7 @@ per-id 录像已不再依赖分散的画面参数；画面只由 `logic.per_id_v
   - `photo_bucket_seconds` 当前配置为 `0.5`：每 0.5 秒为一个桶，每桶一张代表
   - `photo_min_score` 默认 `0.3`：低于此分数的检测不入桶
   - `photo_bucket_seconds`和桶内多数投票只对`bucket_stream`生效；`final_locked`代表图按整个车辆生命周期内检测框中心最接近画面中心、分数更高的顺序择优
-  - `photo_max_persisted_per_side`默认`10`：同一车辆生命周期每侧最多落盘和上传10张；达到上限后继续车轮推理和分类投票，只停止新增照片
+  - `photo_max_persisted_per_side`默认`10`：同一车辆生命周期每侧最多落盘和上传10张；`bucket_stream`过程图最多占9张并为type5最终锁定图预留1张，达到上限后继续车轮推理和分类投票
 - `wheel.photo_crop_margin_ratio` / `wheel.photo_history_max_buckets`
   - `photo_crop_margin_ratio` 默认 `0.5`：车轮照片按检测框四周扩边裁剪成特写（像素仍为原图、无标注），大幅降低激活期 JPEG 编码 CPU 与缓存内存；`0` 表示只裁框内，负值表示保留整帧
   - `photo_history_max_buckets`只对`bucket_stream`生效，默认 `20`：每侧照片历史桶数量上限（0.5s/桶时约 10 秒），防止长停留轨迹的历史无界增长；桶内候选在代表照片落盘后只保留元数据

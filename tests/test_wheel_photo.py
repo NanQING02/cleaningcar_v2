@@ -654,9 +654,29 @@ class WheelPhotoTests(unittest.TestCase):
                     ),
                 )
 
+        # 过程图每侧最多9张，给type5最终锁定图预留第10个名额。
+        self.assertEqual(st['wheel_photo_seq']['left'], 9)
+        self.assertEqual(st['wheel_photo_seq']['right'], 9)
+        self.assertEqual(len(list(Path(mgr.wheel_photo_base_dir).rglob('*.jpg'))), 18)
+
+        st['wheel_results_locked'] = {
+            side: self._candidate(
+                side=side,
+                capture_ts=2000.0,
+                entry_id=100 + index,
+                image_bytes=f'{side}-final'.encode('ascii'),
+            )
+            for index, side in enumerate(('left', 'right'))
+        }
+        mgr._enqueue_wheel_photos(st, now_ts=2001.0, force=True, track_id=1)
+        wheel_results = mgr._build_wheel_results_payload(st, track_id=1)
+
         self.assertEqual(st['wheel_photo_seq']['left'], 10)
         self.assertEqual(st['wheel_photo_seq']['right'], 10)
         self.assertEqual(len(list(Path(mgr.wheel_photo_base_dir).rglob('*.jpg'))), 20)
+        self.assertEqual(len(uploader.enqueued), 20)
+        self.assertEqual(len(wheel_results), 2)
+        self.assertTrue(all(Path(item['photoUrl']).exists() for item in wheel_results))
 
     def test_failed_photo_save_keeps_best_candidate_bytes_for_retry(self):
         uploader = _FakeWheelPhotoUploader()

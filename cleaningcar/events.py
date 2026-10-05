@@ -4169,7 +4169,10 @@ class EventManager:
         elif current_rep and current_rep.get('seq'):
             seq = int(current_rep['seq'])
         else:
-            if int(seq_map.get(side, 0) or 0) >= self.wheel_photo_max_persisted_per_side:
+            # bucket_stream为type5最终锁定图预留最后一个名额，确保达到过程图上限后
+            # wheelResults仍能得到与最终分类一致的photoUrl。
+            stream_limit = max(0, self.wheel_photo_max_persisted_per_side - 1)
+            if int(seq_map.get(side, 0) or 0) >= stream_limit:
                 self._strip_bucket_candidate_photos(bucket)
                 return
             seq = int(seq_map.get(side, 0)) + 1
@@ -4311,7 +4314,7 @@ class EventManager:
         now_ref = time.time() if now_ts is None else float(now_ts)
         history = track_state.get('wheel_photo_history')
         photos = []
-        sides_with_history_photos = set()
+        history_photo_urls = set()
         if isinstance(history, dict):
             for side in ('left', 'right'):
                 side_history = history.get(side)
@@ -4328,14 +4331,12 @@ class EventManager:
                         continue
                     if not force and not self._wheel_photo_bucket_ready(bucket_key, rep, now_ref):
                         continue
-                    sides_with_history_photos.add(side)
+                    history_photo_urls.add(self._absolute_wheel_photo_url(rep.get('photoUrl')))
                     photos.append((float(rep.get('capture_ts', 0.0) or 0.0), rep))
         if force:
             locked = track_state.get('wheel_results_locked')
             if isinstance(locked, dict):
                 for side in ('left', 'right'):
-                    if side in sides_with_history_photos:
-                        continue
                     entry = locked.get(side)
                     if not isinstance(entry, dict):
                         continue
@@ -4347,7 +4348,7 @@ class EventManager:
                     )
                     class_name = str(entry.get('className') or '').strip()
                     clean_value = WHEEL_CLASS_NAME_TO_CLEAN_VALUE.get(class_name, 0)
-                    if not photo_url or not clean_value:
+                    if not photo_url or not clean_value or photo_url in history_photo_urls:
                         continue
                     photos.append((
                         float(entry.get('capture_ts', 0.0) or 0.0),
