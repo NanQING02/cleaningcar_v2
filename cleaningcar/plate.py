@@ -1,5 +1,7 @@
 from collections import Counter
 
+from collections import Counter, deque
+
 import numpy as np
 
 from .constants import (
@@ -117,6 +119,63 @@ def normalize_plate_candidate_text(text):
 def is_valid_plate(text):
     text = normalize_plate_candidate_text(text)
     return _is_valid_plate_normalized(text)
+
+
+class PlateVoteEvidence:
+    """同一辆车的原始号码证据；按捕获时间投票，不依赖连续源帧。"""
+
+    def __init__(self, history_seconds=6.0, max_observations=60):
+        self.history_seconds = max(0.1, float(history_seconds))
+        self.observations = deque(maxlen=max(1, int(max_observations)))
+
+    def expire(self, capture_ts):
+        cutoff = float(capture_ts) - self.history_seconds
+        while self.observations and self.observations[0]['capture_ts'] < cutoff:
+            self.observations.popleft()
+
+    def add(self, frame_idx, capture_ts, text):
+        text = normalize_plate_candidate_text(text)
+        capture_ts = float(capture_ts)
+        self.expire(capture_ts)
+        if not is_valid_plate(text):
+            return False
+        frame_idx = int(frame_idx)
+        # 同一源帧不能被多次update、缓存回放或handoff重复记票。
+        if any(item['frame_idx'] == frame_idx for item in self.observations):
+            return False
+        if self.observations and capture_ts < self.observations[-1]['capture_ts']:
+            return False
+        self.observations.append({'frame_idx': frame_idx, 'capture_ts': capture_ts, 'text': text})
+        return True
+
+    def ranked(self, capture_ts, window_seconds):
+        self.expire(capture_ts)
+        cutoff = float(capture_ts) - max(0.1, float(window_seconds))
+        items = [item for item in self.observations if cutoff <= item['capture_ts'] <= capture_ts]
+        counts = Counter(item['text'] for item in items)
+        # 同票时没有多数，调用方不会锁定；保持排序确定，便于审计。
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return ranked, len(items)
+
+    def majority(self, capture_ts, window_seconds, min_hits, min_ratio):
+        ranked, total = self.ranked(capture_ts, window_seconds)
+        if not ranked:
+            return '', 0, 0
+        text, hits = ranked[0]
+        if hits >= int(min_hits) and hits / total >= float(min_ratio):
+            return text, hits, total
+        return '', hits, total
+
+    def merge(self, other, capture_ts):
+        """仅在业务层已经确认同车handoff之后合并，保留一份有界证据。"""
+        if other is None or other is self:
+            return
+        items = {item['frame_idx']: dict(item) for item in other.observations}
+        items.update({item['frame_idx']: dict(item) for item in self.observations})
+        ordered = sorted(items.values(), key=lambda item: (item['capture_ts'], item['frame_idx']))
+        self.observations.clear()
+        self.observations.extend(ordered)
+        self.expire(capture_ts)
 
 
 class PlateTextTracker:

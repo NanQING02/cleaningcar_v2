@@ -357,22 +357,76 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(track_state.get("plate_text_latest"), "粤B98765")
         self.assertEqual(track_state.get("plate_text_locked"), "鲁A12345")
 
-    def test_event_lock_allows_one_stride_gap_but_resets_after_long_gap(self):
+    def test_event_lock_uses_capture_time_despite_large_source_frame_gaps(self):
         manager = self._manager(plate_lock_frames=4)
-        manager.plate_text_max_streak_gap_frames = 4
-
-        for frame_idx in (1, 3, 7, 9):
+        for frame_idx, ts in ((1, 100), (60, 100.4), (100, 100.8), (150, 101.2)):
+            manager.record_frame_timing(frame_idx, ts, ts + .1)
             self._update(manager, frame_idx, plate_text="苏C7755S", plate_is_guess=False)
 
         self.assertEqual(manager.tracks[1].get("plate_text_locked"), "苏C7755S")
 
         other = self._manager(plate_lock_frames=4)
-        other.plate_text_max_streak_gap_frames = 4
-        for frame_idx in (1, 6, 8, 10):
+        for frame_idx, ts in ((1, 100), (6, 100.4), (8, 100.8), (10, 103)):
+            other.record_frame_timing(frame_idx, ts, ts + .1)
             self._update(other, frame_idx, plate_text="苏C7755S", plate_is_guess=False)
 
         self.assertEqual(other.tracks[1].get("plate_text_locked"), "")
-        self.assertEqual(other.tracks[1].get("plate_initial_streak"), 3)
+        self.assertEqual(other.tracks[1].get("plate_initial_streak"), 1)
+
+    def test_no_ocr_frame_does_not_clear_valid_votes_or_fake_new_votes(self):
+        manager = self._manager(plate_lock_frames=4)
+        for frame_idx, text in ((1, '苏C2267S'), (2, ''), (3, '苏C2267S'),
+                                (4, ''), (5, '苏C2267S'), (6, '苏C2267S')):
+            manager.record_frame_timing(frame_idx, 100 + frame_idx * .1, 101)
+            self._update(manager, frame_idx, plate_text=text, plate_text_conf=.95)
+        self.assertEqual(manager.tracks[1]['plate_text_locked'], '苏C2267S')
+        self.assertEqual(manager.tracks[1]['plate_vote_observations'], 4)
+
+    def test_duplicate_frame_updates_cannot_create_lock(self):
+        manager = self._manager(plate_lock_frames=4)
+        for _ in range(5):
+            self._update(manager, 1, plate_text='苏C2267S', plate_text_conf=.95)
+        self.assertEqual(manager.tracks[1]['plate_text_locked'], '')
+        self.assertEqual(manager.tracks[1]['plate_vote_observations'], 1)
+
+    def test_conflicting_candidates_do_not_fall_back_to_unplated_handoff(self):
+        manager = self._manager(plate_lock_frames=4)
+        self._update(manager, 1, plate_text='苏C7755S', plate_text_conf=.95)
+        self._update(manager, 2, plate_text='苏C0566S', plate_text_conf=.95)
+        state = manager.tracks[1]
+        self.assertEqual(state['plate_initial_candidate'], '苏C0566S')
+        self.assertEqual(state['plate_initial_streak'], 0)
+        lifecycle = manager.lifecycle_manager.create(5, 'car', capture_ts=0.0)
+        manager.lifecycle_manager.touch(5, 0.0, plate_text='苏C8596S',
+                                        vehicle_box=[0, 0, 20, 20], anchor_point=(5, 5))
+        manager.lifecycle_manager.mark_lost(5, capture_ts=.01)
+        self.assertFalse(manager.lifecycle_manager.can_handoff_without_plate(
+            lifecycle, 'car', .08, [0, 0, 20, 20], anchor_point=(5, 5),
+            plate_candidate=state['plate_initial_candidate'],
+            plate_candidate_hits=state['plate_initial_streak'],
+        ))
+
+    def test_confirmed_handoff_merges_votes_only_after_identity_check(self):
+        manager = self._manager(plate_lock_frames=4)
+        previous = {'events': {1, 2}}
+        incoming = {'events': set()}
+        manager.tracks[1] = previous
+        manager.tracks[2] = incoming
+        for frame, ts, state in [(1, 100.0, previous), (2, 100.1, previous),
+                                  (3, 100.2, incoming), (4, 100.3, incoming)]:
+            manager.record_frame_timing(frame, ts, ts + .1)
+            manager._update_locked_plate_text(
+                1 if state is previous else 2, state, frame,
+                '苏C2267S', observed_trusted=True,
+            )
+        self.assertEqual(len(incoming['plate_vote_evidence'].observations), 2)
+        lifecycle = manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100)
+        manager.lifecycle_manager.mark_lost(1, capture_ts=100.15)
+        manager._adopt_lifecycle_handoff(lifecycle, 2, incoming, 100.3, 4, 'test_same_car')
+        self.assertEqual(len(incoming['plate_vote_evidence'].observations), 4)
+        manager.record_frame_timing(5, 100.4, 100.5)
+        manager._update_locked_plate_text(2, incoming, 5, '苏C2267S', observed_trusted=True)
+        self.assertEqual(incoming['plate_text_locked'], '苏C2267S')
 
     def test_all_letter_plate_never_enters_lock_or_report(self):
         uploader = _CollectingUploader()
@@ -556,7 +610,7 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(track_state.get("plate_color_locked"), "蓝色")
         self.assertEqual(track_state.get("plate_color_locked_text"), "桂N0T7RUK")
 
-    def test_correction_hits_must_be_continuous(self):
+    def test_correction_requires_twelve_votes_and_eighty_percent_share(self):
         manager = self._manager(plate_lock_frames=3)
         for frame_idx in range(1, 4):
             self._update(manager, frame_idx, plate_text="苏A3A329")
@@ -564,11 +618,11 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         for frame_idx in range(4, 10):
             self._update(manager, frame_idx, plate_text="桂N0T7RUK")
         self._update(manager, 10, plate_text="苏A3A329")
-        for frame_idx in range(11, 22):
+        for frame_idx in range(11, 20):
             self._update(manager, frame_idx, plate_text="桂N0T7RUK")
 
         self.assertEqual(manager.tracks[1].get("plate_text_locked"), "苏A3A329")
-        self._update(manager, 22, plate_text="桂N0T7RUK")
+        self._update(manager, 20, plate_text="桂N0T7RUK")
         self.assertEqual(manager.tracks[1].get("plate_text_locked"), "桂N0T7RUK")
 
     def test_white_and_black_colors_are_ignored_by_business_layer(self):

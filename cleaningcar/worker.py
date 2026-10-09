@@ -110,6 +110,9 @@ class DetectWorker(threading.Thread):
 
         self.frames = 0
         self.infer_time = 0.0
+        self.total_time = 0.0
+        self.plate_calls = 0
+        self.plate_time = 0.0
 
     def _release_runtime(self):
         dual_lpr = getattr(self, "dual_lpr", None)
@@ -161,6 +164,7 @@ class DetectWorker(threading.Thread):
                 else:
                     frame_idx, frame, capture_ts = item
 
+                frame_started = time.perf_counter()
                 img_input, lb_info = self.detector_postprocessor.prepare(frame)
                 t0 = time.time()
                 outputs = self.rk.inference(inputs=[img_input], data_format=["nhwc"])
@@ -254,6 +258,8 @@ class DetectWorker(threading.Thread):
                 if self.plate_requires_vehicle and not has_vehicle_candidates:
                     should_run_plate = False
                 if should_run_plate:
+                    plate_started = time.perf_counter()
+                    self.plate_calls += 1
                     try:
                         dual_plate_results = self.dual_lpr.infer_frame(
                             base_frame,
@@ -263,6 +269,8 @@ class DetectWorker(threading.Thread):
                     except Exception as exc:
                         if frame_idx == 0 or frame_idx % 300 == 0:
                             print(f"Worker {self.idx}: dual plate inference failed: {exc}")
+                    finally:
+                        self.plate_time += time.perf_counter() - plate_started
 
                 for item in dual_plate_results:
                     box = item.get("box") or []
@@ -307,6 +315,7 @@ class DetectWorker(threading.Thread):
                     )
 
                 self.result_q.put((frame_idx, capture_ts, draw_frame, csv_rows, det_payload))
+                self.total_time += time.perf_counter() - frame_started
             except Exception as exc:
                 print(f"Worker {self.idx}: frame {frame_idx} failed: {exc}")
                 if frame is not None:

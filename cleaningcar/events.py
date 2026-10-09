@@ -22,7 +22,7 @@ from .event_trace import EventTraceRecorder
 from .log_throttle import WindowedLogThrottler
 from .lifecycle import BusinessLifecycleManager
 from .npu_monitor import format_npu_status, snapshot_npu_status
-from .plate import is_valid_plate, normalize_plate_candidate_text, normalize_plate_text
+from .plate import PlateVoteEvidence, is_valid_plate, normalize_plate_candidate_text, normalize_plate_text
 from .resize_accel import resize_bgr
 from .vision import box_iou, get_anchor_point
 
@@ -421,6 +421,16 @@ class EventManager:
             1,
             int(self.logic.get('plate_text_max_streak_gap_frames', 4)),
         )
+        self.plate_vote_window_seconds = max(0.1, float(self.logic.get('plate_vote_window_seconds', 2.0)))
+        self.plate_vote_min_ratio = min(1.0, max(0.51, float(self.logic.get('plate_vote_min_ratio', 0.70))))
+        self.plate_correction_window_seconds = max(
+            self.plate_vote_window_seconds,
+            float(self.logic.get('plate_correction_window_seconds', 6.0)),
+        )
+        self.plate_correction_min_ratio = min(
+            1.0, max(self.plate_vote_min_ratio, float(self.logic.get('plate_correction_min_ratio', 0.80)))
+        )
+        self.plate_vote_max_observations = max(12, int(self.logic.get('plate_vote_max_observations', 60)))
         self.plate_correction_confirm_hits = max(
             self.event_plate_lock_frames,
             int(self.logic.get('plate_correction_confirm_hits', 12)),
@@ -963,6 +973,9 @@ class EventManager:
             if field in previous_state:
                 track_state[field] = previous_state[field]
         self._inherit_wheel_handoff_state(previous_state, track_state)
+        # 到这里才确认是同车；新track的身份判断不能使用旧车继承的票。
+        current_evidence = self._plate_vote_evidence(track_state)
+        current_evidence.merge(previous_state.get('plate_vote_evidence'), capture_ts)
         if lifecycle.last_plate_text:
             track_state['plate_text_locked'] = lifecycle.last_plate_text
             track_state['plate_text_locked_is_guess'] = False
@@ -1540,6 +1553,7 @@ class EventManager:
             plate_color_conf=plate_color_conf,
             plate_type=plate_type,
         )
+        self._refresh_plate_vote_identity(st, self._plate_capture_timestamp(frame_idx))
         self._sync_plate_legacy_fields(st)
         if confirmed:
             st['confirmed'] = True
@@ -2313,6 +2327,15 @@ class EventManager:
                 print(line)
         t_json = time.perf_counter()
         print(f"[EVENT] cam={self.camera_id} track={track_id} type={event_type} time={event['captureTime']}")
+        if event_type == 5:
+            summary = track_state.get('plate_vote_last_summary') or {}
+            print(
+                f'[plate-vote] action=final track={track_id} event={event.get("id", "")} '
+                f'locked={track_state.get("plate_text_locked") or "-"} '
+                f'observations={int(track_state.get("plate_vote_observations", 0))} '
+                f'last_candidate={summary.get("text") or "-"} '
+                f'last_votes={summary.get("hits", 0)}/{summary.get("total", 0)}'
+            )
         if self.event_log_path:
             try:
                 with self.event_log_path.open('a', encoding='utf-8') as f:
@@ -2447,86 +2470,87 @@ class EventManager:
         track_state['plate_text_switch_streak'] = 0
         track_state['plate_text_switch_last_frame'] = -1
 
+    def _plate_capture_timestamp(self, frame_idx):
+        timestamp = self._capture_timestamp(frame_idx)
+        if timestamp is not None:
+            return float(timestamp)
+        # 离线/单元测试没有采集时钟时保持确定性；生产使用真实capture_ts。
+        return float(frame_idx) / max(float(self.fps), 1.0)
+
+    def _plate_vote_evidence(self, track_state):
+        evidence = track_state.get('plate_vote_evidence')
+        if evidence is None:
+            evidence = PlateVoteEvidence(
+                history_seconds=self.plate_correction_window_seconds,
+                max_observations=self.plate_vote_max_observations,
+            )
+            track_state['plate_vote_evidence'] = evidence
+        return evidence
+
+    def _refresh_plate_vote_identity(self, track_state, capture_ts):
+        evidence = self._plate_vote_evidence(track_state)
+        text, hits, total = evidence.majority(
+            capture_ts, self.plate_vote_window_seconds, 1, self.plate_vote_min_ratio,
+        )
+        # 有合格候选却暂时没有多数时仍标记“已有独立牌号证据”。
+        # 不能退化成无牌空间续接，先借到旧号码再把不同车辆粘在一起。
+        observed_candidate = text
+        if not observed_candidate and total:
+            observed_candidate = evidence.observations[-1]['text']
+        track_state['plate_initial_candidate'] = observed_candidate
+        track_state['plate_initial_streak'] = hits if text else 0
+        if total:
+            track_state['plate_vote_last_summary'] = {
+                'text': text, 'hits': hits, 'total': total,
+            }
+
     def _update_locked_plate_text(
-        self,
-        track_id,
-        track_state,
-        frame_idx,
-        observed_text='',
-        observed_trusted=False,
-        observed_switch_trusted=False,
+        self, track_id, track_state, frame_idx, observed_text='',
+        observed_trusted=False, observed_switch_trusted=False,
     ):
-        frame_idx = int(frame_idx)
         observed_text = normalize_plate_candidate_text(observed_text)
         if not observed_trusted or not is_valid_plate(observed_text):
             return
-
+        capture_ts = self._plate_capture_timestamp(frame_idx)
+        evidence = self._plate_vote_evidence(track_state)
+        if not evidence.add(frame_idx, capture_ts, observed_text):
+            return
+        track_state['plate_vote_observations'] = int(track_state.get('plate_vote_observations', 0)) + 1
+        self._refresh_plate_vote_identity(track_state, capture_ts)
         locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
         if not locked_text:
-            previous_text = normalize_plate_candidate_text(track_state.get('plate_initial_candidate', ''))
-            previous_frame = int(track_state.get('plate_initial_last_frame', -1) or -1)
-            if (
-                observed_text == previous_text
-                and previous_frame >= 0
-                and frame_idx - previous_frame <= self.plate_text_max_streak_gap_frames
-            ):
-                track_state['plate_initial_streak'] = int(track_state.get('plate_initial_streak', 0) or 0) + 1
-            else:
-                track_state['plate_initial_candidate'] = observed_text
-                track_state['plate_initial_streak'] = 1
-            track_state['plate_initial_last_frame'] = frame_idx
-            if int(track_state.get('plate_initial_streak', 0) or 0) >= self._event_plate_lock_required_hits(track_state):
-                track_state['plate_text_locked'] = observed_text
-                track_state['plate_text_locked_is_guess'] = False
-                track_state['plate_initial_candidate'] = ''
-                track_state['plate_initial_streak'] = 0
-                track_state['plate_initial_last_frame'] = -1
-                self._reset_plate_switch_streak(track_state)
-                self._activate_plate_color_for_text(track_state, observed_text)
-                self.trace_record('plate_text_lock', {
-                    'frameIdx': frame_idx,
-                    'trackId': int(track_id),
-                    'text': observed_text,
-                    'requiredHits': self._event_plate_lock_required_hits(track_state),
-                })
-            return
-
-        if observed_text == locked_text:
-            self._reset_plate_switch_streak(track_state)
-            return
-        if not observed_switch_trusted:
-            self._reset_plate_switch_streak(track_state)
-            return
-
-        previous_text = normalize_plate_candidate_text(track_state.get('plate_text_switch_candidate', ''))
-        previous_frame = int(track_state.get('plate_text_switch_last_frame', -1) or -1)
-        if (
-            observed_text == previous_text
-            and previous_frame >= 0
-            and frame_idx - previous_frame <= self.plate_text_max_streak_gap_frames
-        ):
-            track_state['plate_text_switch_streak'] = int(track_state.get('plate_text_switch_streak', 0) or 0) + 1
+            text, hits, total = evidence.majority(
+                capture_ts, self.plate_vote_window_seconds,
+                self._event_plate_lock_required_hits(track_state), self.plate_vote_min_ratio,
+            )
+            if not text:
+                return
+            action = 'lock'
         else:
-            track_state['plate_text_switch_candidate'] = observed_text
-            track_state['plate_text_switch_streak'] = 1
-        track_state['plate_text_switch_last_frame'] = frame_idx
-        if int(track_state.get('plate_text_switch_streak', 0) or 0) < self.plate_correction_confirm_hits:
-            return
-
-        previous_locked_text = locked_text
-        track_state['plate_text_locked'] = observed_text
+            if not observed_switch_trusted:
+                return
+            text, hits, total = evidence.majority(
+                capture_ts, self.plate_correction_window_seconds,
+                self.plate_correction_confirm_hits, self.plate_correction_min_ratio,
+            )
+            if not text or text == locked_text:
+                return
+            action = 'correct'
+        track_state['plate_text_locked'] = text
         track_state['plate_text_locked_is_guess'] = False
         self._reset_plate_switch_streak(track_state)
-        self._activate_plate_color_for_text(track_state, observed_text)
-        self.trace_record('plate_text_switch', {
-            'frameIdx': frame_idx,
-            'trackId': int(track_id),
-            'lockedText': previous_locked_text,
-            'candidateText': observed_text,
-            'action': 'switched',
-            'reason': 'continuous_trusted_evidence',
-            'requiredHits': self.plate_correction_confirm_hits,
-        })
+        self._activate_plate_color_for_text(track_state, text)
+        detail = {
+            'frameIdx': int(frame_idx), 'trackId': int(track_id),
+            'text': text, 'previousText': locked_text, 'hits': hits,
+            'total': total, 'captureTs': capture_ts,
+            'reason': 'capture_time_majority',
+        }
+        self.trace_record('plate_text_lock' if action == 'lock' else 'plate_text_switch', detail)
+        print(
+            f'[plate-vote] action={action} track={track_id} frame={int(frame_idx)} '
+            f'text={text} previous={locked_text or "-"} votes={hits}/{total}'
+        )
 
     def _event_plate_lock_required_hits(self, track_state):
         del track_state

@@ -33,7 +33,7 @@ from .events import EventManager, EventUploader, WheelPhotoUploader, _format_tra
 from .log_throttle import WindowedLogThrottle
 from .monitoring import monitor_loop
 from .npu_monitor import format_npu_status, npu_status_flags, snapshot_npu_status
-from .plate import PlateTextTracker, is_valid_plate, normalize_plate_candidate_text
+from .plate import is_valid_plate, normalize_plate_candidate_text
 from .resize_accel import resize_backend_name, resize_bgr
 from .runtime_config import load_config, resolve_runtime_queue_size
 from .runtime_signals import (
@@ -154,6 +154,42 @@ def _plate_car_match_score(plate_box, car_box, frame_size=None):
         if truncated and oversized and vertical_ratio < 0.35:
             return 0.0
     return score
+
+
+def _associate_vehicle_plates(plate_detections, car_boxes, frame_size=None,
+                              min_detection_confidence=0.65, min_recognition_confidence=0.75):
+    """唯一车辆直接取得原始候选；多车/同帧异牌歧义不参与投票。"""
+    grouped = {}
+    for det in plate_detections:
+        det['track_id'] = -1
+        matches = [
+            car_id for car_id, car_box in car_boxes.items()
+            if _plate_car_match_score(det.get('box'), car_box, frame_size) >= PLATE_CAR_LINK_IOU
+        ]
+        if len(matches) == 1:
+            grouped.setdefault(matches[0], []).append(det)
+    selected = {}
+    for car_id, candidates in grouped.items():
+        eligible = [
+            det for det in candidates
+            if is_valid_plate(det.get('raw_text', det.get('text', '')))
+            and float(det.get('score', 0.0) or 0.0) >= min_detection_confidence
+            and float(det.get('plate_text_conf', 0.0) or 0.0) >= min_recognition_confidence
+        ]
+        texts = {
+            normalize_plate_candidate_text(det.get('raw_text', det.get('text', '')))
+            for det in eligible
+        }
+        if len(texts) > 1:
+            continue
+        pool = eligible or candidates
+        det = max(pool, key=lambda item: (
+            float(item.get('score', 0.0) or 0.0) * float(item.get('plate_text_conf', 0.0) or 0.0),
+            float(item.get('score', 0.0) or 0.0),
+        ))
+        det['track_id'] = car_id
+        selected[car_id] = det
+    return selected
 
 
 def _plate_box_mutual_score(dual_plate_box, primary_plate_box):
@@ -646,14 +682,6 @@ def process_video(path, args):
         os.makedirs(output_dir, exist_ok=True)
     csv_writer = None
     csv_f = None
-    plate_track_lock_frames = int(getattr(args, 'plate_track_lock_frames', 4))
-    plate_tracker = PlateTextTracker(
-        lock_frames=plate_track_lock_frames,
-        max_age=max(int(config.get('track_timeout_frames', 60)) * 2, plate_track_lock_frames * 6),
-        min_detection_confidence=float(logic_cfg.get('plate_text_min_detection_confidence', 0.65)),
-        min_recognition_confidence=float(logic_cfg.get('plate_text_min_recognition_confidence', 0.75)),
-        max_streak_gap_frames=max(1, int(logic_cfg.get('plate_text_max_streak_gap_frames', 4))),
-    )
     vehicle_iou_thresh = float(config.get('vehicle_iou_threshold', 0.3))
     if vehicle_iou_thresh < 0.0:
         vehicle_iou_thresh = 0.0
@@ -809,14 +837,6 @@ def process_video(path, args):
     dropped_frame_count = 0
     dropped_frame_ids = set()
 
-    car_plate_cache = {}
-    car_plate_cache_ttl = int(config.get('car_plate_cache_ttl', CAR_PLATE_CACHE_TTL))
-    plate_binding_states = {}
-    plate_binding_timeout_frames = max(1, int(config.get('track_timeout_frames', 60)))
-    plate_binding_vehicle_missing_frames = max(1, int(config.get('track_timeout_frames', 60)))
-    pending_plate_cache = {}
-    pending_plate_cache_ttl_frames = max(1, int(logic_cfg.get('pending_plate_cache_ttl_frames', 40) or 40))
-    pending_plate_cache_max_entries = max(1, int(logic_cfg.get('pending_plate_cache_max_entries', 30) or 30))
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     event_manager.per_id_video_enabled = enable_per_id_video
@@ -1409,6 +1429,9 @@ def process_video(path, args):
     finished_workers = 0
     worker_last_frames = [0 for _ in workers]
     worker_last_infer = [0.0 for _ in workers]
+    worker_last_total = [0.0 for _ in workers]
+    worker_last_plate_calls = [0 for _ in workers]
+    worker_last_plate_time = [0.0 for _ in workers]
     wheel_last_stats = {}
     reader_log_last_dropped = 0
     reader_log_last_reconnect_count = 0
@@ -1997,7 +2020,7 @@ def process_video(path, args):
             pass
 
     def drain_results(block=True):
-        nonlocal next_frame_to_write, finished_workers, car_plate_cache, plate_binding_states, per_id_writers
+        nonlocal next_frame_to_write, finished_workers, per_id_writers
         nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame, dropped_frame_ids
         nonlocal latest_frame_idx, latest_capture_ts, last_progress_ts, last_result_ts
         nonlocal last_event_saved_count, recent_drain_times
@@ -2097,12 +2120,6 @@ def process_video(path, args):
                     row_idx = det_ref.get('row_idx', -1)
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = track_id
-                active_car_ids = {det_ref.get('track_id', -1) for det_ref in vehicle_payload_refs if det_ref.get('track_id', -1) > 0}
-                _cleanup_pending_plate_cache(
-                    pending_plate_cache,
-                    next_frame_to_write,
-                    pending_plate_cache_ttl_frames,
-                )
                 license_dets = [
                     detection for detection in det_payload
                     if detection.get('cls') == LICENSE_CLASS and detection.get('source') == 'dual_plate'
@@ -2111,290 +2128,67 @@ def process_video(path, args):
                     detection for detection in det_payload
                     if detection.get('cls') == LICENSE_CLASS and detection.get('source') == 'primary_plate_aux'
                 ] if det_payload else []
-                if license_dets and car_boxes:
-                    for det in license_dets:
-                        best_id = None
-                        best_score = 0.0
-                        plate_box = det['box']
-                        for car_id, cbox in car_boxes.items():
-                            score = _plate_car_match_score(plate_box, cbox, frame_size=(width, height))
-                            if score > best_score:
-                                best_score = score
-                                best_id = car_id
-                        if best_id is not None and best_score >= PLATE_CAR_LINK_IOU:
-                            det['candidate_car_track'] = best_id
-                            det['candidate_score'] = float(best_score)
-                            det['vehicle_box_candidate'] = car_boxes[best_id]
-                        mutual_score = max(
-                            (_plate_box_mutual_score(det['box'], primary_det['box']) for primary_det in primary_plate_dets),
-                            default=0.0,
-                        )
-                        det['primary_plate_mutual_score'] = float(mutual_score)
-                        det['primary_plate_verified'] = bool(mutual_score >= 0.20)
-                plate_track_info = {}
-                updates = plate_tracker.update(next_frame_to_write, license_dets)
-                for det, upd in zip(license_dets, updates):
-                    plate_id = upd.get('track_id', -1)
-                    text_val = upd.get('text', '')
-                    text_conf_val = upd.get('plate_text_conf')
-                    is_guess = bool(upd.get('is_guess', False))
-                    det['raw_text'] = str(det.get('raw_text', det.get('text', '')) or '')
-                    row_idx = det.get('row_idx', -1)
-                    if row_idx is not None and 0 <= row_idx < len(rows):
-                        rows[row_idx][-1] = det.get('raw_text', '')
-                        if text_val and not plate_draw_stable_only:
-                            rows[row_idx][-2] = text_val
-                    if plate_id > 0:
-                        state = _ensure_plate_binding_state(
-                            next_frame_to_write,
-                            plate_binding_states.get(plate_id),
-                        )
-                        plate_binding_states[plate_id] = state
-                        locked_car_id = _normalize_track_id(state.get('locked_car_id'))
-                        locked_score = None
-                        if locked_car_id is not None and locked_car_id in car_boxes:
-                            locked_score = _plate_car_match_score(
-                                det['box'], car_boxes[locked_car_id], frame_size=(width, height)
-                            )
-                        _stabilize_plate_binding(
-                            state,
-                            frame_idx=next_frame_to_write,
-                            candidate_car_id=det.get('candidate_car_track', -1),
-                            candidate_score=float(det.get('candidate_score', 0.0)),
-                            locked_score=locked_score,
-                        )
-                        event_manager.trace_record('plate_binding', {
-                            'frameIdx': int(next_frame_to_write),
-                            'plateTrackId': int(plate_id),
-                            'candidateCarTrackId': det.get('candidate_car_track', -1),
-                            'candidateScore': float(det.get('candidate_score', 0.0) or 0.0),
-                            'lockedCarTrackId': locked_car_id,
-                            'lockedScore': locked_score,
-                            'plateBox': det.get('box'),
-                            'plateText': text_val,
-                        })
-                        locked_car_id = _normalize_track_id(state.get('locked_car_id'))
-                        resolved_track = locked_car_id if locked_car_id is not None else plate_id
-                        if row_idx is not None and 0 <= row_idx < len(rows):
-                            rows[row_idx][7] = resolved_track
-                        vehicle_box = None
-                        if locked_car_id is not None and locked_car_id in car_boxes:
-                            vehicle_box = car_boxes[locked_car_id]
-                        elif det.get('vehicle_box_candidate') is not None:
-                            vehicle_box = det.get('vehicle_box_candidate')
-                        if locked_car_id is not None and vehicle_box is not None:
-                            car_boxes.setdefault(locked_car_id, vehicle_box)
-                        plate_candidate_history = []
-                        if locked_car_id is not None:
-                            plate_candidate_history = _consume_pending_plate_candidates(
-                                pending_plate_cache,
-                                plate_id,
-                                next_frame_to_write,
-                                pending_plate_cache_ttl_frames,
-                            )
-                        else:
-                            raw_text = str(det.get('raw_text', det.get('text', '')) or '')
-                            candidate_text = raw_text
-                            if not is_valid_plate(normalize_plate_candidate_text(candidate_text)):
-                                candidate_text = text_val if text_val and not is_guess else ''
-                            _append_pending_plate_candidate(
-                                pending_plate_cache,
-                                plate_id,
-                                candidate_text,
-                                next_frame_to_write,
-                                conf=det.get('score'),
-                                box=det.get('box'),
-                                plate_color=det.get('plate_color', ''),
-                                plate_color_conf=det.get('plate_color_conf'),
-                                plate_type=det.get('plate_type', ''),
-                                text_conf=det.get('plate_text_conf'),
-                                mutual_verified=bool(det.get('primary_plate_verified', False)),
-                                trusted=False,
-                                max_entries=pending_plate_cache_max_entries,
-                            )
-                        plate_track_info[plate_id] = {
-                            'box': det['box'],
-                            'text': text_val,
-                            'text_conf': text_conf_val,
-                            'primary_plate_verified': bool(det.get('primary_plate_verified', False)),
-                            'primary_plate_mutual_score': float(det.get('primary_plate_mutual_score', 0.0) or 0.0),
-                            'is_guess': is_guess,
-                            'vehicle_box': vehicle_box,
-                            'score': float(det.get('score', 0.0)),
-                            'plate_color': det.get('plate_color', ''),
-                            'plate_color_conf': det.get('plate_color_conf'),
-                            'plate_type': det.get('plate_type', ''),
-                            'car_id': locked_car_id if locked_car_id is not None else -1,
-                            'plate_candidate_history': plate_candidate_history,
-                            'det_ref': det,
-                        }
-                removed_locked_ids = _cleanup_plate_binding_states(
-                    plate_binding_states=plate_binding_states,
-                    frame_idx=next_frame_to_write,
-                    active_car_ids=active_car_ids,
-                    plate_timeout_frames=plate_binding_timeout_frames,
-                    vehicle_missing_frames=plate_binding_vehicle_missing_frames,
+                selected_plates = _associate_vehicle_plates(
+                    license_dets, car_boxes, frame_size=(width, height),
+                    min_detection_confidence=event_manager.plate_text_min_detection_confidence,
+                    min_recognition_confidence=event_manager.plate_text_min_recognition_confidence,
                 )
-                for removed_car_id in removed_locked_ids:
-                    car_plate_cache.pop(removed_car_id, None)
-                car_to_plate = _refresh_car_plate_cache_from_locked(
-                    plate_binding_states=plate_binding_states,
-                    car_plate_cache=car_plate_cache,
-                    active_car_ids=active_car_ids,
-                    car_plate_cache_ttl=car_plate_cache_ttl,
-                )
-                plate_to_car = {plate_id: car_id for car_id, plate_id in car_to_plate.items()}
                 alias_seen = set()
                 plates_with_updates = set()
                 t_before_updates = time.perf_counter()
-                for plate_id, info in plate_track_info.items():
-                    car_id = plate_to_car.get(plate_id, info.get('car_id', -1))
-                    if car_id <= 0:
-                        det_ref = info.get('det_ref')
-                        if det_ref is not None:
-                            det_ref['track_id'] = -1
-                        continue
-                    track_key = car_id if car_id > 0 else plate_id
-                    vehicle_box = info.get('vehicle_box')
-                    if vehicle_box is None:
-                        if car_id > 0 and car_id in car_boxes:
-                            vehicle_box = car_boxes[car_id]
-                    anchor_pt, anchor_direction = anchor_evidence_for(
-                        track_key,
-                        vehicle_box or info['box'],
-                        next_frame_to_write,
+                for track_key, det in selected_plates.items():
+                    # 只把当前原始OCR和它自己的分数交给唯一的事件投票器。
+                    raw_text = str(det.get('raw_text', det.get('text', '')) or '')
+                    det['raw_text'] = raw_text
+                    vehicle_box = car_boxes[track_key]
+                    mutual_score = max(
+                        (_plate_box_mutual_score(det['box'], primary_det['box'])
+                         for primary_det in primary_plate_dets),
+                        default=0.0,
                     )
-                    confirmed_alias = mark_alias_confirm(track_key, bool(info.get('text')), next_frame_to_write, True)
+                    anchor_pt, anchor_direction = anchor_evidence_for(
+                        track_key, vehicle_box, next_frame_to_write,
+                    )
+                    confirmed_alias = mark_alias_confirm(
+                        track_key, bool(raw_text), next_frame_to_write, True,
+                    )
                     event_manager.update_track(
-                        track_key,
-                        info['box'],
-                        vehicle_box,
-                        info.get('text', ''),
-                        next_frame_to_write,
-                        event_frame_for_idx,
-                        water_boxes,
-                        bool(water_boxes),
-                        is_plate=True,
+                        track_key, det['box'], vehicle_box, raw_text,
+                        next_frame_to_write, event_frame_for_idx, water_boxes,
+                        bool(water_boxes), is_plate=True,
                         vehicle_label=car_labels.get(track_key, ''),
-                        vehicle_conf=None,
-                        plate_conf=info.get('score'),
-                        plate_text_conf=info.get('text_conf'),
-                        plate_mutual_verified=bool(info.get('primary_plate_verified', False)),
-                        confirmed=confirmed_alias,
-                        cleaning_label=cleaning_label,
-                        anchor_point=anchor_pt,
-                        plate_is_guess=bool(info.get('is_guess', False)),
-                        plate_color=info.get('plate_color', ''),
-                        plate_color_conf=info.get('plate_color_conf'),
-                        plate_type=info.get('plate_type', ''),
-                        plate_candidate_history=info.get('plate_candidate_history'),
+                        vehicle_conf=None, plate_conf=det.get('score'),
+                        plate_text_conf=det.get('plate_text_conf'),
+                        plate_mutual_verified=bool(mutual_score >= 0.20),
+                        confirmed=confirmed_alias, cleaning_label=cleaning_label,
+                        anchor_point=anchor_pt, plate_is_guess=False,
+                        plate_color=det.get('plate_color', ''),
+                        plate_color_conf=det.get('plate_color_conf'),
+                        plate_type=det.get('plate_type', ''),
                         anchor_direction=anchor_direction,
                         manual_detected=manual_wash_detected,
                         table_detected=table_wash_detected,
                         vehicle_event_qualified=car_event_qualified.get(track_key, True),
                     )
-                    det_ref = info.get('det_ref')
-                    if det_ref is not None:
-                        det_ref['track_id'] = track_key
-                        apply_stable_plate_fields(track_key, det_ref, rows)
+                    row_idx = det.get('row_idx', -1)
+                    if row_idx is not None and 0 <= row_idx < len(rows):
+                        rows[row_idx][7] = track_key
+                    event_manager.trace_record('plate_binding', {
+                        'frameIdx': int(next_frame_to_write),
+                        'trackId': int(track_key),
+                        'plateBox': det.get('box'),
+                        'plateText': raw_text,
+                        'source': 'unique_same_frame_vehicle',
+                    })
+                    apply_stable_plate_fields(track_key, det, rows)
                     alias_seen.add(track_key)
                     plates_with_updates.add(track_key)
                 for det_ref in vehicle_payload_refs:
                     car_id = det_ref.get('track_id', -1)
                     if car_id <= 0:
                         continue
-                    alias_plate_id = car_to_plate.get(car_id)
-                    if alias_plate_id:
-                        row_idx = det_ref.get('row_idx', -1)
-                        if row_idx is not None and 0 <= row_idx < len(rows):
-                            rows[row_idx][7] = car_id
-                        if car_id not in plates_with_updates:
-                            known_text = ''
-                            track_state = event_manager.tracks.get(car_id)
-                            if track_state:
-                                known_text = track_state.get('plate_text', '')
-                            confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
-                            anchor_pt, anchor_direction = anchor_evidence_for(
-                                car_id,
-                                det_ref['box'],
-                                next_frame_to_write,
-                            )
-                            plate_candidate_history = _consume_pending_plate_candidates(
-                                pending_plate_cache,
-                                alias_plate_id,
-                                next_frame_to_write,
-                                pending_plate_cache_ttl_frames,
-                            )
-                            event_manager.update_track(
-                                car_id,
-                                None,
-                                det_ref['box'],
-                                '',
-                                next_frame_to_write,
-                                event_frame_for_idx,
-                                water_boxes,
-                                bool(water_boxes),
-                                is_plate=True,
-                                vehicle_label=det_ref.get('label', ''),
-                                vehicle_conf=det_ref.get('score'),
-                                plate_conf=None,
-                                confirmed=confirmed_alias,
-                                cleaning_label=cleaning_label,
-                                anchor_point=anchor_pt,
-                                plate_candidate_history=plate_candidate_history,
-                                anchor_direction=anchor_direction,
-                                manual_detected=manual_wash_detected,
-                                table_detected=table_wash_detected,
-                                vehicle_event_qualified=bool(det_ref.get('business_qualified', True)),
-                            )
+                    if car_id in plates_with_updates:
                         annotate_locked_label(car_id, det_ref, rows, frame_out)
-                        alias_seen.add(car_id)
-                        continue
-                    cache_entry = car_plate_cache.get(car_id)
-                    if cache_entry and cache_entry.get('age', 0) <= car_plate_cache_ttl:
-                        cache_entry['age'] = cache_entry.get('age', 0) + 1
-                        row_idx = det_ref.get('row_idx', -1)
-                        if row_idx is not None and 0 <= row_idx < len(rows):
-                            rows[row_idx][7] = car_id
-                        known_text = ''
-                        track_state = event_manager.tracks.get(car_id)
-                        if track_state:
-                            known_text = track_state.get('plate_text', '')
-                        confirmed_alias = mark_alias_confirm(car_id, bool(known_text), next_frame_to_write, True)
-                        anchor_pt, anchor_direction = anchor_evidence_for(
-                            car_id,
-                            det_ref['box'],
-                            next_frame_to_write,
-                        )
-                        plate_candidate_history = _consume_pending_plate_candidates(
-                            pending_plate_cache,
-                            cache_entry.get('plate_id'),
-                            next_frame_to_write,
-                            pending_plate_cache_ttl_frames,
-                        )
-                        event_manager.update_track(
-                            car_id,
-                            None,
-                            det_ref['box'],
-                            '',
-                            next_frame_to_write,
-                            event_frame_for_idx,
-                            water_boxes,
-                            bool(water_boxes),
-                            is_plate=True,
-                            vehicle_label=det_ref.get('label', ''),
-                            vehicle_conf=det_ref.get('score'),
-                            plate_conf=None,
-                            confirmed=confirmed_alias,
-                            cleaning_label=cleaning_label,
-                            anchor_point=anchor_pt,
-                            plate_candidate_history=plate_candidate_history,
-                            anchor_direction=anchor_direction,
-                            manual_detected=manual_wash_detected,
-                            table_detected=table_wash_detected,
-                            vehicle_event_qualified=bool(det_ref.get('business_qualified', True)),
-                        )
-                        alias_seen.add(car_id)
                         continue
                     fallback_id = car_id
                     row_idx = det_ref.get('row_idx', -1)
@@ -2811,6 +2605,15 @@ def process_video(path, args):
                 infer_delta = max(0.0, w.infer_time - worker_last_infer[i])
                 worker_last_frames[i] = w.frames
                 worker_last_infer[i] = w.infer_time
+                total_delta = max(0.0, w.total_time - worker_last_total[i])
+                plate_calls_delta = max(0, w.plate_calls - worker_last_plate_calls[i])
+                plate_time_delta = max(0.0, w.plate_time - worker_last_plate_time[i])
+                worker_last_total[i] = w.total_time
+                worker_last_plate_calls[i] = w.plate_calls
+                worker_last_plate_time[i] = w.plate_time
+                total_ms = total_delta * 1000.0 / frames_delta if frames_delta else 0.0
+                plate_fps = plate_calls_delta / elapsed_window if elapsed_window > 0 else 0.0
+                plate_ms = plate_time_delta * 1000.0 / plate_calls_delta if plate_calls_delta else 0.0
                 if frames_delta > 0 and elapsed_window > 0:
                     worker_fps = frames_delta / elapsed_window
                 else:
@@ -2821,10 +2624,15 @@ def process_video(path, args):
                     infer_ms = 0.0
                 pipeline_frames_window += frames_delta
                 worker_msgs.append(f'w{i}:{worker_fps:.2f}fps/{infer_ms:.1f}ms')
+                worker_msgs.append(f'plate={plate_fps:.2f}fps/{plate_ms:.1f}ms full={total_ms:.1f}ms')
                 worker_perf.append({
                     'idx': i,
                     'fps': worker_fps,
                     'infer_ms': infer_ms,
+                    'total_ms': total_ms,
+                    'plate_fps': plate_fps,
+                    'plate_ms': plate_ms,
+                    'plate_calls_delta': plate_calls_delta,
                     'frames_delta': frames_delta,
                 })
             wheel_msgs = []

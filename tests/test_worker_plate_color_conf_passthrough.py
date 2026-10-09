@@ -117,6 +117,28 @@ class _CountingDualLpr:
 
 
 class WorkerPlateColorConfTests(unittest.TestCase):
+    def test_every_frame_plate_inference_preserves_vehicle_gate_and_metrics(self):
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        for requires_vehicle, postprocessor, expected in [
+            (True, _FakePostprocessor(), 3),
+            (True, _FakeNoDetectionsPostprocessor(), 0),
+            (False, _FakeNoDetectionsPostprocessor(), 3),
+        ]:
+            with self.subTest(requires_vehicle=requires_vehicle, expected=expected):
+                lpr = _CountingDualLpr()
+                worker = self._build_worker(
+                    postprocessor=postprocessor, dual_lpr=lpr,
+                    plate_requires_vehicle=requires_vehicle,
+                )
+                for frame_idx in (1, 2, 3):
+                    worker.task_q.put((frame_idx, frame))
+                worker.task_q.put(None)
+                worker.run()
+                self.assertEqual(lpr.calls, expected)
+                self.assertEqual(worker.plate_calls, expected)
+                self.assertEqual(worker.frames, 3)
+                self.assertGreater(worker.total_time, 0)
+
     def _build_worker(
         self,
         rk=None,
@@ -142,6 +164,9 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         worker.copy_draw_frame = copy_draw_frame
         worker.frames = 0
         worker.infer_time = 0.0
+        worker.total_time = 0.0
+        worker.plate_calls = 0
+        worker.plate_time = 0.0
         return worker
 
     def test_worker_passthrough_plate_color_conf_to_det_payload(self):

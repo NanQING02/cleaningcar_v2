@@ -16,6 +16,7 @@ if "rknnlite" not in sys.modules:
     sys.modules["rknnlite.api"] = rknn_api_module
 
 from cleaningcar.pipeline import (
+    _associate_vehicle_plates,
     _append_pending_plate_candidate,
     _cleanup_plate_binding_states,
     _cleanup_pending_plate_cache,
@@ -29,6 +30,43 @@ from cleaningcar.pipeline import (
 
 
 class PlateBindingStabilityTests(unittest.TestCase):
+    @staticmethod
+    def _plate(box, text='苏C2267S', score=.9, text_conf=.95):
+        return {'box': box, 'text': text, 'raw_text': text, 'score': score, 'plate_text_conf': text_conf}
+
+    def test_unique_vehicle_receives_first_raw_plate_observation(self):
+        plate = self._plate([120, 170, 180, 195])
+        selected = _associate_vehicle_plates([plate], {1: [100, 100, 300, 220]})
+        self.assertIs(selected[1], plate)
+        self.assertEqual(plate['track_id'], 1)
+
+    def test_two_possible_vehicles_do_not_receive_plate(self):
+        plate = self._plate([120, 170, 180, 195])
+        selected = _associate_vehicle_plates([plate], {
+            1: [100, 100, 300, 220], 2: [110, 120, 310, 240],
+        })
+        self.assertEqual(selected, {})
+        self.assertEqual(plate['track_id'], -1)
+
+    def test_conflicting_high_quality_plates_in_same_frame_do_not_vote(self):
+        plates = [self._plate([120, 170, 180, 195]),
+                  self._plate([200, 170, 260, 195], '苏C7755S')]
+        selected = _associate_vehicle_plates(plates, {1: [100, 100, 300, 220]})
+        self.assertEqual(selected, {})
+
+    def test_duplicate_boxes_for_same_text_produce_only_one_update(self):
+        plates = [self._plate([120, 170, 180, 195], score=.8),
+                  self._plate([121, 171, 181, 196], score=.9)]
+        selected = _associate_vehicle_plates(plates, {1: [100, 100, 300, 220]})
+        self.assertEqual(len(selected), 1)
+        self.assertIs(selected[1], plates[1])
+
+    def test_early_unbound_plate_cannot_be_attached_to_future_vehicle(self):
+        plate = self._plate([120, 170, 180, 195])
+        self.assertEqual(_associate_vehicle_plates([plate], {}), {})
+        other = self._plate([600, 170, 660, 195])
+        self.assertEqual(_associate_vehicle_plates([other], {1: [100, 100, 300, 220]}), {})
+
     def test_primary_and_dual_plate_boxes_support_spatial_mutual_verification(self):
         score = _plate_box_mutual_score([100, 100, 200, 140], [105, 102, 205, 142])
 
