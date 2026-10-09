@@ -59,7 +59,7 @@ from .video_io import (
     resolve_auto_plate_core_mask,
     resolve_worker_core_masks,
 )
-from .vision import box_iou, point_in_box, scale_point, scale_polygon
+from .vision import box_intersects_polygon, box_iou, point_in_box, scale_point, scale_polygon
 from .wheel import WheelDetectionService
 from .worker import DetectWorker
 from .watchdog import ResultWatchdog
@@ -587,6 +587,7 @@ def process_video(path, args):
         zone_b_anchor_min_frames = 0
     zone_a_pts = scale_polygon(zones_cfg.get('zone_a_detection', []), width, height)
     zone_b_pts = scale_polygon(zones_cfg.get('zone_b_wash', []), width, height)
+    water_require_zone_b_overlap = bool(logic_cfg.get('water_require_zone_b_overlap', True))
     flow_vec = zones_cfg.get('flow_vector', {})
     flow_start = scale_point(flow_vec.get('start', (0.0, 0.0)), width, height)
     flow_end = scale_point(flow_vec.get('end', (0.0, 1.0)), width, height)
@@ -2050,6 +2051,12 @@ def process_video(path, args):
                             vehicle_dets.append({'box': det['box'], 'score': det['score'], 'cls': det['cls'], 'row_idx': det.get('row_idx')})
                             vehicle_payload_refs.append(det)
                         elif det.get('cls') in WATER_CLASS_IDS:
+                            if (
+                                water_require_zone_b_overlap
+                                and len(zone_b_pts) >= 3
+                                and not box_intersects_polygon(det['box'], zone_b_pts)
+                            ):
+                                continue
                             water_boxes.append(det['box'])
                             name = CLASS_NAMES[det['cls']]
                             if name == 'manual':

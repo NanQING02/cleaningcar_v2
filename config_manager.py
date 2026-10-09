@@ -397,6 +397,22 @@ class ConfigManager:
             water_confirm_frames = 3
         logic['water_confirm_frames'] = max(1, min(water_confirm_frames, 30))
         try:
+            water_confirm_window_frames = int(
+                logic.get('water_confirm_window_frames', 5) or 5
+            )
+        except (TypeError, ValueError):
+            water_confirm_window_frames = 5
+        logic['water_confirm_window_frames'] = max(
+            logic['water_confirm_frames'],
+            min(water_confirm_window_frames, 60),
+        )
+        water_require_zone_b_overlap = logic.get('water_require_zone_b_overlap', True)
+        if isinstance(water_require_zone_b_overlap, str):
+            water_require_zone_b_overlap = water_require_zone_b_overlap.strip().lower() in {
+                '1', 'true', 'yes', 'on',
+            }
+        logic['water_require_zone_b_overlap'] = bool(water_require_zone_b_overlap)
+        try:
             track_lost_grace_seconds = float(logic.get('track_lost_grace_seconds', 4.0) or 0.0)
         except (TypeError, ValueError):
             track_lost_grace_seconds = 4.0

@@ -167,6 +167,7 @@ class WashDurationSplitTests(unittest.TestCase):
 
         self.assertEqual(st['manual_wash_frames'], 1)
         self.assertEqual(st['effective_wash_frames'], 1)
+        self.assertEqual(st['water_window_hits'], 1)
 
     def test_water_outside_zone_b_not_counted(self):
         mgr = self._manager()

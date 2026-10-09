@@ -403,6 +403,10 @@ class EventManager:
         self.timeout_frames = int(config.get('track_timeout_frames', 60))
         self.base_time = datetime.now()
         self.water_confirm_frames = max(1, int(self.logic.get('water_confirm_frames', 3)))
+        self.water_confirm_window_frames = max(
+            self.water_confirm_frames,
+            int(self.logic.get('water_confirm_window_frames', 5) or 5),
+        )
         shadow_cfg = dict(self.logic.get('shadow_plate_pool') or {})
         legacy_shadow_cfg = config.get('shadow_pool', {}) or {}
         for key, value in legacy_shadow_cfg.items():
@@ -1374,6 +1378,8 @@ class EventManager:
             'washing_confirmed': False,
             'water_detected': False,
             'water_consecutive_frames': 0,
+            'water_detection_window': deque(maxlen=self.water_confirm_window_frames),
+            'water_window_hits': 0,
             'last_water_observation_frame': -1,
             'effective_wash_frames': 0,
             'manual_wash_frames': 0,
@@ -1673,6 +1679,12 @@ class EventManager:
             st['water_detected'] = False
             st['wash_duration'] = 0.0
             st['water_consecutive_frames'] = 0
+            water_window = st.get('water_detection_window')
+            if not isinstance(water_window, deque) or water_window.maxlen != self.water_confirm_window_frames:
+                water_window = deque(maxlen=self.water_confirm_window_frames)
+                st['water_detection_window'] = water_window
+            water_window.clear()
+            st['water_window_hits'] = 0
             st['effective_wash_frames'] = 0
             st['manual_wash_frames'] = 0
             st['table_wash_frames'] = 0
@@ -1729,6 +1741,12 @@ class EventManager:
         last_water_frame = st.get('last_water_observation_frame', -1)
         if int(last_water_frame if last_water_frame is not None else -1) != int(frame_idx):
             st['last_water_observation_frame'] = int(frame_idx)
+            water_window = st.get('water_detection_window')
+            if not isinstance(water_window, deque) or water_window.maxlen != self.water_confirm_window_frames:
+                water_window = deque(maxlen=self.water_confirm_window_frames)
+                st['water_detection_window'] = water_window
+            water_window.append(1 if water_in_b else 0)
+            st['water_window_hits'] = int(sum(water_window))
             if water_in_b:
                 st['water_consecutive_frames'] = int(st.get('water_consecutive_frames', 0) or 0) + 1
                 st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
@@ -1769,7 +1787,9 @@ class EventManager:
             self.emit_event(track_id, 2, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(2)
         if (
-            st.get('water_consecutive_frames', 0) >= self.water_confirm_frames
+            bool(st.get('type2_qualified'))
+            and inside_b
+            and st.get('water_window_hits', 0) >= self.water_confirm_frames
             and 3 not in st['events']
             and 3 in self.allowed_events
         ):
@@ -1805,6 +1825,8 @@ class EventManager:
             'wash_duration': round(st.get('wash_duration', 0.0), 1),
             'water': bool(washing_now),
             'water_consecutive_frames': int(st.get('water_consecutive_frames', 0) or 0),
+            'water_window_hits': int(st.get('water_window_hits', 0) or 0),
+            'water_window_size': int(self.water_confirm_window_frames),
             'plate': st.get('plate_text', ''),
             'zone_a': bool(zone_state and zone_state.inside_a),
             'zone_b': bool(zone_state and zone_state.inside_b),

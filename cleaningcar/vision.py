@@ -68,3 +68,85 @@ def point_in_box(pt, box):
         return False
     x, y = pt
     return (box[0] <= x <= box[2]) and (box[1] <= y <= box[3])
+
+
+def _point_on_segment(point, start, end, tolerance=1e-6):
+    px, py = map(float, point)
+    x1, y1 = map(float, start)
+    x2, y2 = map(float, end)
+    cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1)
+    if abs(cross) > tolerance:
+        return False
+    return (
+        min(x1, x2) - tolerance <= px <= max(x1, x2) + tolerance
+        and min(y1, y2) - tolerance <= py <= max(y1, y2) + tolerance
+    )
+
+
+def point_in_polygon(point, polygon):
+    if point is None or polygon is None or len(polygon) < 3:
+        return False
+    px, py = map(float, point)
+    inside = False
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        if _point_on_segment((px, py), start, end):
+            return True
+        x1, y1 = map(float, start)
+        x2, y2 = map(float, end)
+        if (y1 > py) == (y2 > py):
+            continue
+        intersection_x = (x2 - x1) * (py - y1) / (y2 - y1) + x1
+        if px < intersection_x:
+            inside = not inside
+    return inside
+
+
+def _segments_intersect(a, b, c, d):
+    def orientation(p, q, r):
+        value = (
+            (float(q[1]) - float(p[1])) * (float(r[0]) - float(q[0]))
+            - (float(q[0]) - float(p[0])) * (float(r[1]) - float(q[1]))
+        )
+        if abs(value) <= 1e-6:
+            return 0
+        return 1 if value > 0 else 2
+
+    o1 = orientation(a, b, c)
+    o2 = orientation(a, b, d)
+    o3 = orientation(c, d, a)
+    o4 = orientation(c, d, b)
+    if o1 != o2 and o3 != o4:
+        return True
+    return (
+        (o1 == 0 and _point_on_segment(c, a, b))
+        or (o2 == 0 and _point_on_segment(d, a, b))
+        or (o3 == 0 and _point_on_segment(a, c, d))
+        or (o4 == 0 and _point_on_segment(b, c, d))
+    )
+
+
+def box_intersects_polygon(box, polygon):
+    if box is None or polygon is None or len(polygon) < 3:
+        return False
+    x1, y1, x2, y2 = map(float, box)
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+    corners = ((x1, y1), (x2, y1), (x2, y2), (x1, y2))
+    center = ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+    if any(point_in_polygon(point, polygon) for point in (*corners, center)):
+        return True
+    if any(point_in_box(point, (x1, y1, x2, y2)) for point in polygon):
+        return True
+    box_edges = tuple((corners[index], corners[(index + 1) % 4]) for index in range(4))
+    polygon_edges = tuple(
+        (polygon[index], polygon[(index + 1) % len(polygon)])
+        for index in range(len(polygon))
+    )
+    return any(
+        _segments_intersect(box_start, box_end, polygon_start, polygon_end)
+        for box_start, box_end in box_edges
+        for polygon_start, polygon_end in polygon_edges
+    )

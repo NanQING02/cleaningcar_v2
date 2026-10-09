@@ -1060,20 +1060,22 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertNotIn(1, emitted)
         self.assertNotIn(1, manager.tracks[1]["events"])
 
-    def test_type3_requires_three_consecutive_water_frames_after_type2(self):
+    def test_type3_requires_three_water_hits_in_five_frame_window_after_type2(self):
         zone = _ScriptedZoneManager({
             1: {"inside_a": True, "enter_a": True},
             2: {"inside_a": True, "inside_b": True, "enter_b": True},
             3: {"inside_a": True, "inside_b": True},
             4: {"inside_a": True, "inside_b": True},
             5: {"inside_a": True, "inside_b": True},
+            6: {"inside_a": True, "inside_b": True},
         })
         manager = self._manager_with_zone(zone)
         emitted = []
         manager.emit_event = lambda track_id, event_type, *args, **kwargs: emitted.append(event_type)
 
-        for frame_idx in range(1, 6):
-            water_boxes = [[0, 0, 5, 5]] if frame_idx >= 3 else []
+        water_frames = {3, 5, 6}
+        for frame_idx in range(1, 7):
+            water_boxes = [[0, 0, 5, 5]] if frame_idx in water_frames else []
             manager.update_track(
                 1, None, [0, 0, 20, 20], "", frame_idx, None,
                 water_boxes, bool(water_boxes), False, "car", 0.95, None, False,
@@ -1085,11 +1087,12 @@ class EventManagerPlateLockingTests(unittest.TestCase):
                     water_boxes, True, False, "car", 0.95, None, False,
                     anchor_point=(10.0, 10.0),
                 )
-            if frame_idx < 5:
+            if frame_idx < 6:
                 self.assertNotIn(3, emitted)
 
         self.assertEqual(emitted, [1, 2, 3])
-        self.assertEqual(manager.tracks[1]["water_consecutive_frames"], 3)
+        self.assertEqual(manager.tracks[1]["water_consecutive_frames"], 2)
+        self.assertEqual(manager.tracks[1]["water_window_hits"], 3)
 
     def test_type4_uses_half_second_zone_b_dwell_at_source_fps(self):
         manager = self._manager()
