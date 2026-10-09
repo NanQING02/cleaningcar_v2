@@ -357,6 +357,23 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(track_state.get("plate_text_latest"), "粤B98765")
         self.assertEqual(track_state.get("plate_text_locked"), "鲁A12345")
 
+    def test_event_lock_allows_one_stride_gap_but_resets_after_long_gap(self):
+        manager = self._manager(plate_lock_frames=4)
+        manager.plate_text_max_streak_gap_frames = 4
+
+        for frame_idx in (1, 3, 7, 9):
+            self._update(manager, frame_idx, plate_text="苏C7755S", plate_is_guess=False)
+
+        self.assertEqual(manager.tracks[1].get("plate_text_locked"), "苏C7755S")
+
+        other = self._manager(plate_lock_frames=4)
+        other.plate_text_max_streak_gap_frames = 4
+        for frame_idx in (1, 6, 8, 10):
+            self._update(other, frame_idx, plate_text="苏C7755S", plate_is_guess=False)
+
+        self.assertEqual(other.tracks[1].get("plate_text_locked"), "")
+        self.assertEqual(other.tracks[1].get("plate_initial_streak"), 3)
+
     def test_all_letter_plate_never_enters_lock_or_report(self):
         uploader = _CollectingUploader()
         manager = self._manager(plate_lock_frames=3, uploader=uploader)

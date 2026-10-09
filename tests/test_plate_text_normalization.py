@@ -32,6 +32,27 @@ class PlateTextNormalizationTests(unittest.TestCase):
         results = tracker.update(3, [wrong])
 
         self.assertEqual(results[0]['text'], '苏A3A329')
+
+    def test_tracker_allows_one_missed_stride_sample_with_four_frame_gap(self):
+        tracker = PlateTextTracker(
+            lock_frames=4,
+            min_detection_confidence=0.65,
+            min_recognition_confidence=0.75,
+            max_streak_gap_frames=4,
+        )
+        detection = {
+            'box': [0, 0, 40, 15],
+            'text': '苏C7755S',
+            'score': 0.90,
+            'plate_text_conf': 0.90,
+        }
+
+        for frame_idx in (1, 3, 7, 9):
+            results = tracker.update(frame_idx, [detection])
+
+        self.assertEqual(results[0]['text'], '苏C7755S')
+        self.assertFalse(results[0]['is_guess'])
+
     def test_body_confusion_is_corrected_conservatively(self):
         self.assertEqual(normalize_plate_candidate_text("鲁AOI234"), "鲁A01234")
         self.assertTrue(is_valid_plate("鲁AOI234"))

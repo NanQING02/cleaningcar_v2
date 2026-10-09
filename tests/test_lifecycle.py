@@ -189,6 +189,120 @@ class BusinessLifecycleManagerTests(unittest.TestCase):
             [],
         )
 
+    def test_conflicting_provisional_plate_identity_rejects_unplated_handoff(self):
+        manager = BusinessLifecycleManager('cam', grace_seconds=10, plate_identity_min_hits=2)
+        lifecycle = manager.create(1, 'dump truck', capture_ts=100)
+        manager.touch(
+            1,
+            100,
+            vehicle_box=[100, 100, 300, 300],
+            anchor_point=[200, 300],
+            plate_candidate='苏C8596S',
+            plate_candidate_hits=2,
+        )
+        manager.mark_lost(1, capture_ts=101)
+
+        self.assertEqual(
+            manager.find_unplated_handoff_candidates(
+                'yellow truck',
+                102,
+                [110, 105, 310, 305],
+                anchor_point=[210, 305],
+                plate_candidate='苏C7755S',
+                plate_candidate_hits=2,
+            ),
+            [],
+        )
+        self.assertEqual(
+            manager.find_unplated_handoff_candidates(
+                'yellow truck',
+                102,
+                [110, 105, 310, 305],
+                anchor_point=[210, 305],
+                plate_candidate='苏C8596S',
+                plate_candidate_hits=1,
+            ),
+            [],
+        )
+        self.assertEqual(
+            manager.find_unplated_handoff_candidates(
+                'yellow truck',
+                102,
+                [110, 105, 310, 305],
+                anchor_point=[210, 305],
+                plate_candidate='苏C8596S',
+                plate_candidate_hits=2,
+            ),
+            [lifecycle],
+        )
+
+    def test_locked_plate_only_accepts_short_strict_unplated_continuation(self):
+        manager = BusinessLifecycleManager(
+            'cam',
+            grace_seconds=10,
+            locked_plate_unplated_grace_seconds=2,
+            locked_plate_unplated_center_scale=1.25,
+        )
+        lifecycle = manager.create(1, 'dump truck', capture_ts=100)
+        manager.touch(
+            1,
+            100,
+            plate_text='苏C7755S',
+            plate_box=[120, 120, 180, 150],
+            vehicle_box=[100, 100, 300, 300],
+            anchor_point=[200, 300],
+        )
+        manager.mark_lost(1, capture_ts=101)
+
+        self.assertFalse(manager.can_handoff_without_plate(
+            lifecycle,
+            'yellow truck',
+            102,
+            [110, 105, 310, 305],
+            anchor_point=[210, 305],
+            plate_candidate='苏C0566S',
+            plate_candidate_hits=2,
+        ))
+        self.assertTrue(manager.can_handoff_without_plate(
+            lifecycle,
+            'yellow truck',
+            102,
+            [110, 105, 310, 305],
+            anchor_point=[210, 305],
+        ))
+        self.assertFalse(manager.can_handoff_without_plate(
+            lifecycle,
+            'yellow truck',
+            104,
+            [110, 105, 310, 305],
+            anchor_point=[210, 305],
+        ))
+
+    def test_handoff_budget_blocks_chained_third_tracker(self):
+        manager = BusinessLifecycleManager('cam', grace_seconds=10, max_handoffs=1)
+        lifecycle = manager.create(1, 'car', capture_ts=100)
+        manager.touch(
+            1,
+            100,
+            plate_text='苏A12345',
+            plate_box=[10, 10, 30, 20],
+            plate_edge='flow_start',
+        )
+        manager.mark_lost(1, capture_ts=101)
+        self.assertIs(manager.handoff(lifecycle, 2, 102), lifecycle)
+        manager.mark_lost(2, capture_ts=103)
+
+        self.assertFalse(manager.can_handoff(
+            lifecycle,
+            'car',
+            104,
+            '苏A12345',
+            'flow_start',
+            [11, 11, 31, 21],
+            True,
+        ))
+        self.assertIsNone(manager.handoff(lifecycle, 3, 104))
+
     def test_closed_lifecycles_are_pruned_after_retention_window(self):
         manager = BusinessLifecycleManager('cam', grace_seconds=8)
         lifecycle = manager.create(1, 'car', capture_ts=100)

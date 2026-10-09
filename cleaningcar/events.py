@@ -411,11 +411,11 @@ class EventManager:
         self.shadow_max_age = int(shadow_cfg.get('max_age_frames', 120))
         self.event_plate_lock_frames = max(
             1,
-            int(self.logic.get('event_plate_lock_frames', self.logic.get('plate_lock_frames', 6))),
+            int(self.logic.get('event_plate_lock_frames', self.logic.get('plate_lock_frames', 4))),
         )
         self.plate_text_max_streak_gap_frames = max(
             1,
-            int(self.logic.get('plate_text_max_streak_gap_frames', 2)),
+            int(self.logic.get('plate_text_max_streak_gap_frames', 4)),
         )
         self.plate_correction_confirm_hits = max(
             self.event_plate_lock_frames,
@@ -508,9 +508,24 @@ class EventManager:
             track_lost_grace,
             float(self.logic.get('lifecycle_reacquire_seconds', track_lost_grace) or track_lost_grace),
         )
+        self.lifecycle_plate_identity_min_hits = max(
+            1,
+            int(self.logic.get('lifecycle_plate_identity_min_hits', 2) or 2),
+        )
         self.lifecycle_manager = BusinessLifecycleManager(
             self.camera_id,
             grace_seconds=self.lifecycle_reacquire_seconds,
+            max_handoffs=int(self.logic.get('lifecycle_max_handoffs', 1) or 0),
+            handoff_max_age_seconds=float(
+                self.logic.get('lifecycle_handoff_max_age_seconds', 120.0) or 0.0
+            ),
+            plate_identity_min_hits=self.lifecycle_plate_identity_min_hits,
+            locked_plate_unplated_grace_seconds=float(
+                self.logic.get('lifecycle_locked_plate_unplated_grace_seconds', 2.0) or 0.0
+            ),
+            locked_plate_unplated_center_scale=float(
+                self.logic.get('lifecycle_locked_plate_unplated_center_scale', 1.25) or 1.25
+            ),
         )
         self.lifecycle_closed_retention_seconds = max(
             60.0,
@@ -972,6 +987,12 @@ class EventManager:
             'fromTrackId': int(from_track_id),
             'reason': str(reason),
         })
+        print(
+            '[lifecycle-handoff] '
+            f'event={lifecycle.event_id} from={from_track_id} to={int(track_id)} '
+            f'reason={reason} count={lifecycle.handoff_count} '
+            f'plate={lifecycle.last_plate_text or lifecycle.last_plate_candidate or "-"}'
+        )
         return lifecycle
 
     def _observe_lifecycle(self, track_id, track_state, frame_idx, vehicle_label,
@@ -982,6 +1003,16 @@ class EventManager:
         vehicle_class = str(track_state.get('vehicle_cls_locked') or track_state.get('vehicle_cls') or vehicle_label or '')
         locked_plate = normalize_plate_candidate_text(track_state.get('plate_text_locked') or '')
         has_valid_plate = bool(locked_plate and not track_state.get('plate_text_locked_is_guess') and not plate_is_guess)
+        provisional_plate = normalize_plate_candidate_text(
+            track_state.get('plate_initial_candidate') or ''
+        )
+        provisional_plate_hits = int(track_state.get('plate_initial_streak', 0) or 0)
+        if has_valid_plate:
+            provisional_plate = locked_plate
+            provisional_plate_hits = max(
+                provisional_plate_hits,
+                self.lifecycle_plate_identity_min_hits,
+            )
         locked_color = str(track_state.get('plate_color_locked') or '')
         locked_color_conf = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
         plate_type = str(track_state.get('plate_type') or '')
@@ -1073,6 +1104,12 @@ class EventManager:
                         'fromTrackId': int(from_track_id),
                         'reason': 'unique_plate_verified_candidate',
                     })
+                    print(
+                        '[lifecycle-handoff] '
+                        f'event={lifecycle.event_id} from={from_track_id} to={int(track_id)} '
+                        'reason=unique_plate_verified_candidate '
+                        f'count={lifecycle.handoff_count} plate={locked_plate}'
+                    )
             elif len(candidates) > 1:
                 track_state['lifecycle_handoff_pending'] = True
                 self.trace_record('lifecycle_handoff_rejected', {
@@ -1098,6 +1135,8 @@ class EventManager:
                 handoff_vehicle_box,
                 anchor_point=anchor_point,
                 motion_direction=motion_direction,
+                plate_candidate=provisional_plate,
+                plate_candidate_hits=provisional_plate_hits,
             )
             if len(candidates) == 1:
                 lifecycle = self._adopt_lifecycle_handoff(
@@ -1131,6 +1170,8 @@ class EventManager:
                 plate_type=plate_type if has_valid_plate else '',
                 vehicle_box=handoff_vehicle_box,
                 anchor_point=anchor_point,
+                plate_candidate=provisional_plate,
+                plate_candidate_hits=provisional_plate_hits,
             )
         return lifecycle
 
@@ -1293,6 +1334,7 @@ class EventManager:
             if existing_state:
                 existing_state['plate_initial_candidate'] = ''
                 existing_state['plate_initial_streak'] = 0
+                existing_state['plate_initial_last_frame'] = -1
                 self._reset_plate_switch_streak(existing_state)
             return
         previous_state = self.tracks.get(track_id) or {}
@@ -1343,8 +1385,10 @@ class EventManager:
             'plate_text_locked_is_guess': False,
             'plate_initial_candidate': '',
             'plate_initial_streak': 0,
+            'plate_initial_last_frame': -1,
             'plate_text_switch_candidate': '',
             'plate_text_switch_streak': 0,
+            'plate_text_switch_last_frame': -1,
             'plate_text': '',
             'plate_is_guess': False,
             'plate_color_latest': '',
@@ -2040,6 +2084,10 @@ class EventManager:
             lifecycle = self.lifecycle_manager.create(track_id, vehicle_type, capture_ts=capture_ts)
         locked_plate = normalize_plate_candidate_text(track_state.get('plate_text_locked') or '')
         locked_plate_valid = bool(locked_plate and is_valid_plate(locked_plate))
+        provisional_plate = normalize_plate_candidate_text(
+            track_state.get('plate_initial_candidate') or ''
+        )
+        provisional_plate_hits = int(track_state.get('plate_initial_streak', 0) or 0)
         self.lifecycle_manager.touch(
             track_id,
             capture_ts=capture_ts,
@@ -2056,6 +2104,8 @@ class EventManager:
             plate_type=track_state.get('plate_type', '') if locked_plate_valid else '',
             vehicle_box=track_state.get('last_vehicle_box'),
             anchor_point=track_state.get('last_anchor'),
+            plate_candidate=provisional_plate,
+            plate_candidate_hits=provisional_plate_hits,
         )
         if event_type == 1:
             prev_type1_time = track_state.get('type1_capture_time')
@@ -2373,6 +2423,7 @@ class EventManager:
     def _reset_plate_switch_streak(track_state):
         track_state['plate_text_switch_candidate'] = ''
         track_state['plate_text_switch_streak'] = 0
+        track_state['plate_text_switch_last_frame'] = -1
 
     def _update_locked_plate_text(
         self,
@@ -2391,16 +2442,23 @@ class EventManager:
         locked_text = normalize_plate_candidate_text(track_state.get('plate_text_locked', ''))
         if not locked_text:
             previous_text = normalize_plate_candidate_text(track_state.get('plate_initial_candidate', ''))
-            if observed_text == previous_text:
+            previous_frame = int(track_state.get('plate_initial_last_frame', -1) or -1)
+            if (
+                observed_text == previous_text
+                and previous_frame >= 0
+                and frame_idx - previous_frame <= self.plate_text_max_streak_gap_frames
+            ):
                 track_state['plate_initial_streak'] = int(track_state.get('plate_initial_streak', 0) or 0) + 1
             else:
                 track_state['plate_initial_candidate'] = observed_text
                 track_state['plate_initial_streak'] = 1
+            track_state['plate_initial_last_frame'] = frame_idx
             if int(track_state.get('plate_initial_streak', 0) or 0) >= self._event_plate_lock_required_hits(track_state):
                 track_state['plate_text_locked'] = observed_text
                 track_state['plate_text_locked_is_guess'] = False
                 track_state['plate_initial_candidate'] = ''
                 track_state['plate_initial_streak'] = 0
+                track_state['plate_initial_last_frame'] = -1
                 self._reset_plate_switch_streak(track_state)
                 self._activate_plate_color_for_text(track_state, observed_text)
                 self.trace_record('plate_text_lock', {
@@ -2419,11 +2477,17 @@ class EventManager:
             return
 
         previous_text = normalize_plate_candidate_text(track_state.get('plate_text_switch_candidate', ''))
-        if observed_text == previous_text:
+        previous_frame = int(track_state.get('plate_text_switch_last_frame', -1) or -1)
+        if (
+            observed_text == previous_text
+            and previous_frame >= 0
+            and frame_idx - previous_frame <= self.plate_text_max_streak_gap_frames
+        ):
             track_state['plate_text_switch_streak'] = int(track_state.get('plate_text_switch_streak', 0) or 0) + 1
         else:
             track_state['plate_text_switch_candidate'] = observed_text
             track_state['plate_text_switch_streak'] = 1
+        track_state['plate_text_switch_last_frame'] = frame_idx
         if int(track_state.get('plate_text_switch_streak', 0) or 0) < self.plate_correction_confirm_hits:
             return
 

@@ -411,6 +411,54 @@ class ConfigManager:
             logic['track_lost_grace_seconds'],
             min(lifecycle_reacquire_seconds, 120.0),
         )
+        try:
+            lifecycle_max_handoffs = int(logic.get('lifecycle_max_handoffs', 1) or 0)
+        except (TypeError, ValueError):
+            lifecycle_max_handoffs = 1
+        logic['lifecycle_max_handoffs'] = max(0, min(lifecycle_max_handoffs, 10))
+        try:
+            lifecycle_handoff_max_age_seconds = float(
+                logic.get('lifecycle_handoff_max_age_seconds', 120.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            lifecycle_handoff_max_age_seconds = 120.0
+        logic['lifecycle_handoff_max_age_seconds'] = max(
+            0.0,
+            min(lifecycle_handoff_max_age_seconds, 3600.0),
+        )
+        try:
+            lifecycle_plate_identity_min_hits = int(
+                logic.get('lifecycle_plate_identity_min_hits', 2) or 1
+            )
+        except (TypeError, ValueError):
+            lifecycle_plate_identity_min_hits = 2
+        logic['lifecycle_plate_identity_min_hits'] = max(
+            1,
+            min(lifecycle_plate_identity_min_hits, 6),
+        )
+        try:
+            lifecycle_locked_plate_unplated_grace_seconds = float(
+                logic.get('lifecycle_locked_plate_unplated_grace_seconds', 2.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            lifecycle_locked_plate_unplated_grace_seconds = 2.0
+        logic['lifecycle_locked_plate_unplated_grace_seconds'] = max(
+            0.0,
+            min(
+                lifecycle_locked_plate_unplated_grace_seconds,
+                logic['lifecycle_reacquire_seconds'],
+            ),
+        )
+        try:
+            lifecycle_locked_plate_unplated_center_scale = float(
+                logic.get('lifecycle_locked_plate_unplated_center_scale', 1.25) or 1.25
+            )
+        except (TypeError, ValueError):
+            lifecycle_locked_plate_unplated_center_scale = 1.25
+        logic['lifecycle_locked_plate_unplated_center_scale'] = max(
+            0.25,
+            min(lifecycle_locked_plate_unplated_center_scale, 4.0),
+        )
         logic['event_trace_enabled'] = bool(logic.get('event_trace_enabled', False))
         logic['event_trace_dir'] = str(logic.get('event_trace_dir', 'event_traces') or 'event_traces').strip()
         try:
@@ -465,11 +513,11 @@ class ConfigManager:
         legacy_plate_lock_frames = logic.pop('plate_lock_frames', None)
         if legacy_plate_lock_frames is not None:
             logic.setdefault('plate_track_lock_frames', legacy_plate_lock_frames)
-        logic.setdefault('plate_track_lock_frames', 6)
-        logic.setdefault('event_plate_lock_frames', 6)
+        logic.setdefault('plate_track_lock_frames', 4)
+        logic.setdefault('event_plate_lock_frames', 4)
         logic.setdefault('plate_text_min_detection_confidence', 0.65)
         logic.setdefault('plate_text_min_recognition_confidence', 0.75)
-        logic.setdefault('plate_text_max_streak_gap_frames', 2)
+        logic.setdefault('plate_text_max_streak_gap_frames', 4)
         logic.setdefault('plate_correction_confirm_hits', 12)
         logic.setdefault('plate_color_correction_hits', 5)
         logic.setdefault('allowed_plate_colors', ['蓝色', '黄色', '绿色', '黄绿色'])

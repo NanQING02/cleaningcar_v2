@@ -645,13 +645,13 @@ def process_video(path, args):
         os.makedirs(output_dir, exist_ok=True)
     csv_writer = None
     csv_f = None
-    plate_track_lock_frames = int(getattr(args, 'plate_track_lock_frames', 6))
+    plate_track_lock_frames = int(getattr(args, 'plate_track_lock_frames', 4))
     plate_tracker = PlateTextTracker(
         lock_frames=plate_track_lock_frames,
         max_age=max(int(config.get('track_timeout_frames', 60)) * 2, plate_track_lock_frames * 6),
         min_detection_confidence=float(logic_cfg.get('plate_text_min_detection_confidence', 0.65)),
         min_recognition_confidence=float(logic_cfg.get('plate_text_min_recognition_confidence', 0.75)),
-        max_streak_gap_frames=max(1, int(logic_cfg.get('plate_text_max_streak_gap_frames', 2))),
+        max_streak_gap_frames=max(1, int(logic_cfg.get('plate_text_max_streak_gap_frames', 4))),
     )
     vehicle_iou_thresh = float(config.get('vehicle_iou_threshold', 0.3))
     if vehicle_iou_thresh < 0.0:

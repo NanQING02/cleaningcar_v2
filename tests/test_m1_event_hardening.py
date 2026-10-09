@@ -346,6 +346,61 @@ class M1EventHardeningTests(unittest.TestCase):
         self.assertIsNone(manager.lifecycle_manager.get(2))
         self.assertEqual(lifecycle.active_tracker_id, 0)
 
+    def test_provisional_plate_identity_blocks_wrong_unplated_handoff(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        manager = EventManager(
+            {
+                'logic': {
+                    'event_plate_lock_frames': 4,
+                    'lifecycle_plate_identity_min_hits': 2,
+                    'event_trace_enabled': False,
+                },
+                'event_capture_dir': temp_dir.name,
+                'event_output_dir': temp_dir.name,
+                'lane_name': 'lane-a',
+            },
+            fps=25.0,
+            frame_size=(128, 128),
+            zone_manager=_NoEventZoneManager(),
+        )
+        lifecycle = manager.lifecycle_manager.create(1, 'dump truck', capture_ts=100.0)
+        manager.lifecycle_manager.touch(
+            1,
+            capture_ts=100.0,
+            vehicle_box=[0, 0, 60, 60],
+            anchor_point=(10.0, 10.0),
+            plate_candidate='苏C8596S',
+            plate_candidate_hits=2,
+        )
+        manager.tracks[1] = {}
+        manager.lifecycle_manager.mark_lost(1, capture_ts=101.0)
+
+        for frame_idx in range(1, 3):
+            manager.record_frame_timing(frame_idx, 102.0 + frame_idx * 0.1, 102.1 + frame_idx * 0.1)
+            manager.update_track(
+                track_id=2,
+                plate_box=[11, 11, 31, 21],
+                vehicle_box=[0, 0, 60, 60],
+                plate_text='苏C7755S',
+                frame_idx=frame_idx,
+                frame=None,
+                water_boxes=[],
+                water_active=False,
+                is_plate=True,
+                vehicle_label='yellow truck',
+                vehicle_conf=0.95,
+                plate_conf=0.95,
+                confirmed=True,
+                anchor_point=(10.0, 10.0),
+                plate_text_conf=0.95,
+            )
+
+        self.assertIsNone(manager.lifecycle_manager.get(2))
+        self.assertEqual(lifecycle.active_tracker_id, 0)
+        self.assertEqual(manager.tracks[2]['plate_initial_candidate'], '苏C7755S')
+        self.assertEqual(manager.tracks[2]['plate_initial_streak'], 2)
+
     def test_born_inside_track_defers_new_event_until_plate_attribution_resolves(self):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

@@ -40,7 +40,7 @@ def parse_args():
                     help='Path to the detection RKNN used by the dual-model plate pipeline.')
     ap.add_argument('--plate_rec_model', default='models/plate/plate_rec_color.rknn',
                     help='Path to the recognition/color RKNN used by the dual-model plate pipeline.')
-    ap.add_argument('--plate_track_lock_frames', type=int, default=6,
+    ap.add_argument('--plate_track_lock_frames', type=int, default=4,
                     help='Consecutive high-confidence observations required by the plate-box tracker.')
     ap.add_argument('--plate_infer_stride', type=int, default=1,
                     help='Run dual-plate inference every N frames (>=1) to reduce CPU load.')

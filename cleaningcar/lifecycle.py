@@ -22,6 +22,7 @@ def vehicle_classes_compatible(previous, current):
 @dataclass
 class BusinessLifecycle:
     event_id: str
+    created_ts: float = 0.0
     tracker_ids: set = field(default_factory=set)
     stages: set = field(default_factory=set)
     vehicle_class: str = ''
@@ -31,6 +32,9 @@ class BusinessLifecycle:
     last_plate_ts: float = 0.0
     last_plate_box: tuple | None = None
     last_plate_text: str = ''
+    last_plate_candidate: str = ''
+    last_plate_candidate_hits: int = 0
+    last_plate_candidate_ts: float = 0.0
     last_plate_color: str = ''
     last_plate_color_conf: float = 0.0
     last_plate_type: str = ''
@@ -39,6 +43,7 @@ class BusinessLifecycle:
     last_anchor: tuple | None = None
     last_motion_direction: str = 'unknown'
     lost_ts: float = 0.0
+    handoff_count: int = 0
     closed: bool = False
     closed_ts: float = 0.0
 
@@ -49,9 +54,24 @@ class BusinessLifecycleManager:
     EVENT_ID_MAX_LENGTH = PLATFORM_EVENT_ID_MAX_LENGTH
     EVENT_ID_CAMERA_PREFIX_LENGTH = 11
 
-    def __init__(self, camera_id, grace_seconds=4.0):
+    def __init__(self, camera_id, grace_seconds=4.0, max_handoffs=1,
+                 handoff_max_age_seconds=120.0,
+                 plate_identity_min_hits=2,
+                 locked_plate_unplated_grace_seconds=2.0,
+                 locked_plate_unplated_center_scale=1.25):
         self.camera_id = str(camera_id)
         self.grace_seconds = max(0.1, float(grace_seconds))
+        self.max_handoffs = max(0, int(max_handoffs))
+        self.handoff_max_age_seconds = max(0.0, float(handoff_max_age_seconds))
+        self.plate_identity_min_hits = max(1, int(plate_identity_min_hits))
+        self.locked_plate_unplated_grace_seconds = max(
+            0.0,
+            min(self.grace_seconds, float(locked_plate_unplated_grace_seconds)),
+        )
+        self.locked_plate_unplated_center_scale = max(
+            0.25,
+            float(locked_plate_unplated_center_scale),
+        )
         self.by_event_id = {}
         self.by_tracker_id = {}
 
@@ -68,6 +88,7 @@ class BusinessLifecycleManager:
         event_id = self._new_event_id(now)
         lifecycle = BusinessLifecycle(
             event_id=event_id,
+            created_ts=now,
             tracker_ids={int(tracker_id)},
             vehicle_class=str(vehicle_class or ''),
             active_tracker_id=int(tracker_id),
@@ -84,7 +105,8 @@ class BusinessLifecycleManager:
 
     def touch(self, tracker_id, capture_ts=None, vehicle_class='', plate_text='', plate_box=None,
               plate_edge='', motion_direction='unknown', plate_color='',
-              plate_color_conf=0.0, plate_type='', vehicle_box=None, anchor_point=None):
+              plate_color_conf=0.0, plate_type='', vehicle_box=None, anchor_point=None,
+              plate_candidate='', plate_candidate_hits=0):
         lifecycle = self.get(tracker_id)
         if lifecycle is None:
             return None
@@ -118,6 +140,19 @@ class BusinessLifecycleManager:
                     lifecycle.last_plate_color_conf = 0.0
             if plate_type:
                 lifecycle.last_plate_type = str(plate_type)
+            lifecycle.last_plate_candidate = plate_text
+            lifecycle.last_plate_candidate_hits = max(
+                self.plate_identity_min_hits,
+                int(plate_candidate_hits or 0),
+            )
+            lifecycle.last_plate_candidate_ts = now
+        elif plate_candidate:
+            plate_candidate = str(plate_candidate)
+            candidate_hits = max(0, int(plate_candidate_hits or 0))
+            if not lifecycle.last_plate_text or lifecycle.last_plate_text == plate_candidate:
+                lifecycle.last_plate_candidate = plate_candidate
+                lifecycle.last_plate_candidate_hits = candidate_hits
+                lifecycle.last_plate_candidate_ts = now
         if motion_direction in {'forward', 'reverse'}:
             lifecycle.last_motion_direction = motion_direction
         return lifecycle
@@ -184,7 +219,7 @@ class BusinessLifecycleManager:
         return 0.0 <= float(capture_ts) - lifecycle.lost_ts <= self.grace_seconds
 
     @staticmethod
-    def _boxes_continuous(previous_box, current_box):
+    def _boxes_continuous(previous_box, current_box, center_scale=4.0):
         if previous_box is None or current_box is None:
             return False
         px = 0.5 * (previous_box[0] + previous_box[2])
@@ -193,13 +228,31 @@ class BusinessLifecycleManager:
         cy = 0.5 * (current_box[1] + current_box[3])
         previous_size = max(previous_box[2] - previous_box[0], previous_box[3] - previous_box[1], 1.0)
         current_size = max(current_box[2] - current_box[0], current_box[3] - current_box[1], 1.0)
-        return hypot(cx - px, cy - py) <= max(96.0, 4.0 * max(previous_size, current_size))
+        return hypot(cx - px, cy - py) <= max(
+            96.0,
+            float(center_scale) * max(previous_size, current_size),
+        )
+
+    def _handoff_budget_available(self, lifecycle, capture_ts):
+        if lifecycle is None:
+            return False
+        if self.max_handoffs >= 0 and lifecycle.handoff_count >= self.max_handoffs:
+            return False
+        if (
+            self.handoff_max_age_seconds > 0.0
+            and lifecycle.created_ts > 0.0
+            and float(capture_ts) - lifecycle.created_ts > self.handoff_max_age_seconds
+        ):
+            return False
+        return True
 
     def can_handoff(self, lifecycle, vehicle_class, capture_ts, plate_text, plate_edge, plate_box,
                     has_valid_plate, motion_direction='unknown'):
         if lifecycle is None or lifecycle.closed or lifecycle.active_tracker_id:
             return False
         now = float(capture_ts)
+        if not self._handoff_budget_available(lifecycle, now):
+            return False
         if now - lifecycle.lost_ts > self.grace_seconds or now - lifecycle.last_plate_ts > self.grace_seconds:
             return False
         if not has_valid_plate or not lifecycle.last_plate_edge:
@@ -244,10 +297,13 @@ class BusinessLifecycleManager:
 
     def can_handoff_without_plate(self, lifecycle, vehicle_class, capture_ts,
                                   vehicle_box, anchor_point=None,
-                                  motion_direction='unknown'):
+                                  motion_direction='unknown', plate_candidate='',
+                                  plate_candidate_hits=0):
         if lifecycle is None or lifecycle.closed or lifecycle.active_tracker_id:
             return False
         now = float(capture_ts)
+        if not self._handoff_budget_available(lifecycle, now):
+            return False
         if now - lifecycle.lost_ts > self.grace_seconds:
             return False
         if not vehicle_classes_compatible(lifecycle.vehicle_class, vehicle_class):
@@ -258,7 +314,34 @@ class BusinessLifecycleManager:
             and motion_direction != lifecycle.last_motion_direction
         ):
             return False
-        if self._boxes_continuous(lifecycle.last_vehicle_box, vehicle_box):
+
+        previous_identity = str(lifecycle.last_plate_text or '').strip()
+        if not previous_identity and lifecycle.last_plate_candidate_hits >= self.plate_identity_min_hits:
+            previous_identity = str(lifecycle.last_plate_candidate or '').strip()
+        current_identity = ''
+        if int(plate_candidate_hits or 0) >= self.plate_identity_min_hits:
+            current_identity = str(plate_candidate or '').strip()
+        if previous_identity and current_identity and previous_identity != current_identity:
+            return False
+
+        observed_candidate = str(plate_candidate or '').strip()
+        if previous_identity and observed_candidate and not current_identity:
+            # 已经看到新track的车牌候选时，等待它达到身份命中数后再决定。
+            # 不能在第一帧候选尚未稳定时先按纯空间规则接管，否则后续不同
+            # 号码只能走高门槛纠错，仍会把排队车辆粘进旧event。
+            return False
+
+        strict_unplated_after_plate = bool(previous_identity and not current_identity)
+        if strict_unplated_after_plate:
+            if now - lifecycle.lost_ts > self.locked_plate_unplated_grace_seconds:
+                return False
+            if self._boxes_continuous(
+                lifecycle.last_vehicle_box,
+                vehicle_box,
+                center_scale=self.locked_plate_unplated_center_scale,
+            ):
+                return True
+        elif self._boxes_continuous(lifecycle.last_vehicle_box, vehicle_box):
             return True
         if lifecycle.last_anchor is None or anchor_point is None:
             return False
@@ -269,14 +352,20 @@ class BusinessLifecycleManager:
                 lifecycle.last_vehicle_box[3] - lifecycle.last_vehicle_box[1],
                 previous_size,
             )
+        anchor_scale = (
+            self.locked_plate_unplated_center_scale
+            if strict_unplated_after_plate
+            else 2.5
+        )
         return hypot(
             float(anchor_point[0]) - float(lifecycle.last_anchor[0]),
             float(anchor_point[1]) - float(lifecycle.last_anchor[1]),
-        ) <= max(96.0, 2.5 * previous_size)
+        ) <= max(96.0, anchor_scale * previous_size)
 
     def find_unplated_handoff_candidates(self, vehicle_class, capture_ts,
                                          vehicle_box, anchor_point=None,
-                                         motion_direction='unknown'):
+                                         motion_direction='unknown', plate_candidate='',
+                                         plate_candidate_hits=0):
         return [
             lifecycle for lifecycle in self.by_event_id.values()
             if self.can_handoff_without_plate(
@@ -286,11 +375,15 @@ class BusinessLifecycleManager:
                 vehicle_box,
                 anchor_point=anchor_point,
                 motion_direction=motion_direction,
+                plate_candidate=plate_candidate,
+                plate_candidate_hits=plate_candidate_hits,
             )
         ]
 
     def handoff(self, lifecycle, tracker_id, capture_ts):
         if lifecycle is None or lifecycle.closed or lifecycle.active_tracker_id:
+            return None
+        if not self._handoff_budget_available(lifecycle, capture_ts):
             return None
         tracker_id = int(tracker_id)
         lifecycle.tracker_ids.add(tracker_id)
@@ -298,5 +391,6 @@ class BusinessLifecycleManager:
         lifecycle.last_tracker_id = tracker_id
         lifecycle.last_seen_ts = float(capture_ts)
         lifecycle.lost_ts = 0.0
+        lifecycle.handoff_count += 1
         self.by_tracker_id[tracker_id] = lifecycle.event_id
         return lifecycle
