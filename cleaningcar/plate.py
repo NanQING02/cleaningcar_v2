@@ -124,16 +124,22 @@ def is_valid_plate(text):
 class PlateVoteEvidence:
     """同一辆车的原始号码证据；按捕获时间投票，不依赖连续源帧。"""
 
-    def __init__(self, history_seconds=6.0, max_observations=60):
+    def __init__(self, history_seconds=6.0, max_observations=60, lifetime_max_candidates=32):
         self.history_seconds = max(0.1, float(history_seconds))
         self.observations = deque(maxlen=max(1, int(max_observations)))
+        self.lifetime_max_candidates = max(2, int(lifetime_max_candidates))
+        self.lifetime_counts = Counter()
+        self.lifetime_first_frame = None
+        self.lifetime_last_frame = None
+        self.lifetime_ambiguous = False
+        self.last_observed_frame = -1
 
     def expire(self, capture_ts):
         cutoff = float(capture_ts) - self.history_seconds
         while self.observations and self.observations[0]['capture_ts'] < cutoff:
             self.observations.popleft()
 
-    def add(self, frame_idx, capture_ts, text):
+    def add(self, frame_idx, capture_ts, text, count_lifetime=True):
         text = normalize_plate_candidate_text(text)
         capture_ts = float(capture_ts)
         self.expire(capture_ts)
@@ -141,11 +147,21 @@ class PlateVoteEvidence:
             return False
         frame_idx = int(frame_idx)
         # 同一源帧不能被多次update、缓存回放或handoff重复记票。
-        if any(item['frame_idx'] == frame_idx for item in self.observations):
+        if frame_idx <= self.last_observed_frame:
             return False
         if self.observations and capture_ts < self.observations[-1]['capture_ts']:
             return False
         self.observations.append({'frame_idx': frame_idx, 'capture_ts': capture_ts, 'text': text})
+        self.last_observed_frame = frame_idx
+        if count_lifetime:
+            if self.lifetime_first_frame is None:
+                self.lifetime_first_frame = frame_idx
+            self.lifetime_last_frame = frame_idx
+            if text in self.lifetime_counts or len(self.lifetime_counts) < self.lifetime_max_candidates:
+                self.lifetime_counts[text] += 1
+            else:
+                # 不淘汰竞争号码来制造多数；超过有界容量就禁止收尾补锁。
+                self.lifetime_ambiguous = True
         return True
 
     def ranked(self, capture_ts, window_seconds):
@@ -170,12 +186,56 @@ class PlateVoteEvidence:
         """仅在业务层已经确认同车handoff之后合并，保留一份有界证据。"""
         if other is None or other is self:
             return
+        if self.lifetime_first_frame is not None and other.lifetime_first_frame is not None:
+            if max(self.lifetime_first_frame, other.lifetime_first_frame) <= min(
+                self.lifetime_last_frame, other.lifetime_last_frame
+            ):
+                # 两个track的全程观测区间重叠，无法保证没有重复票或多车混入。
+                self.lifetime_ambiguous = True
+        self.lifetime_ambiguous = self.lifetime_ambiguous or other.lifetime_ambiguous
+        for text, hits in other.lifetime_counts.items():
+            if text in self.lifetime_counts or len(self.lifetime_counts) < self.lifetime_max_candidates:
+                self.lifetime_counts[text] += hits
+            else:
+                self.lifetime_ambiguous = True
+        first_frames = [f for f in (self.lifetime_first_frame, other.lifetime_first_frame) if f is not None]
+        last_frames = [f for f in (self.lifetime_last_frame, other.lifetime_last_frame) if f is not None]
+        self.lifetime_first_frame = min(first_frames) if first_frames else None
+        self.lifetime_last_frame = max(last_frames) if last_frames else None
         items = {item['frame_idx']: dict(item) for item in other.observations}
         items.update({item['frame_idx']: dict(item) for item in self.observations})
         ordered = sorted(items.values(), key=lambda item: (item['capture_ts'], item['frame_idx']))
         self.observations.clear()
         self.observations.extend(ordered)
         self.expire(capture_ts)
+        self.last_observed_frame = max(self.last_observed_frame, other.last_observed_frame)
+
+    @staticmethod
+    def _text_distance(left, right):
+        previous = list(range(len(right) + 1))
+        for i, a in enumerate(left, 1):
+            row = [i]
+            for j, b in enumerate(right, 1):
+                row.append(min(row[-1] + 1, previous[j] + 1, previous[j - 1] + (a != b)))
+            previous = row
+        return previous[-1]
+
+    def finalize_candidate(self, min_hits=4, runner_up_ratio=2.0, identity_min_hits=2):
+        ranked = sorted(self.lifetime_counts.items(), key=lambda item: (-item[1], item[0]))
+        detail = {'candidates': ranked[:2], 'candidate_count': len(ranked), 'reason': ''}
+        if self.lifetime_ambiguous:
+            detail['reason'] = 'ambiguous_or_overflow'
+        elif not ranked or ranked[0][1] < max(4, int(min_hits)):
+            detail['reason'] = 'insufficient_votes'
+        elif len(ranked) > 1 and ranked[0][1] < ranked[1][1] * max(2.0, float(runner_up_ratio)):
+            detail['reason'] = 'competing_votes'
+        elif any(hits >= max(2, int(identity_min_hits)) and self._text_distance(ranked[0][0], text) >= 3
+                 for text, hits in ranked[1:]):
+            detail['reason'] = 'distinct_plate_identity_conflict'
+        else:
+            detail['reason'] = 'lifetime_clear_winner'
+            return ranked[0][0], detail
+        return '', detail
 
 
 class PlateTextTracker:

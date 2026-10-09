@@ -382,6 +382,66 @@ class EventManagerPlateLockingTests(unittest.TestCase):
         self.assertEqual(manager.tracks[1]['plate_text_locked'], '苏C2267S')
         self.assertEqual(manager.tracks[1]['plate_vote_observations'], 4)
 
+    def test_finalize_fallback_updates_type5_and_keeps_type6_minimal_protocol(self):
+        uploader = _CollectingUploader()
+        manager = self._manager(plate_lock_frames=4, uploader=uploader)
+        manager.plate_finalize_fallback_enabled = True
+        manager.per_id_video_enabled = True
+        for frame, ts in [(1, 100), (100, 105), (200, 115), (202, 116)]:
+            manager.record_frame_timing(frame, ts, ts + .1)
+            self._update(manager, frame, plate_text='苏CJ61D6', plate_text_conf=.95)
+        state = manager.tracks[1]
+        self.assertEqual(state['plate_text_locked'], '')
+        state['type2_qualified'] = True
+        for typ in [1, 2, 4, 5, 6]:
+            manager._emit_event_core(1, typ, 202, None,
+                                     {'captureTime': '2026-10-09 16:35:15',
+                                      'perIdVideoEnabled': typ == 6}, state, 'car')
+            state['events'].add(typ)
+        self.assertEqual(state['plate_text_locked'], '苏CJ61D6')
+        self.assertEqual(state['plate_text_lock_source'], 'lifetime_finalize')
+        self.assertEqual(len({p['id'] for p in uploader.payloads}), 1)
+        self.assertEqual([p['type'] for p in uploader.payloads], [1, 2, 4, 5, 6])
+        self.assertEqual(uploader.payloads[0]['plateNumber'], '')
+        self.assertEqual(uploader.payloads[-2]['plateNumber'], '苏CJ61D6')
+        self.assertEqual(set(uploader.payloads[-1]), {'id', 'type', 'lane', 'perIdVideoEnabled'})
+        self.assertTrue(uploader.payloads[-1]['perIdVideoEnabled'])
+        self.assertEqual(manager._resolve_report_plate_fields(1, state, 202)[0], '苏CJ61D6')
+        self.assertFalse(uploader.payloads[-2]['plateRecognitionAbnormal'])
+        self.assertEqual(manager.lifecycle_manager.get(1).last_plate_text, '苏CJ61D6')
+
+    def test_finalize_does_not_accept_low_ocr_confidence_or_unqualified_vehicle(self):
+        manager = self._manager(plate_lock_frames=4)
+        manager.plate_finalize_fallback_enabled = True
+        for frame in range(1, 10):
+            self._update(manager, frame, plate_text='苏C03000F', plate_text_conf=.6)
+        state = manager.tracks[1]
+        state['type2_qualified'] = True
+        self.assertFalse(manager._finalize_plate_from_lifetime(1, state, 10))
+        self.assertEqual(state['plate_text_locked'], '')
+        other = self._manager(plate_lock_frames=4)
+        other.plate_finalize_fallback_enabled = True
+        for frame in (1, 100, 200, 300):
+            self._update(other, frame, plate_text='苏C03000F', plate_text_conf=.95)
+        state = other.tracks[1]
+        self.assertFalse(other._finalize_plate_from_lifetime(1, state, 300))
+        state['type2_qualified'] = True
+        state['_lifecycle_superseded'] = True
+        self.assertFalse(other._finalize_plate_from_lifetime(1, state, 300))
+
+    def test_finalize_does_not_overwrite_existing_lock(self):
+        manager = self._manager(plate_lock_frames=4)
+        manager.plate_finalize_fallback_enabled = True
+        for frame in (1, 2, 3, 4):
+            self._update(manager, frame, plate_text='苏C03000F', plate_text_conf=.95)
+        state = manager.tracks[1]
+        state['type2_qualified'] = True
+        for frame in (100, 200, 300, 400):
+            self._update(manager, frame, plate_text='苏C7755S', plate_text_conf=.95)
+        self.assertFalse(manager._finalize_plate_from_lifetime(1, state, 400))
+        self.assertEqual(state['plate_text_locked'], '苏C03000F')
+        self.assertNotIn('苏C7755S', state['plate_vote_evidence'].lifetime_counts)
+
     def test_duplicate_frame_updates_cannot_create_lock(self):
         manager = self._manager(plate_lock_frames=4)
         for _ in range(5):

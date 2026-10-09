@@ -1,5 +1,6 @@
 import atexit
 import csv
+import json
 from math import hypot
 import os
 import signal
@@ -190,6 +191,31 @@ def _associate_vehicle_plates(plate_detections, car_boxes, frame_size=None,
         det['track_id'] = car_id
         selected[car_id] = det
     return selected
+
+
+def _csv_observation_rows(rows, detections, capture_ts,
+                          min_detection_confidence=0.65, min_recognition_confidence=0.75):
+    """保持原CSV十列顺序，追加可重放的时钟、OCR分数及入票条件。"""
+    metadata = {det.get('row_idx'): det for det in detections or [] if det.get('row_idx', -1) >= 0}
+    extended = []
+    for idx, row in enumerate(rows):
+        det = metadata.get(idx, {})
+        is_plate = det.get('cls') == LICENSE_CLASS and det.get('source') == 'dual_plate'
+        bound = is_plate and int(det.get('track_id', -1) or -1) > 0
+        eligible = bool(
+            bound and is_valid_plate(det.get('raw_text', det.get('text', '')))
+            and float(det.get('score', 0.0) or 0.0) >= min_detection_confidence
+            and float(det.get('plate_text_conf', 0.0) or 0.0) >= min_recognition_confidence
+        )
+        extended.append(list(row) + [
+            capture_ts if capture_ts is not None else '',
+            det.get('plate_text_conf', '') if is_plate else '',
+            det.get('plate_type', '') if is_plate else '',
+            json.dumps(det.get('landmarks') or [], ensure_ascii=False) if is_plate else '',
+            ('unique_same_frame_vehicle' if bound else 'unbound') if is_plate else '',
+            eligible if is_plate else '',
+        ])
+    return extended
 
 
 def _plate_box_mutual_score(dual_plate_box, primary_plate_box):
@@ -682,6 +708,7 @@ def process_video(path, args):
         os.makedirs(output_dir, exist_ok=True)
     csv_writer = None
     csv_f = None
+    last_csv_flush = 0.0
     vehicle_iou_thresh = float(config.get('vehicle_iou_threshold', 0.3))
     if vehicle_iou_thresh < 0.0:
         vehicle_iou_thresh = 0.0
@@ -769,7 +796,10 @@ def process_video(path, args):
             os.makedirs(csv_dir, exist_ok=True)
         csv_f = open(csv_path, 'w', newline='', encoding='utf-8', buffering=1024 * 1024)
         csv_writer = csv.writer(csv_f)
-        csv_writer.writerow(['frame', 'class', 'score', 'x1', 'y1', 'x2', 'y2', 'track_id', 'text', 'raw_text'])
+        csv_writer.writerow([
+            'frame', 'class', 'score', 'x1', 'y1', 'x2', 'y2', 'track_id', 'text', 'raw_text',
+            'capture_ts', 'plate_text_conf', 'plate_type', 'landmarks', 'plate_binding', 'plate_vote_eligible',
+        ])
 
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
     per_id_video_source = _resolve_per_id_video_source(logic_cfg)
@@ -2020,6 +2050,7 @@ def process_video(path, args):
             pass
 
     def drain_results(block=True):
+        nonlocal last_csv_flush
         nonlocal next_frame_to_write, finished_workers, per_id_writers
         nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame, dropped_frame_ids
         nonlocal latest_frame_idx, latest_capture_ts, last_progress_ts, last_result_ts
@@ -2361,7 +2392,14 @@ def process_video(path, args):
                 poll_runtime_commands()
                 write_heartbeat(status='running')
                 if csv_writer and rows:
-                    csv_writer.writerows(rows)
+                    csv_writer.writerows(_csv_observation_rows(
+                        rows, det_payload, capture_ts,
+                        event_manager.plate_text_min_detection_confidence,
+                        event_manager.plate_text_min_recognition_confidence,
+                    ))
+                if csv_f and time.perf_counter() - last_csv_flush >= 1.0:
+                    csv_f.flush()
+                    last_csv_flush = time.perf_counter()
                 next_frame_to_write += 1
                 _advance_dropped_frames()
                 t_before_flush = time.perf_counter()

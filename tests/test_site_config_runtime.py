@@ -9,8 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 class SiteConfigRuntimeTests(unittest.TestCase):
     def test_main_and_bypass_plate_stride_match_runtime_configs(self):
         expected_plate_stride = {
-            "configs/config.json": 2,
-            "configs/config_绕行.json": 2,
+            "configs/config.json": 1,
+            "configs/config_绕行.json": 1,
         }
         for relative, plate_stride in expected_plate_stride.items():
             with self.subTest(config=relative):

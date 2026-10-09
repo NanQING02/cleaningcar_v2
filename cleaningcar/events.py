@@ -431,6 +431,10 @@ class EventManager:
             1.0, max(self.plate_vote_min_ratio, float(self.logic.get('plate_correction_min_ratio', 0.80)))
         )
         self.plate_vote_max_observations = max(12, int(self.logic.get('plate_vote_max_observations', 60)))
+        self.plate_finalize_fallback_enabled = bool(self.logic.get('plate_finalize_fallback_enabled', False))
+        self.plate_finalize_min_votes = max(4, int(self.logic.get('plate_finalize_min_votes', 4)))
+        self.plate_finalize_runner_up_ratio = max(2.0, float(self.logic.get('plate_finalize_runner_up_ratio', 2.0)))
+        self.plate_finalize_max_candidates = max(2, int(self.logic.get('plate_finalize_max_candidates', 32)))
         self.plate_correction_confirm_hits = max(
             self.event_plate_lock_frames,
             int(self.logic.get('plate_correction_confirm_hits', 12)),
@@ -2104,6 +2108,8 @@ class EventManager:
     def _emit_event_core(self, track_id, event_type, frame_idx, frame, payload, track_state, vehicle_type):
         if not self._event_stage_allowed(track_id, event_type, frame_idx, track_state):
             return False
+        if event_type == 5:
+            self._finalize_plate_from_lifetime(track_id, track_state, frame_idx)
         t0 = time.perf_counter()
         anchor_dwell = 0
         dbg = track_state.get('debug', {})
@@ -2483,6 +2489,7 @@ class EventManager:
             evidence = PlateVoteEvidence(
                 history_seconds=self.plate_correction_window_seconds,
                 max_observations=self.plate_vote_max_observations,
+                lifetime_max_candidates=self.plate_finalize_max_candidates,
             )
             track_state['plate_vote_evidence'] = evidence
         return evidence
@@ -2513,7 +2520,10 @@ class EventManager:
             return
         capture_ts = self._plate_capture_timestamp(frame_idx)
         evidence = self._plate_vote_evidence(track_state)
-        if not evidence.add(frame_idx, capture_ts, observed_text):
+        if not evidence.add(
+            frame_idx, capture_ts, observed_text,
+            count_lifetime=not bool(track_state.get('plate_text_locked')),
+        ):
             return
         track_state['plate_vote_observations'] = int(track_state.get('plate_vote_observations', 0)) + 1
         self._refresh_plate_vote_identity(track_state, capture_ts)
@@ -2538,6 +2548,7 @@ class EventManager:
             action = 'correct'
         track_state['plate_text_locked'] = text
         track_state['plate_text_locked_is_guess'] = False
+        track_state['plate_text_lock_source'] = 'capture_time_majority'
         self._reset_plate_switch_streak(track_state)
         self._activate_plate_color_for_text(track_state, text)
         detail = {
@@ -2551,6 +2562,36 @@ class EventManager:
             f'[plate-vote] action={action} track={track_id} frame={int(frame_idx)} '
             f'text={text} previous={locked_text or "-"} votes={hits}/{total}'
         )
+
+    def _finalize_plate_from_lifetime(self, track_id, track_state, frame_idx):
+        if not self.plate_finalize_fallback_enabled or track_state.get('plate_text_locked'):
+            return False
+        if (not track_state.get('vehicle_business_confirmed') or not track_state.get('type2_qualified')
+                or track_state.get('_lifecycle_superseded') or track_state.get('lifecycle_handoff_pending')):
+            return False
+        if track_state.get('plate_finalize_checked'):
+            return False
+        track_state['plate_finalize_checked'] = True
+        text, detail = self._plate_vote_evidence(track_state).finalize_candidate(
+            self.plate_finalize_min_votes, self.plate_finalize_runner_up_ratio,
+            self.lifecycle_plate_identity_min_hits,
+        )
+        track_state['plate_finalize_evidence'] = detail
+        self.trace_record('plate_finalize', {
+            'trackId': int(track_id), 'frameIdx': int(frame_idx), 'text': text, **detail,
+        })
+        print(
+            f'[plate-vote] action=finalize_{"lock" if text else "skip"} track={track_id} '
+            f'text={text or "-"} reason={detail["reason"]} candidates={detail["candidates"]}'
+        )
+        if not text:
+            return False
+        track_state['plate_text_locked'] = text
+        track_state['plate_text_locked_is_guess'] = False
+        track_state['plate_text_lock_source'] = 'lifetime_finalize'
+        self._activate_plate_color_for_text(track_state, text)
+        self._sync_plate_legacy_fields(track_state)
+        return True
 
     def _event_plate_lock_required_hits(self, track_state):
         del track_state

@@ -16,6 +16,7 @@ if "rknnlite" not in sys.modules:
     sys.modules["rknnlite.api"] = rknn_api_module
 
 from cleaningcar.pipeline import (
+    _csv_observation_rows,
     _associate_vehicle_plates,
     _append_pending_plate_candidate,
     _cleanup_plate_binding_states,
@@ -30,6 +31,20 @@ from cleaningcar.pipeline import (
 
 
 class PlateBindingStabilityTests(unittest.TestCase):
+    def test_csv_appends_real_capture_clock_ocr_confidence_and_vote_eligibility(self):
+        row = [100, 'license', .9, 100, 100, 200, 150, 1, '', '苏C03000F']
+        det = {'row_idx': 0, 'cls': 8, 'source': 'dual_plate', 'track_id': 1,
+               'score': .9, 'raw_text': '苏C03000F', 'plate_text_conf': .95, 'plate_type': 'single'}
+        output = _csv_observation_rows([row], [det], 123.45)[0]
+        self.assertEqual(output[:10], row)
+        self.assertEqual(output[10:13], [123.45, .95, 'single'])
+        self.assertEqual(output[-2:], ['unique_same_frame_vehicle', True])
+        det['plate_text_conf'] = .6
+        self.assertFalse(_csv_observation_rows([row], [det], 123.45)[0][-1])
+        det['plate_text_conf'] = .95
+        det['track_id'] = -1
+        self.assertEqual(_csv_observation_rows([row], [det], 123.45)[0][-2:], ['unbound', False])
+
     @staticmethod
     def _plate(box, text='苏C2267S', score=.9, text_conf=.95):
         return {'box': box, 'text': text, 'raw_text': text, 'score': score, 'plate_text_conf': text_conf}
