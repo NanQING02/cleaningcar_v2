@@ -19,12 +19,13 @@ RK3588 整机死机 = 四要素叠加——RGA3 双忙（job 落 RGA2，无 IOMM
 据此本项目执行如下硬性口径：
 
 1. **唯一允许的 RGA 用法**：GStreamer 解码端 BGR 直出（`mppvideodec format=BGR` direct 管线）。
-   gst-rockchip 插件内部以 fd/DMA-BUF 调 RGA，提交失败仅丢帧（实测 223 次连续失败进程存活），不触发死机链。
+   gst-rockchip 插件内部以 fd/DMA-BUF 调 RGA；历史实测223次连续失败进程存活，但不能据此承诺内核或整机不会异常。
 2. **禁止**任何其他 RGA 用法：显式 `scale_rkrga`/ffmpeg_rga、`wrapbuffer_virtualaddr`+`imresize`、
    ctypes/c 直接调 librga 等。不走 fd 路径或未实机验证错误路径的 RGA 方案一律不允许合入。
 3. 若未来确需新增 RGA 用法：必须先用实机探针验证目标 librga 版本在"RGA2 + >4G"下的错误路径
    不 crash 进程，且优先 importbuffer 句柄 + 绑定 RGA3 core；评估通过前不允许进入任何链路。
 4. 板端 librga 以系统镜像自带为准（soname `librga.so.2`），项目不再向 `/usr/local/lib` 安装第二份。
+5. `native/rga3_guard`为用户授权开发的灰度组件，默认关闭。只改变已核验gst-rockchip fd NV12到BGR任务的core，不新增RGA操作；校验版本和ABI、只在选定推理PID加载，Web及exec子进程不得继承。6006合成流仅验证底层，6002真实四路效果须单独灰度；未验证配置不得自动开启。
 
 ## 项目概览
 
